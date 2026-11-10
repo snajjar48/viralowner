@@ -13,9 +13,14 @@ function hashKey(value: string) {
  * Fixed-window rate limiter stored in Postgres, so it holds across serverless
  * instances. Returns true if the request is allowed.
  */
-export async function checkRateLimit(ip: string): Promise<boolean> {
+export async function checkRateLimit(id: string): Promise<boolean> {
+  // Local development without a database: skip rate limiting.
+  if (!process.env.DATABASE_URL && process.env.NODE_ENV === "development") {
+    return true;
+  }
+
   const sql = getSql();
-  const key = hashKey(ip);
+  const key = hashKey(id);
   const windowStart = new Date(
     Math.floor(Date.now() / (WINDOW_SECONDS * 1000)) * WINDOW_SECONDS * 1000,
   ).toISOString();

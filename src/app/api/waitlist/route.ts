@@ -1,3 +1,4 @@
+import { clientIp } from "@/lib/client-ip";
 import { getSql } from "@/lib/db";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -6,15 +7,6 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function json(body: Record<string, unknown>, status = 200) {
   return Response.json(body, { status });
-}
-
-function clientIp(request: Request) {
-  const forwarded = request.headers.get("x-forwarded-for");
-  return (
-    forwarded?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown"
-  );
 }
 
 export async function POST(request: Request) {
