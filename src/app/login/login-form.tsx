@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { buttonClass, Field, FormError, inputClass } from "@/components/form";
+import { ArrowRightIcon } from "@/components/icons";
+import { PasswordInput } from "@/components/password-input";
 import { safeNextPath } from "@/lib/safe-next";
 
 const LINK_ERROR = "That confirmation link is invalid or has expired. Try logging in.";
@@ -40,23 +42,34 @@ export function LoginForm() {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <Field label="Email" htmlFor="email">
-        <input id="email" name="email" type="email" required autoFocus autoComplete="email" className={inputClass} />
+        <input id="email" name="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" className={inputClass} />
       </Field>
       <Field label="Password" htmlFor="password">
-        <input id="password" name="password" type="password" required autoComplete="current-password" className={inputClass} />
+        <PasswordInput id="password" name="password" required autoComplete="current-password" />
       </Field>
       <div className="mt-4 flex flex-col gap-3">
-        <button type="submit" disabled={submitting} className={buttonClass}>
-          {submitting ? "Logging in…" : "Log in"}
+        <button type="submit" disabled={submitting} className={`${buttonClass} group`}>
+          <span className="inline-flex items-center justify-center gap-2">
+            {submitting ? "Logging in…" : "Log in"}
+            {!submitting && (
+              <ArrowRightIcon className="size-4 transition-transform group-hover:translate-x-0.5" />
+            )}
+          </span>
         </button>
         <FormError id="login-error" message={error} />
-        <p className="text-center text-sm text-muted">
-          New here?{" "}
-          <Link href="/signup" className="text-foreground underline underline-offset-4">
-            Create an account
-          </Link>
-        </p>
       </div>
+
+      <div className="flex items-center gap-4 text-xs text-muted">
+        <span className="h-px flex-1 bg-white/10" />
+        new to viralowner?
+        <span className="h-px flex-1 bg-white/10" />
+      </div>
+      <Link
+        href="/signup"
+        className="flex h-12 items-center justify-center rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:border-white/30 hover:bg-white/10"
+      >
+        Create an account
+      </Link>
     </form>
   );
 }
