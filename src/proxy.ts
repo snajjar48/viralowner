@@ -8,6 +8,7 @@ const PUBLIC_PATHS = new Set([
   "/api/waitlist", // waitlist signup
   "/unlock", // password page
   "/api/unlock", // password check
+  "/api/stripe/webhook", // Stripe can't know the password; verified by signature
   "/logo.svg",
   "/icon.svg",
 ]);

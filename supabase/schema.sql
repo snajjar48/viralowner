@@ -44,3 +44,12 @@ drop trigger if exists profiles_touch_updated_at on public.profiles;
 create trigger profiles_touch_updated_at
   before update on public.profiles
   for each row execute function public.touch_updated_at();
+
+-- Subscriptions (added later; safe to rerun). Mirrors Stripe, written only by
+-- the server from Stripe's own data.
+alter table public.profiles
+  add column if not exists plan                 text,
+  add column if not exists subscription_id      text,
+  add column if not exists subscription_status  text,
+  add column if not exists current_period_end   timestamptz,
+  add column if not exists cancel_at_period_end boolean not null default false;

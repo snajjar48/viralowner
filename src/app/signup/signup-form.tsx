@@ -4,20 +4,18 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe, type StripeElementsOptions } from "@stripe/stripe-js";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { buttonClass, Field, FormError, inputClass } from "@/components/form";
 import { ArrowRightIcon, CheckIcon, LockIcon } from "@/components/icons";
 import { PasswordInput, StrengthMeter } from "@/components/password-input";
 import { COUNTRIES } from "@/lib/countries";
+import { formatMoney, yearlySavingsPercent, type Plan, type PlanId } from "@/lib/plan-format";
 import { PASSWORD_MAX, PASSWORD_MIN, type BillingAddress } from "@/lib/signup-validation";
 
 const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
 
-const elementsOptions: StripeElementsOptions = {
-  mode: "setup",
-  currency: "usd",
-  allowedPaymentMethodTypes: ["card"],
+const baseOptions = {
   fonts: [{ cssSrc: "https://fonts.googleapis.com/css2?family=Geist:wght@400;500&display=swap" }],
   appearance: {
     theme: "night",
@@ -38,19 +36,35 @@ const elementsOptions: StripeElementsOptions = {
       ".Label": { color: "#a1a1aa", fontSize: "14px" },
     },
   },
-};
+} satisfies Partial<StripeElementsOptions>;
 
-export function SignupForm() {
-  if (!stripePromise) {
+export function SignupForm({ plans }: { plans: Plan[] | null }) {
+  const [planId, setPlanId] = useState<PlanId>("yearly");
+  const plan = plans?.find((p) => p.id === planId);
+  const options = useMemo<StripeElementsOptions | null>(
+    () =>
+      plan
+        ? {
+            ...baseOptions,
+            mode: "subscription",
+            amount: plan.amount,
+            currency: plan.currency,
+            allowedPaymentMethodTypes: ["card"],
+          }
+        : null,
+    [plan],
+  );
+
+  if (!stripePromise || !plans || !plan || !options) {
     return (
       <p className="text-center text-sm text-coral">
-        Payments aren’t set up yet (NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is missing).
+        Sign-ups aren’t open yet: payments or plans aren’t set up.
       </p>
     );
   }
   return (
-    <Elements stripe={stripePromise} options={elementsOptions}>
-      <SignupFields />
+    <Elements stripe={stripePromise} options={options}>
+      <SignupFields plans={plans} plan={plan} onPlanChange={setPlanId} />
     </Elements>
   );
 }
@@ -89,7 +103,15 @@ function readForm(form: HTMLFormElement) {
   };
 }
 
-function SignupFields() {
+function SignupFields({
+  plans,
+  plan,
+  onPlanChange,
+}: {
+  plans: Plan[];
+  plan: Plan;
+  onPlanChange: (id: PlanId) => void;
+}) {
   const stripe = useStripe();
   const elements = useElements();
   const [error, setError] = useState("");
@@ -98,9 +120,12 @@ function SignupFields() {
   // Set to the address we emailed when confirmation is required.
   const [checkEmail, setCheckEmail] = useState("");
   // Once the account exists, only the card can be retried.
-  const account = useRef<{ clientSecret: string; needsEmailConfirmation: boolean; details: Details }>(
-    null,
-  );
+  const account = useRef<{
+    clientSecret: string;
+    subscriptionId: string;
+    needsEmailConfirmation: boolean;
+    details: Details;
+  }>(null);
   const [accountCreated, setAccountCreated] = useState(false);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -141,6 +166,7 @@ function SignupFields() {
             password: values.password,
             confirmPassword: values.confirmPassword,
             acceptTerms: values.acceptTerms,
+            plan: plan.id,
             website: values.website,
           }),
         });
@@ -151,14 +177,15 @@ function SignupFields() {
         }
         account.current = {
           clientSecret: result.clientSecret,
+          subscriptionId: result.subscriptionId,
           needsEmailConfirmation: Boolean(result.needsEmailConfirmation),
           details: values.details,
         };
         setAccountCreated(true);
       }
 
-      const { clientSecret, needsEmailConfirmation, details } = account.current;
-      const { error: confirmError, setupIntent } = await stripe.confirmSetup({
+      const { clientSecret, subscriptionId, needsEmailConfirmation, details } = account.current;
+      const { error: confirmError } = await stripe.confirmPayment({
         elements,
         clientSecret,
         redirect: "if_required",
@@ -184,17 +211,18 @@ function SignupFields() {
 
       if (confirmError) {
         setError(
-          `Your account is set up, but your card couldn’t be saved: ${
+          `Your account is set up, but the payment didn’t go through: ${
             confirmError.message ?? "it was declined."
           } Please try another card.`,
         );
         return;
       }
 
-      await fetch("/api/auth/payment-method", {
+      // Update the account right away (Stripe's webhook also does this).
+      await fetch("/api/billing/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ setupIntentId: setupIntent.id }),
+        body: JSON.stringify({ subscriptionId }),
       });
 
       if (needsEmailConfirmation) {
@@ -237,7 +265,11 @@ function SignupFields() {
         <input id="website" name="website" type="text" tabIndex={-1} autoComplete="off" />
       </div>
 
-      <Step n={1} title="About you" disabled={submitting && !locked}>
+      <Step n={1} title="Choose your plan" disabled={submitting || locked}>
+        <PlanPicker plans={plans} selected={plan.id} onChange={onPlanChange} />
+      </Step>
+
+      <Step n={2} title="About you" disabled={submitting && !locked}>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="First name" htmlFor="firstName">
             <input id="firstName" name="firstName" required maxLength={50} autoComplete="given-name" readOnly={locked} className={inputClass} />
@@ -254,7 +286,7 @@ function SignupFields() {
         </Field>
       </Step>
 
-      <Step n={2} title="Create a password" disabled={submitting && !locked}>
+      <Step n={3} title="Create a password" disabled={submitting && !locked}>
         <Field label="Password" htmlFor="password">
           <PasswordInput id="password" name="password" required minLength={PASSWORD_MIN} maxLength={PASSWORD_MAX} autoComplete="new-password" placeholder={`At least ${PASSWORD_MIN} characters`} readOnly={locked} value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
@@ -272,7 +304,7 @@ function SignupFields() {
         </p>
       </Step>
 
-      <Step n={3} title="Billing address" disabled={submitting && !locked}>
+      <Step n={4} title="Billing address" disabled={submitting && !locked}>
         <Field label="Country" htmlFor="country">
           <div className="relative">
             <select id="country" name="country" required defaultValue="US" disabled={locked} className={`${inputClass} cursor-pointer appearance-none pr-10`}>
@@ -306,7 +338,7 @@ function SignupFields() {
         </div>
       </Step>
 
-      <Step n={4} title="Payment method">
+      <Step n={5} title="Payment">
         <PaymentElement
           options={{
             fields: {
@@ -317,7 +349,8 @@ function SignupFields() {
         />
         <p className="flex items-center gap-2 text-xs text-muted">
           <LockIcon className="size-3.5 shrink-0" />
-          Stored securely by Stripe. You won’t be charged today.
+          You’ll be charged {formatMoney(plan.amount, plan.currency)} today, then every{" "}
+          {plan.id === "monthly" ? "month" : "year"} until you cancel. Cancel anytime.
         </p>
       </Step>
 
@@ -341,7 +374,13 @@ function SignupFields() {
 
         <button type="submit" disabled={submitting || !stripe} className={`${buttonClass} group`}>
           <span className="inline-flex items-center justify-center gap-2">
-            {submitting ? "Creating your account…" : locked ? "Save card" : "Create my account"}
+            {submitting
+              ? "Setting up your account…"
+              : locked
+                ? "Try payment again"
+                : `Start my membership · ${formatMoney(plan.amount, plan.currency)}/${
+                    plan.id === "monthly" ? "mo" : "yr"
+                  }`}
             {!submitting && (
               <ArrowRightIcon className="size-4 transition-transform group-hover:translate-x-0.5" />
             )}
@@ -354,7 +393,7 @@ function SignupFields() {
             <LockIcon className="size-3.5" /> Secured by Stripe
           </li>
           <li className="inline-flex items-center gap-1.5">
-            <CheckIcon className="size-3.5" /> No charge today
+            <CheckIcon className="size-3.5" /> Cancel anytime
           </li>
           <li className="inline-flex items-center gap-1.5">
             <CheckIcon className="size-3.5" /> Your card never touches our servers
@@ -386,5 +425,64 @@ function Step({
       </legend>
       {children}
     </fieldset>
+  );
+}
+
+function PlanPicker({
+  plans,
+  selected,
+  onChange,
+}: {
+  plans: Plan[];
+  selected: PlanId;
+  onChange: (id: PlanId) => void;
+}) {
+  const monthly = plans.find((p) => p.id === "monthly");
+  const yearly = plans.find((p) => p.id === "yearly");
+  const savings = monthly && yearly ? yearlySavingsPercent(monthly, yearly) : 0;
+
+  return (
+    <div role="radiogroup" aria-label="Plan" className="grid gap-3 sm:grid-cols-2">
+      {plans.map((p) => {
+        const active = p.id === selected;
+        const isYearly = p.id === "yearly";
+        return (
+          <label
+            key={p.id}
+            className={`relative flex cursor-pointer flex-col gap-1 rounded-2xl border p-4 transition has-[:disabled]:cursor-default ${
+              active
+                ? "border-transparent bg-white/[0.06] ring-2 ring-violet"
+                : "border-white/15 bg-white/[0.03] hover:border-white/30"
+            }`}
+          >
+            <input
+              type="radio"
+              name="plan"
+              value={p.id}
+              checked={active}
+              onChange={() => onChange(p.id)}
+              className="sr-only"
+            />
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">{isYearly ? "Yearly" : "Monthly"}</span>
+              {isYearly && savings > 0 && (
+                <span className="rounded-full bg-linear-to-r from-violet to-coral px-2 py-0.5 text-[11px] font-semibold text-white">
+                  Save {savings}%
+                </span>
+              )}
+            </span>
+            <span className="text-2xl font-semibold tracking-tight">
+              {formatMoney(p.amount, p.currency)}
+              <span className="text-sm font-normal text-muted">/{isYearly ? "year" : "month"}</span>
+            </span>
+            <span className="text-xs text-muted">
+              {isYearly
+                ? `Just ${formatMoney(Math.round(p.amount / 12), p.currency)}/month, billed yearly`
+                : "Billed monthly. Cancel anytime"}
+            </span>
+          </label>
+        );
+      })}
+    </div>
   );
 }

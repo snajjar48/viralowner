@@ -1,5 +1,9 @@
 import type { NextRequest } from "next/server";
+import type Stripe from "stripe";
+import { APP_TAG, isActiveStatus, syncSubscription } from "@/lib/billing";
 import { clientIp } from "@/lib/client-ip";
+import { isPlanId } from "@/lib/plan-format";
+import { priceIdFor } from "@/lib/plans";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { parseSignup } from "@/lib/signup-validation";
 import { getStripe } from "@/lib/stripe";
@@ -8,9 +12,10 @@ import { createAdminClient, createClient } from "@/lib/supabase/server";
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 
 /**
- * Step 1 of sign-up: create the account, the Stripe customer and the profile,
- * then return a SetupIntent secret so the browser can save the card directly
- * with Stripe (card details never pass through this server).
+ * Sign-up: create the account, the Stripe customer, the profile and an
+ * incomplete subscription, then return the first invoice's payment secret so
+ * the browser can pay directly with Stripe (card details never touch this
+ * server). The subscription activates once that payment succeeds.
  */
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
@@ -28,6 +33,15 @@ export async function POST(request: NextRequest) {
   const input = parseSignup(body);
   if ("error" in input) {
     return Response.json({ error: input.error }, { status: 400 });
+  }
+  if (!isPlanId(body.plan)) {
+    return Response.json({ error: "Please choose a plan." }, { status: 400 });
+  }
+  // Only viralowner's own prices can be bought here.
+  const priceId = priceIdFor(body.plan);
+  if (!priceId) {
+    console.error("Signup failed: STRIPE_PRICE_MONTHLY / STRIPE_PRICE_YEARLY not set.");
+    return Response.json({ error: "Plans aren’t set up yet." }, { status: 500 });
   }
 
   try {
@@ -102,7 +116,7 @@ export async function POST(request: NextRequest) {
       },
       description: "viralowner",
       // Tag so viralowner customers are easy to filter in a shared Stripe account.
-      metadata: { app: "viralowner", supabase_user_id: user.id },
+      metadata: { app: APP_TAG, supabase_user_id: user.id },
     };
 
     // Retrying sign-up (e.g. before confirming the email) returns the same
@@ -137,16 +151,44 @@ export async function POST(request: NextRequest) {
       throw profileError;
     }
 
-    const setupIntent = await stripe.setupIntents.create({
+    // One membership per account. Clear out abandoned attempts so a retry
+    // (or a switch between monthly and yearly) starts fresh.
+    const subscriptions = await stripe.subscriptions.list({
       customer: customer.id,
-      allowed_payment_method_types: ["card"],
-      usage: "off_session",
-      description: "viralowner payment method",
-      metadata: { app: "viralowner", supabase_user_id: user.id },
+      status: "all",
+      limit: 20,
     });
+    if (subscriptions.data.some((sub) => isActiveStatus(sub.status))) {
+      return Response.json(
+        { error: "You already have a membership. Try logging in." },
+        { status: 409 },
+      );
+    }
+    for (const sub of subscriptions.data) {
+      if (sub.status === "incomplete") await stripe.subscriptions.cancel(sub.id);
+    }
+
+    const subscription = await stripe.subscriptions.create({
+      customer: customer.id,
+      items: [{ price: priceId }],
+      description: "viralowner membership",
+      payment_behavior: "default_incomplete",
+      payment_settings: {
+        payment_method_types: ["card"],
+        save_default_payment_method: "on_subscription",
+      },
+      metadata: { app: APP_TAG, supabase_user_id: user.id },
+      expand: ["latest_invoice.confirmation_secret"],
+    });
+    await syncSubscription(subscription);
+
+    const invoice = subscription.latest_invoice as Stripe.Invoice | null;
+    const clientSecret = invoice?.confirmation_secret?.client_secret;
+    if (!clientSecret) throw new Error(`No payment secret for ${subscription.id}`);
 
     return Response.json({
-      clientSecret: setupIntent.client_secret,
+      clientSecret,
+      subscriptionId: subscription.id,
       needsEmailConfirmation: !data.session,
     });
   } catch (error) {

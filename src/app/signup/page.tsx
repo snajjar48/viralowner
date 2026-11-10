@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { AuthLayout, EditPreview, Eyebrow, GradientText } from "@/components/auth-layout";
+import { getPlans } from "@/lib/plans";
 import { ClockIcon, SparkleIcon, TrendIcon, UploadIcon, WandIcon } from "@/components/icons";
 import { SignupForm } from "./signup-form";
 
@@ -81,7 +82,8 @@ function Pitch() {
   );
 }
 
-export default function SignupPage() {
+export default async function SignupPage() {
+  const plans = await getPlans();
   return (
     <AuthLayout
       aside={<Pitch />}
@@ -95,7 +97,7 @@ export default function SignupPage() {
         </>
       }
     >
-      <SignupForm />
+      <SignupForm plans={plans} />
     </AuthLayout>
   );
 }
