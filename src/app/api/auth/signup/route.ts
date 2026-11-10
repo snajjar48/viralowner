@@ -67,6 +67,7 @@ export async function POST(request: NextRequest) {
         );
       }
       if (error.code === "over_email_send_rate_limit" || error.status === 429) {
+        console.error("Supabase signUp rate limited:", error.code, error.message);
         return Response.json(
           { error: "Too many sign-up emails sent recently. Please wait a few minutes and try again." },
           { status: 429 },
