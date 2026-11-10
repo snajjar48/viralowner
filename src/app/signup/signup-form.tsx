@@ -38,6 +38,14 @@ const baseOptions = {
   },
 } satisfies Partial<StripeElementsOptions>;
 
+// Name, email, phone and address come from our own fields.
+const paymentElementOptions = {
+  fields: {
+    billingDetails: { name: "never", email: "never", phone: "never", address: "never" },
+  },
+  wallets: { applePay: "never", googlePay: "never", link: "never" },
+} as const;
+
 export function SignupForm({ plans }: { plans: Plan[] | null }) {
   const [planId, setPlanId] = useState<PlanId>("yearly");
   const plan = plans?.find((p) => p.id === planId);
@@ -129,6 +137,7 @@ function SignupFields({
   const [accountCreated, setAccountCreated] = useState(false);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [cardLoadError, setCardLoadError] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -340,13 +349,17 @@ function SignupFields({
 
       <Step n={5} title="Payment">
         <PaymentElement
-          options={{
-            fields: {
-              billingDetails: { name: "never", email: "never", phone: "never", address: "never" },
-            },
-            wallets: { applePay: "never", googlePay: "never", link: "never" },
+          options={paymentElementOptions}
+          onLoadError={(event) => {
+            console.error("Stripe card field failed to load:", event.error);
+            setCardLoadError(event.error.message ?? "The card field couldn’t load.");
           }}
         />
+        {cardLoadError && (
+          <p role="alert" className="text-sm text-coral">
+            Couldn’t load the card field: {cardLoadError} Please refresh the page.
+          </p>
+        )}
         <p className="flex items-center gap-2 text-xs text-muted">
           <LockIcon className="size-3.5 shrink-0" />
           You’ll be charged {formatMoney(plan.amount, plan.currency)} today, then every{" "}
