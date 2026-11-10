@@ -1,12 +1,18 @@
+import Image from "next/image";
 import { WaitlistForm } from "./waitlist-form";
 
 export default function Home() {
   return (
     <div className="flex min-h-dvh flex-col items-center px-6">
       <header className="pt-10 sm:pt-14">
-        <span className="text-xl font-semibold tracking-tight text-foreground">
-          viralowner
-        </span>
+        <Image
+          src="/logo.svg"
+          alt="viralowner"
+          width={1458}
+          height={418}
+          preload
+          className="h-10 w-auto sm:h-12"
+        />
       </header>
 
       <main className="flex w-full max-w-xl flex-1 flex-col items-center justify-center py-24 text-center">
