@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, isValidAccessToken } from "@/lib/site-access";
+import { updateSession } from "@/lib/supabase/proxy";
 
 // The only paths anyone can reach without the password.
 const PUBLIC_PATHS = new Set([
@@ -11,7 +12,14 @@ const PUBLIC_PATHS = new Set([
   "/icon.svg",
 ]);
 
-export function proxy(request: NextRequest) {
+// Pages that also need a signed-in account (on top of the site password).
+const ACCOUNT_PREFIXES = ["/dashboard"];
+
+function needsAccount(pathname: string) {
+  return ACCOUNT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
   if (PUBLIC_PATHS.has(pathname)) {
@@ -19,7 +27,7 @@ export function proxy(request: NextRequest) {
   }
 
   if (isValidAccessToken(request.cookies.get(ACCESS_COOKIE)?.value)) {
-    const response = NextResponse.next();
+    const response = await updateSession(request, needsAccount(pathname));
     response.headers.set("X-Robots-Tag", "noindex, nofollow");
     return response;
   }

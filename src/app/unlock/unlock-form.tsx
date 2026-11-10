@@ -1,14 +1,10 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { safeNextPath } from "@/lib/safe-next";
 
 function nextPath() {
-  const next = new URLSearchParams(window.location.search).get("next");
-  // Mirror the server-side check: same-site relative paths only.
-  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
-    return "/dashboard";
-  }
-  return next;
+  return safeNextPath(new URLSearchParams(window.location.search).get("next"));
 }
 
 export function UnlockForm() {
