@@ -100,7 +100,9 @@ export async function POST(request: NextRequest) {
         postal_code: address.postalCode,
         country: address.country,
       },
-      metadata: { supabase_user_id: user.id },
+      description: "viralowner",
+      // Tag so viralowner customers are easy to filter in a shared Stripe account.
+      metadata: { app: "viralowner", supabase_user_id: user.id },
     };
 
     // Retrying sign-up (e.g. before confirming the email) returns the same
@@ -139,7 +141,8 @@ export async function POST(request: NextRequest) {
       customer: customer.id,
       allowed_payment_method_types: ["card"],
       usage: "off_session",
-      metadata: { supabase_user_id: user.id },
+      description: "viralowner payment method",
+      metadata: { app: "viralowner", supabase_user_id: user.id },
     });
 
     return Response.json({
