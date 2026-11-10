@@ -66,6 +66,12 @@ export async function POST(request: NextRequest) {
           { status: 400 },
         );
       }
+      if (error.code === "over_email_send_rate_limit" || error.status === 429) {
+        return Response.json(
+          { error: "Too many sign-up emails sent recently. Please wait a few minutes and try again." },
+          { status: 429 },
+        );
+      }
       console.error("Supabase signUp failed:", error);
       return Response.json({ error: GENERIC_ERROR }, { status: 500 });
     }
@@ -81,24 +87,29 @@ export async function POST(request: NextRequest) {
     }
 
     const { address } = input;
-    const stripe = getStripe();
-    const customer = await stripe.customers.create(
-      {
-        email: input.email,
-        name: `${input.firstName} ${input.lastName}`,
-        phone: input.phone,
-        address: {
-          line1: address.line1,
-          line2: address.line2 || undefined,
-          city: address.city,
-          state: address.state || undefined,
-          postal_code: address.postalCode,
-          country: address.country,
-        },
-        metadata: { supabase_user_id: user.id },
+    const customerDetails = {
+      email: input.email,
+      name: `${input.firstName} ${input.lastName}`,
+      phone: input.phone,
+      address: {
+        line1: address.line1,
+        line2: address.line2 || "",
+        city: address.city,
+        state: address.state || "",
+        postal_code: address.postalCode,
+        country: address.country,
       },
-      { idempotencyKey: `signup-customer-${user.id}` },
-    );
+      metadata: { supabase_user_id: user.id },
+    };
+
+    // Retrying sign-up (e.g. before confirming the email) returns the same
+    // user, so reuse the Stripe customer from the earlier attempt if there is one.
+    const stripe = getStripe();
+    const existing = await stripe.customers.list({ email: input.email, limit: 10 });
+    const previous = existing.data.find((c) => c.metadata?.supabase_user_id === user.id);
+    const customer = previous
+      ? await stripe.customers.update(previous.id, customerDetails)
+      : await stripe.customers.create(customerDetails);
 
     const { error: profileError } = await createAdminClient()
       .from("profiles")
@@ -112,17 +123,23 @@ export async function POST(request: NextRequest) {
         stripe_customer_id: customer.id,
         terms_accepted_at: new Date().toISOString(),
       });
-    if (profileError) throw profileError;
+    if (profileError) {
+      if (profileError.code === "PGRST205") {
+        console.error("Signup failed: the profiles table is missing. Run supabase/schema.sql.");
+        return Response.json(
+          { error: "Accounts aren’t set up yet (database table missing)." },
+          { status: 500 },
+        );
+      }
+      throw profileError;
+    }
 
-    const setupIntent = await stripe.setupIntents.create(
-      {
-        customer: customer.id,
-        allowed_payment_method_types: ["card"],
-        usage: "off_session",
-        metadata: { supabase_user_id: user.id },
-      },
-      { idempotencyKey: `signup-setup-${user.id}` },
-    );
+    const setupIntent = await stripe.setupIntents.create({
+      customer: customer.id,
+      allowed_payment_method_types: ["card"],
+      usage: "off_session",
+      metadata: { supabase_user_id: user.id },
+    });
 
     return Response.json({
       clientSecret: setupIntent.client_secret,
