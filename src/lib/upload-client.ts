@@ -40,6 +40,33 @@ export function uploadToSignedUrl(
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const fileInfo = () => ({
+    fileType: file.type,
+    fileExt: file.name.split(".").pop()?.toLowerCase(),
+    sizeBytes: file.size,
+    online: navigator.onLine,
+  });
+  // Make sure the browser can still read the file before uploading (iOS can
+  // lose access to a picked video), so we can say what actually went wrong.
+  return file
+    .slice(0, 1)
+    .arrayBuffer()
+    .then(
+      () => send(file, upload, onProgress, fileInfo, signal),
+      () => {
+        reportUploadError({ kind: "unreadable", ...fileInfo() });
+        throw new UploadError("we lost access to that video. please pick it again.");
+      },
+    );
+}
+
+function send(
+  file: File,
+  upload: { url: string; headers: Record<string, string> },
+  onProgress: (percent: number) => void,
+  fileInfo: () => Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const startedAt = Date.now();
@@ -47,13 +74,10 @@ export function uploadToSignedUrl(
     const report = (kind: string) =>
       reportUploadError({
         kind,
+        ...fileInfo(),
         status: xhr.status,
-        fileType: file.type,
-        fileExt: file.name.split(".").pop()?.toLowerCase(),
-        sizeBytes: file.size,
         loadedBytes: loaded,
         elapsedMs: Date.now() - startedAt,
-        online: navigator.onLine,
       });
 
     xhr.open("PUT", upload.url);

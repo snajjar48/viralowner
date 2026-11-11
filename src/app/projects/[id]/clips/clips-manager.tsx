@@ -323,9 +323,12 @@ export function ClipsManager({
             accept="video/*"
             capture="environment"
             className="sr-only"
+            // Reset on open, not after picking (see DropZone: iOS drops the file).
+            onClick={(e) => {
+              e.currentTarget.value = "";
+            }}
             onChange={(e) => {
               const picked = Array.from(e.target.files ?? []);
-              e.target.value = "";
               if (picked.length) void addFiles(picked);
             }}
           />

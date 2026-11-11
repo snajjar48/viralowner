@@ -64,9 +64,14 @@ export function DropZone({
         multiple={multiple}
         disabled={disabled}
         className="sr-only"
+        // Reset when the picker opens (so the same file can be picked again),
+        // never right after picking: iOS Safari drops access to a Photos
+        // video once its input is cleared, and the upload dies instantly.
+        onClick={(e) => {
+          e.currentTarget.value = "";
+        }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          e.target.value = ""; // allow picking the same file again
           if (files.length) onFiles(files);
         }}
       />
