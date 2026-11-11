@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { listRenders } from "@/lib/projects";
+import { syncUnfinished } from "@/lib/renders";
 import { StatusTracker } from "./status-tracker";
 
 export const metadata: Metadata = {
@@ -29,7 +30,7 @@ export default function StatusPage({ params, searchParams }: PageProps<"/project
 
 async function Status({ id, renderId }: { id: string; renderId: string | null }) {
   const { userId } = await loadProject(id, `/projects/${id}/status`);
-  const renders = await listRenders(userId, id);
+  const renders = await syncUnfinished(id, await listRenders(userId, id));
   const render = renders.find((r) => r.id === renderId) ?? renders.at(-1);
   if (!render) redirect(`/projects/${id}/options`);
   if (render.status === "done") redirect(`/projects/${id}/preview?v=${render.version}`);

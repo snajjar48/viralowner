@@ -2,6 +2,7 @@ import "server-only";
 import { getJobStatus, startRender, type RenderSettings, type ShotEdit } from "./processing";
 import {
   createRender,
+  getActiveRender,
   getInspiration,
   listClips,
   setRenderJob,
@@ -160,6 +161,32 @@ export async function syncRender(projectId: string, render: Render): Promise<Ren
     postCopy: update.postCopy ?? render.postCopy,
     error: update.error ?? null,
   };
+}
+
+/**
+ * Renders only move forward when someone asks the engine about them, so a
+ * version whose status page was closed can look "in progress" long after it
+ * finished. Bring unfinished ones up to date before relying on their status.
+ */
+export async function syncUnfinished(projectId: string, renders: Render[]): Promise<Render[]> {
+  return Promise.all(
+    renders.map((r) =>
+      r.status === "queued" || r.status === "processing"
+        ? syncRender(projectId, r).catch((error) => {
+            console.error("Checking render failed:", error);
+            return r;
+          })
+        : r,
+    ),
+  );
+}
+
+/** The version still being made (after checking with the engine), or null. */
+export async function getStillActiveRender(projectId: string): Promise<Render | null> {
+  const active = await getActiveRender(projectId);
+  if (!active) return null;
+  const [synced] = await syncUnfinished(projectId, [active]);
+  return synced.status === "queued" || synced.status === "processing" ? synced : null;
 }
 
 export function settingsFor(options: VideoOptions, shots: ShotEdit[], seed = newSeed()): RenderSettings {

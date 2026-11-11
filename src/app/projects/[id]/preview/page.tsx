@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips, listRenders } from "@/lib/projects";
+import { syncUnfinished } from "@/lib/renders";
 import { createDownloadUrl } from "@/lib/storage";
 import { PreviewEditor } from "./preview-editor";
 
@@ -31,7 +32,7 @@ export default function PreviewPage({ params, searchParams }: PageProps<"/projec
 async function Preview({ id, version }: { id: string; version: number | null }) {
   const { userId } = await loadProject(id, `/projects/${id}/preview`);
   const [renders, clips, inspo] = await Promise.all([
-    listRenders(userId, id),
+    listRenders(userId, id).then((list) => syncUnfinished(id, list)),
     listClips(userId, id),
     getInspiration(userId, id),
   ]);

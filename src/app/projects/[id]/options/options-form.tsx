@@ -8,7 +8,7 @@ import { SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem } from "@/components/options-fields";
 import { ROLE_LABELS } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
-import { postJson, UploadError } from "@/lib/upload-client";
+import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import type { VideoOptions } from "@/lib/video-options";
 
 export interface OptionClip {
@@ -90,6 +90,9 @@ export function OptionsForm({
       });
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
+      // A version is genuinely still being made: show its progress.
+      const activeId = activeRenderIdFrom(e);
+      if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
       setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
       setMaking(false);
     }

@@ -10,7 +10,7 @@ import { OptionsFields, optionsProblem, Section } from "@/components/options-fie
 import { ROLE_LABELS } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
 import type { RenderSettings, Shot, ShotEdit } from "@/lib/processing/types";
-import { postJson, UploadError } from "@/lib/upload-client";
+import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration } from "@/lib/video-options";
 
 interface EditorClip {
@@ -84,6 +84,9 @@ export function PreviewEditor({
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, body);
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
+      // A version is genuinely still being made: show its progress.
+      const activeId = activeRenderIdFrom(e);
+      if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
       setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
       setBusy(null);
     }

@@ -135,3 +135,9 @@ export async function postJson<T>(url: string, body?: unknown): Promise<T> {
   }
   return data as T;
 }
+
+/** From a "version N is still being made" reply: that version's id, to show its progress instead. */
+export function activeRenderIdFrom(error: unknown): string | null {
+  const id = (error as { data?: { renderId?: unknown } } | null)?.data?.renderId;
+  return typeof id === "string" ? id : null;
+}

@@ -1,7 +1,7 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
-import { getActiveRender, listRenders, saveSettings } from "@/lib/projects";
+import { listRenders, saveSettings } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { newSeed, parseShotEdits, settingsFor, shotsFromAssignments, startNewRender } from "@/lib/renders";
+import { getStillActiveRender, newSeed, parseShotEdits, settingsFor, shotsFromAssignments, startNewRender } from "@/lib/renders";
 import { parseVideoOptions } from "@/lib/video-options";
 
 /**
@@ -15,7 +15,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     const body = await readJson(request);
     if (!body) return jsonError("invalid request.", 400);
 
-    const active = await getActiveRender(project.id);
+    const active = await getStillActiveRender(project.id);
     if (active) {
       return Response.json(
         { error: `version ${active.version} is still being made. wait for it to finish first.`, renderId: active.id },
