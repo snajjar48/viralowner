@@ -55,3 +55,18 @@ SELECT email, created_at FROM waitlist_signups ORDER BY created_at DESC;
 | `src/lib/mp4.ts` | Reads a video's real length from its MP4/MOV header (server-side validation) |
 | `src/lib/projects.ts` | Database access; every query is scoped to the signed-in user |
 | `db/migrations/0001_video_projects.sql` | `projects`, `inspirations`, `clips`, `renders` |
+
+## Processing worker (Modal)
+
+Video analysis and editing run on [Modal](https://modal.com) (`worker/app.py`),
+because they need ffmpeg and minutes of compute that Vercel functions don't
+allow. The site talks to it over HTTPS with a shared `WORKER_TOKEN`.
+
+| Task | Command |
+|---|---|
+| Save keys (Anthropic, R2 worker token) and the shared token | `bash scripts/setup-worker-secrets.sh` |
+| Deploy the worker | `npm run worker:deploy` (needs the `modal` CLI: `uv tool install --python 3.12 modal`) |
+| Check it end to end (health + a test job) | `npm run worker:check` |
+| Check the live site can reach it (logged in) | open `/api/worker-health` |
+
+Modal secrets: `viralowner-worker` (ANTHROPIC_API_KEY, R2_*), `viralowner-worker-auth` (WORKER_TOKEN).
