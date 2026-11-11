@@ -274,3 +274,80 @@ export async function failInspiration(projectId: string, error: string, duration
     sql`UPDATE projects SET status = 'draft', updated_at = now() WHERE id = ${projectId}`,
   ]);
 }
+
+// ---- Step 2: clips ---------------------------------------------------------
+
+export interface ClipUpload {
+  storageKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  durationS: number | null;
+}
+
+/** Adds a clip at the end, unless the project already has `max` clips. */
+export async function createClip(projectId: string, up: ClipUpload, max: number): Promise<Clip | null> {
+  const rows = await getSql()`
+    INSERT INTO clips (project_id, storage_key, file_name, content_type, size_bytes, duration_s, position, status)
+    SELECT ${projectId}, ${up.storageKey}, ${up.fileName}, ${up.contentType}, ${up.sizeBytes}, ${up.durationS},
+           COALESCE((SELECT max(position) + 1 FROM clips WHERE project_id = ${projectId}), 0), 'uploading'
+    WHERE (SELECT count(*) FROM clips WHERE project_id = ${projectId} AND status <> 'failed') < ${max}
+    RETURNING *`;
+  return rows[0] ? toClip(rows[0]) : null;
+}
+
+export async function getClip(projectId: string, clipId: string): Promise<Clip | null> {
+  if (!isUuid(clipId)) return null;
+  const rows = await getSql()`SELECT * FROM clips WHERE id = ${clipId} AND project_id = ${projectId}`;
+  return rows[0] ? toClip(rows[0]) : null;
+}
+
+export async function markClipUploaded(clipId: string, durationS: number, sizeBytes: number) {
+  await getSql()`
+    UPDATE clips SET status = 'uploaded', duration_s = ${durationS}, size_bytes = ${sizeBytes} WHERE id = ${clipId}`;
+}
+
+export async function markClipFailed(clipId: string) {
+  await getSql()`UPDATE clips SET status = 'failed', shot_index = NULL WHERE id = ${clipId}`;
+}
+
+/** Deletes a clip row; returns its storage key so the file can be deleted. */
+export async function deleteClip(projectId: string, clipId: string): Promise<string | null> {
+  if (!isUuid(clipId)) return null;
+  const rows = await getSql()`
+    DELETE FROM clips WHERE id = ${clipId} AND project_id = ${projectId} RETURNING storage_key`;
+  return (rows[0]?.storage_key as string | undefined) ?? null;
+}
+
+/** Saves a new clip order (ids not in the project are ignored). */
+export async function reorderClips(projectId: string, clipIds: string[]) {
+  await getSql()`
+    UPDATE clips SET position = o.pos
+    FROM unnest(${clipIds}::uuid[]) WITH ORDINALITY AS o(id, pos)
+    WHERE clips.id = o.id AND clips.project_id = ${projectId}`;
+}
+
+/** Puts a clip on a shot (one clip per shot), or takes it off (null). */
+export async function assignClip(projectId: string, clipId: string, shotIndex: number | null) {
+  const sql = getSql();
+  if (shotIndex === null) {
+    await sql`UPDATE clips SET shot_index = NULL WHERE id = ${clipId} AND project_id = ${projectId}`;
+    return;
+  }
+  await sql.transaction([
+    sql`UPDATE clips SET shot_index = NULL WHERE project_id = ${projectId} AND shot_index = ${shotIndex}`,
+    sql`UPDATE clips SET shot_index = ${shotIndex} WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`,
+  ]);
+}
+
+export async function confirmClipRights(projectId: string) {
+  await getSql()`
+    UPDATE projects SET clips_rights_confirmed_at = now(), updated_at = now() WHERE id = ${projectId}`;
+}
+
+// ---- Step 3: options ------------------------------------------------------
+
+export async function saveSettings(projectId: string, options: VideoOptions) {
+  await getSql()`
+    UPDATE projects SET settings = ${JSON.stringify(options)}::jsonb, updated_at = now() WHERE id = ${projectId}`;
+}
