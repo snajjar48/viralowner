@@ -62,7 +62,12 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         key={current.id}
         projectId={id}
         versions={done.map((r) => r.version)}
-        current={{ version: current.version, videoUrl, settings: current.settings }}
+        current={{
+          version: current.version,
+          videoUrl,
+          settings: current.settings,
+          shots: current.plan?.shots ?? current.settings.shots ?? [],
+        }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}
         shots={inspo.breakdown.shots}

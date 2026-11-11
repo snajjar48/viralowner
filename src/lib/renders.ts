@@ -1,5 +1,5 @@
 import "server-only";
-import { getJobStatus, startRender, type RenderSettings, type ShotEdit } from "./processing";
+import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit } from "./processing";
 import {
   createRender,
   getActiveRender,
@@ -62,10 +62,13 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
+type Extras = Pick<RenderInput, "reuseText" | "fresh">;
+
 export async function startNewRender(
   userId: string,
   project: Project,
   build: (ctx: { shotCount: number; clips: Clip[] }) => RenderSettings | Fail,
+  extras: Extras = {},
 ): Promise<{ render: Render } | Fail> {
   const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
   if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "your inspo isn’t analyzed yet." };
@@ -79,7 +82,7 @@ export async function startNewRender(
   if ("error" in settings) return settings;
 
   const render = await createRender(project.id, settings);
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings);
+  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, extras);
   return { render };
 }
 
@@ -91,6 +94,7 @@ export async function submit(
   breakdown: NonNullable<Awaited<ReturnType<typeof getInspiration>>>["breakdown"],
   clips: Clip[],
   settings: RenderSettings,
+  extras: Extras = {},
 ) {
   try {
     const { jobId } = await startRender({
@@ -106,6 +110,7 @@ export async function submit(
         shotIndex: c.shotIndex,
       })),
       settings,
+      ...extras,
     });
     await setRenderJob(projectId, render.id, jobId);
   } catch (error) {
@@ -147,6 +152,7 @@ export async function syncRender(projectId: string, render: Render): Promise<Ren
     progress: job.progress,
     storageKey: job.output?.storageKey,
     postCopy: job.output?.postCopy,
+    plan: job.output?.plan,
     error: job.state === "failed" ? (job.error ?? "something went wrong while making your video.") : undefined,
   } as const;
   if (status !== render.status || job.stage !== render.stage || job.progress !== render.progress) {
@@ -159,6 +165,7 @@ export async function syncRender(projectId: string, render: Render): Promise<Ren
     progress: job.progress,
     storageKey: update.storageKey ?? render.storageKey,
     postCopy: update.postCopy ?? render.postCopy,
+    plan: update.plan ?? render.plan,
     error: update.error ?? null,
   };
 }
@@ -187,6 +194,17 @@ export async function getStillActiveRender(projectId: string): Promise<Render | 
   if (!active) return null;
   const [synced] = await syncUnfinished(projectId, [active]);
   return synced.status === "queued" || synced.status === "processing" ? synced : null;
+}
+
+/**
+ * An edit that leaves the text options alone keeps the earlier version's
+ * words (on-screen text, caption, hashtags) instead of writing new ones.
+ */
+export function textToReuse(from: Render | undefined, options: VideoOptions): Extras["reuseText"] {
+  if (!from?.plan || !from.postCopy) return undefined;
+  if (JSON.stringify(from.settings.options.text) !== JSON.stringify(options.text)) return undefined;
+  const { texts, textPosition, textLook } = from.plan;
+  return { texts, textPosition, textLook, postCopy: from.postCopy };
 }
 
 export function settingsFor(options: VideoOptions, shots: ShotEdit[], seed = newSeed()): RenderSettings {

@@ -1,6 +1,6 @@
 import "server-only";
 import { getSql } from "./db";
-import type { Breakdown, RenderSettings, PostCopy, JobStage } from "./processing/types";
+import type { Breakdown, RenderSettings, PostCopy, JobStage, RenderPlan } from "./processing/types";
 import { optionsFromJson, type VideoOptions } from "./video-options";
 
 // Data access for the "create a video" flow. Every function takes the
@@ -49,6 +49,8 @@ export interface Render {
   progress: number;
   settings: RenderSettings;
   postCopy: PostCopy | null;
+  /** What the engine chose (clip and trim per shot, the words), once done. */
+  plan: RenderPlan | null;
   error: string | null;
   createdAt: string;
 }
@@ -97,7 +99,7 @@ function toClip(r: Row): Clip {
 }
 
 function toRender(r: Row): Render {
-  const result = r.result_json as { postCopy?: PostCopy } | null;
+  const result = r.result_json as { postCopy?: PostCopy; plan?: RenderPlan } | null;
   return {
     id: String(r.id),
     version: Number(r.version),
@@ -108,6 +110,7 @@ function toRender(r: Row): Render {
     progress: Number(r.progress),
     settings: r.settings as RenderSettings,
     postCopy: result?.postCopy ?? null,
+    plan: result?.plan ?? null,
     error: (r.error as string | null) ?? null,
     createdAt: iso(r.created_at)!,
   };
@@ -430,6 +433,7 @@ export interface RenderUpdate {
   progress: number;
   storageKey?: string;
   postCopy?: PostCopy;
+  plan?: RenderPlan;
   error?: string;
 }
 
@@ -445,7 +449,7 @@ export async function updateRender(projectId: string, renderId: string, u: Rende
     sql`UPDATE renders
         SET status = ${u.status}, stage = ${u.stage}, progress = ${u.progress},
             storage_key = COALESCE(${u.storageKey ?? null}, storage_key),
-            result_json = COALESCE(${u.postCopy ? JSON.stringify({ postCopy: u.postCopy }) : null}::jsonb, result_json),
+            result_json = COALESCE(${u.postCopy ? JSON.stringify({ postCopy: u.postCopy, plan: u.plan }) : null}::jsonb, result_json),
             error = ${u.error ?? null},
             completed_at = CASE WHEN ${finished} THEN now() ELSE NULL END,
             updated_at = now()

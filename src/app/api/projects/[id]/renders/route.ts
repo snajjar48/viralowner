@@ -1,13 +1,22 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { listRenders, saveSettings } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
-import { getStillActiveRender, newSeed, parseShotEdits, settingsFor, shotsFromAssignments, startNewRender } from "@/lib/renders";
+import {
+  getStillActiveRender,
+  newSeed,
+  parseShotEdits,
+  settingsFor,
+  shotsFromAssignments,
+  startNewRender,
+  textToReuse,
+} from "@/lib/renders";
 import { parseVideoOptions } from "@/lib/video-options";
 
 /**
  * Makes a new version of the video.
  *   { mode: "new", options }                 from step 3 (uses the step 2 assignments)
- *   { mode: "edit", options, shots }         from the preview editor
+ *   { mode: "edit", options, shots, fromVersion }  from the preview editor (keeps that
+ *                                            version's words if the text options didn't change)
  *   { mode: "regenerate", fromVersion }      a fresh take on an existing version
  */
 export async function POST(request: Request, ctx: RouteContext<"/api/projects/[id]/renders">) {
@@ -31,15 +40,24 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
       const options = parseVideoOptions(body.options);
       if ("error" in options) return jsonError(options.error, 400);
       if (body.mode === "new") await saveSettings(project.id, options);
-      result = await startNewRender(userId, project, ({ shotCount, clips }) => {
-        if (body.mode === "new") return settingsFor(options, shotsFromAssignments(shotCount, clips));
-        const shots = parseShotEdits(body.shots, shotCount, clips);
-        return "error" in shots ? shots : settingsFor(options, shots);
-      });
+      const from =
+        body.mode === "edit"
+          ? (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done")
+          : undefined;
+      result = await startNewRender(
+        userId,
+        project,
+        ({ shotCount, clips }) => {
+          if (body.mode === "new") return settingsFor(options, shotsFromAssignments(shotCount, clips));
+          const shots = parseShotEdits(body.shots, shotCount, clips);
+          return "error" in shots ? shots : settingsFor(options, shots);
+        },
+        { reuseText: textToReuse(from, options) },
+      );
     } else if (body.mode === "regenerate") {
       const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);
       if (!from) return jsonError("we couldn’t find that version.", 404);
-      result = await startNewRender(userId, project, () => ({ ...from.settings, seed: newSeed() }));
+      result = await startNewRender(userId, project, () => ({ ...from.settings, seed: newSeed() }), { fresh: true });
     } else {
       return jsonError("invalid request.", 400);
     }

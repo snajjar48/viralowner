@@ -50,7 +50,7 @@ SELECT email, created_at FROM waitlist_signups ORDER BY created_at DESC;
 
 | Path | Purpose |
 | --- | --- |
-| `src/lib/processing/` | **The processing engine interface** (`analyzeInspo`, `startRender`, `getJobStatus`). Currently a mock: fake shot lists, a ~20s simulated render, and one sample video (`assets/mock/mock-render.mp4`). Put `#fail` in the on-screen text option to test a failed render. |
+| `src/lib/processing/` | **The processing engine interface** (`startAnalysis`, `startRender`, `getJobStatus`…). `modal.ts` talks to the worker below. (`mock.ts` is the old stand-in engine, no longer used.) |
 | `src/lib/storage.ts` | Cloudflare R2 with short-lived signed URLs; video bytes never pass through Vercel |
 | `src/lib/mp4.ts` | Reads a video's real length from its MP4/MOV header (server-side validation) |
 | `src/lib/projects.ts` | Database access; every query is scoped to the signed-in user |
@@ -70,3 +70,23 @@ allow. The site talks to it over HTTPS with a shared `WORKER_TOKEN`.
 | Check the live site can reach it (logged in) | open `/api/worker-health` |
 
 Modal secrets: `viralowner-worker` (ANTHROPIC_API_KEY, R2_*), `viralowner-worker-auth` (WORKER_TOKEN).
+
+What it does:
+
+- **Inspo analysis**: cut detection (PySceneDetect), speech (faster-whisper), then
+  Claude reads frames from every shot and writes the breakdown.
+- **Rendering**: Claude picks a clip and moment for every shot and writes the
+  on-screen text, post caption and hashtags; ffmpeg cuts each shot to the inspo's
+  exact length at 1080×1920 (HDR footage is tone-mapped), joins them, and burns in
+  text and captions (ASS subtitles, Montserrat). Edits that keep the clips and
+  text skip Claude. The finished MP4 goes to R2 next to the project's other files.
+- The "pick a track" music option keeps the clips' audio until a licensed music
+  library is added.
+
+Try it from a laptop without the website:
+
+```bash
+modal run worker/app.py::try_analyze --path inspo.mp4
+modal run worker/app.py::try_render --inspo inspo.mp4 --clips a.mp4,b.mp4 --dest out.mp4 --captions karaoke
+modal run worker/app.py::download --key u/…/renders/v1-….mp4 --dest out.mp4
+```

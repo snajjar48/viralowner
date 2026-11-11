@@ -1,9 +1,19 @@
 import "server-only";
 import { WorkerError, workerFetch } from "../worker";
-import type { AnalysisStatus, Breakdown, ProcessingEngine, Shot, ShotRole } from "./types";
+import {
+  JOB_STAGES,
+  type AnalysisStatus,
+  type Breakdown,
+  type JobStage,
+  type JobStatus,
+  type ProcessingEngine,
+  type RenderOutput,
+  type RenderPlan,
+  type Shot,
+  type ShotRole,
+} from "./types";
 
 // The real engine: the processing worker on Modal (worker/app.py).
-// Analysis is real; rendering joins in phase C.
 
 interface WorkerJob {
   state: "queued" | "processing" | "done" | "failed";
@@ -58,9 +68,53 @@ export function parseBreakdown(raw: unknown): Breakdown | null {
   };
 }
 
-const LOST = "we lost track of this analysis. please try again.";
+const POSITIONS = ["top", "middle", "bottom"] as const;
+const LOOKS = ["outline", "box", "plain"] as const;
 
-export const modalEngine: Pick<ProcessingEngine, "startAnalysis" | "getAnalysisStatus"> = {
+/** Checks a finished render's output. The plan is optional (the video is what matters). */
+export function parseRenderOutput(raw: unknown): RenderOutput | null {
+  const o = raw as Partial<RenderOutput> | null;
+  if (!o || typeof o.storageKey !== "string" || !o.storageKey.startsWith("u/") || !isNum(o.durationS)) return null;
+  const copy = o.postCopy;
+  return {
+    storageKey: o.storageKey,
+    width: isNum(o.width) ? o.width : 1080,
+    height: isNum(o.height) ? o.height : 1920,
+    durationS: o.durationS,
+    postCopy: {
+      caption: str(copy?.caption),
+      hashtags: Array.isArray(copy?.hashtags) ? copy.hashtags.map(str).filter(Boolean).slice(0, 10) : [],
+    },
+    plan: parsePlan(o.plan),
+  };
+}
+
+function parsePlan(raw: unknown): RenderPlan | undefined {
+  const p = raw as Partial<RenderPlan> | null;
+  if (!p || !Array.isArray(p.shots) || !Array.isArray(p.texts)) return undefined;
+  const shots = p.shots.map((s, i) => ({
+    shotIndex: i,
+    clipId: typeof s?.clipId === "string" ? s.clipId : null,
+    trimStartS: isNum(s?.trimStartS) ? Math.round(s.trimStartS * 10) / 10 : null,
+    trimEndS: isNum(s?.trimEndS) ? Math.round(s.trimEndS * 10) / 10 : null,
+  }));
+  return {
+    shots,
+    texts: p.texts.map(str),
+    textPosition: POSITIONS.includes(p.textPosition as never) ? p.textPosition! : "top",
+    textLook: LOOKS.includes(p.textLook as never) ? p.textLook! : "outline",
+  };
+}
+
+/** Where a render's MP4 goes: next to the inspo, in the same user's project folder. */
+function outputKeyFor(inspoKey: string, version: number, renderId: string) {
+  return `${inspoKey.slice(0, inspoKey.lastIndexOf("/") + 1)}renders/v${version}-${renderId}.mp4`;
+}
+
+const LOST = "we lost track of this analysis. please try again.";
+const LOST_RENDER = "we lost track of this video. please try again.";
+
+export const modalEngine: ProcessingEngine = {
   async startAnalysis({ storageKey }) {
     return workerFetch<{ jobId: string }>("/jobs/analyze", { method: "POST", body: { storageKey }, timeoutMs: 30_000 });
   },
@@ -84,5 +138,44 @@ export const modalEngine: Pick<ProcessingEngine, "startAnalysis" | "getAnalysisS
       return { state: "done", step: null, progress: 100, breakdown };
     }
     return { state: job.state, step: job.stage, progress: job.progress, error: job.error };
+  },
+
+  async startRender(input) {
+    return workerFetch<{ jobId: string }>("/jobs/render", {
+      method: "POST",
+      timeoutMs: 30_000,
+      body: {
+        outputKey: outputKeyFor(input.inspo.storageKey, input.version, input.renderId),
+        inspo: input.inspo,
+        clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey })),
+        shots: input.settings.shots,
+        options: input.settings.options,
+        reuse: input.reuseText ?? null,
+        fresh: !!input.fresh,
+      },
+    });
+  },
+
+  async getJobStatus(jobId): Promise<JobStatus> {
+    let job: WorkerJob;
+    try {
+      job = await workerFetch<WorkerJob>(`/jobs/${encodeURIComponent(jobId)}`);
+    } catch (error) {
+      if (error instanceof WorkerError && error.status === 404) {
+        return { state: "failed", stage: null, progress: 0, error: LOST_RENDER };
+      }
+      throw error;
+    }
+    const stage = JOB_STAGES.includes(job.stage as JobStage) ? (job.stage as JobStage) : null;
+    if (job.state === "done") {
+      const output = parseRenderOutput(job.output);
+      if (!output) {
+        console.error("Worker returned an unusable render for job", jobId);
+        return { state: "failed", stage: null, progress: 0, error: "something went wrong while making your video. please try again." };
+      }
+      return { state: "done", stage: "finishing", progress: 100, output };
+    }
+    if (job.state === "failed") return { state: "failed", stage, progress: job.progress, error: job.error };
+    return { state: job.state, stage, progress: job.progress };
   },
 };

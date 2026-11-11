@@ -80,6 +80,15 @@ export interface RenderSettings {
   seed: number;
 }
 
+/** The words chosen for a version, reused by later versions that don't change the text options. */
+export interface RenderText {
+  /** On-screen text per shot ("" for none). */
+  texts: string[];
+  textPosition: "top" | "middle" | "bottom";
+  textLook: "outline" | "box" | "plain";
+  postCopy: PostCopy;
+}
+
 export interface RenderInput {
   projectId: string;
   renderId: string;
@@ -87,6 +96,10 @@ export interface RenderInput {
   inspo: { storageKey: string; breakdown: Breakdown };
   clips: { id: string; storageKey: string; durationS: number; position: number; shotIndex: number | null }[];
   settings: RenderSettings;
+  /** Keep an earlier version's words instead of writing new ones. */
+  reuseText?: RenderText;
+  /** "regenerate": ask for different choices than last time. */
+  fresh?: boolean;
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";
@@ -104,6 +117,12 @@ export interface RenderOutput {
   height: number;
   durationS: number;
   postCopy: PostCopy;
+  /** What the engine actually chose: a clip and trim for every shot, and the words. */
+  plan?: RenderPlan;
+}
+
+export interface RenderPlan extends Omit<RenderText, "postCopy"> {
+  shots: ShotEdit[];
 }
 
 export interface JobStatus {

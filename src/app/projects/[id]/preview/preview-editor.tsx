@@ -34,7 +34,8 @@ export function PreviewEditor({
 }: {
   projectId: string;
   versions: number[];
-  current: { version: number; videoUrl: string; settings: RenderSettings };
+  /** `shots`: what this version actually used (the engine's picks filled in). */
+  current: { version: number; videoUrl: string; settings: RenderSettings; shots: ShotEdit[] };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
   shots: Shot[];
@@ -44,7 +45,7 @@ export function PreviewEditor({
   const clipIds = new Set(clips.map((c) => c.id));
   const initialShots: ShotEdit[] = shots.map(
     (s) =>
-      current.settings.shots?.find((e) => e.shotIndex === s.index && (!e.clipId || clipIds.has(e.clipId))) ?? {
+      current.shots.find((e) => e.shotIndex === s.index && (!e.clipId || clipIds.has(e.clipId))) ?? {
         shotIndex: s.index,
         clipId: null,
         trimStartS: null,
@@ -79,7 +80,7 @@ export function PreviewEditor({
     try {
       const body =
         kind === "apply"
-          ? { mode: "edit", options, shots: shotEdits }
+          ? { mode: "edit", options, shots: shotEdits, fromVersion: current.version }
           : { mode: "regenerate", fromVersion: current.version };
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, body);
       router.push(`/projects/${projectId}/status?render=${renderId}`);
