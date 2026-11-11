@@ -30,6 +30,36 @@ export interface TranscriptSegment {
   words?: { w: string; s: number; e: number }[];
 }
 
+/** How a text overlay looks (worker/app.py: DEFAULT_TEXT_STYLE). */
+export interface TextStyle {
+  font: string;
+  color: string;
+  outline: "none" | "thin" | "thick";
+  outlineColor: string;
+  box: boolean;
+  boxColor: string;
+  shadow: boolean;
+  align: "left" | "center" | "right";
+  size: "small" | "medium" | "large" | "xl";
+  animation: string;
+  /** Capital-letter height as a fraction of the frame height (overrides `size`). */
+  letterHeight?: number;
+}
+
+/** How the inspo is edited, so renders can copy it. */
+export interface InspoStyle {
+  /** The transition into shot i + 1 ("cut", "crossfade", "flash"...). */
+  transitions: string[];
+  /** Per shot: "none", "slow_zoom_in", "punch_in", "shake"... */
+  motions: string[];
+  colorFilter: string;
+  text: TextStyle;
+  /** Per shot: where its overlaid text sits ([x, y], fractions of the frame), or null. */
+  textSpots: ([number, number] | null)[];
+  /** Per shot: the overlaid text exactly as shown, with its line breaks. */
+  textLines?: (string | null)[];
+}
+
 export interface Breakdown {
   durationS: number;
   shotCount: number;
@@ -42,6 +72,8 @@ export interface Breakdown {
   /** The video as a whole (real analysis only). */
   insights?: { hook: string; structure: string; whyItWorks: string[]; audio: string };
   transcript?: { language: string | null; segments: TranscriptSegment[] };
+  /** The inspo's editing style (transitions, effects, text look). Missing on older analyses. */
+  style?: InspoStyle;
   /** Internal: which engine/model made this and what it cost. Never shown to users. */
   meta?: { engine: string; model: string; costUsd: number; frames: number; seconds: number };
 }
@@ -91,8 +123,12 @@ export interface RenderText {
   textLook: "outline" | "box" | "plain";
   postCopy: PostCopy;
   /** Positions asked for per shot (vertical center, 0–1; null = automatic) and sizes (1 = standard). */
+  textXs?: (number | null)[];
   textYs?: (number | null)[];
   captionYs?: (number | null)[];
+  textStyle?: TextStyle;
+  /** The words are the user's own lines: draw them exactly as typed. */
+  keepLines?: boolean;
   textScale?: number;
   captionScale?: number;
 }
@@ -130,6 +166,8 @@ export interface RenderOutput {
   postCopy: PostCopy;
   /** What the engine actually chose: a clip and trim for every shot, and the words. */
   plan?: RenderPlan;
+  /** The inspo's style, when this render had to work it out (older analyses); saved to the breakdown. */
+  inspoStyle?: InspoStyle;
 }
 
 export interface RenderPlan extends Omit<RenderText, "postCopy"> {

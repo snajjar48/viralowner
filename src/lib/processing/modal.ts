@@ -4,6 +4,8 @@ import {
   JOB_STAGES,
   type AnalysisStatus,
   type Breakdown,
+  type InspoStyle,
+  type TextStyle,
   type JobStage,
   type JobStatus,
   type ProcessingEngine,
@@ -64,8 +66,15 @@ export function parseBreakdown(raw: unknown): Breakdown | null {
         }
       : undefined,
     transcript: b.transcript,
+    style: isStyle(b.style) ? b.style : undefined,
     meta: b.meta,
   };
+}
+
+/** The worker checks every value; here we only make sure the shape is there. */
+function isStyle(v: unknown): v is InspoStyle {
+  const st = v as Partial<InspoStyle> | null;
+  return !!st && Array.isArray(st.transitions) && Array.isArray(st.motions) && !!st.text && Array.isArray(st.textSpots);
 }
 
 const POSITIONS = ["top", "middle", "bottom"] as const;
@@ -86,6 +95,7 @@ export function parseRenderOutput(raw: unknown): RenderOutput | null {
       hashtags: Array.isArray(copy?.hashtags) ? copy.hashtags.map(str).filter(Boolean).slice(0, 10) : [],
     },
     plan: parsePlan(o.plan),
+    inspoStyle: isStyle((o as { inspoStyle?: unknown }).inspoStyle) ? (o as { inspoStyle: InspoStyle }).inspoStyle : undefined,
   };
 }
 
@@ -106,7 +116,10 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     texts: p.texts.map(str),
     textPosition: POSITIONS.includes(p.textPosition as never) ? p.textPosition! : "top",
     textLook: LOOKS.includes(p.textLook as never) ? p.textLook! : "outline",
+    textXs: ys(p.textXs),
     textYs: ys(p.textYs),
+    textStyle: p.textStyle && typeof p.textStyle === "object" ? (p.textStyle as TextStyle) : undefined,
+    keepLines: !!p.keepLines,
     captionYs: ys(p.captionYs),
     textScale: scale(p.textScale),
     captionScale: scale(p.captionScale),

@@ -1,6 +1,6 @@
 import "server-only";
 import { getSql } from "./db";
-import type { Breakdown, RenderSettings, PostCopy, JobStage, RenderPlan } from "./processing/types";
+import type { Breakdown, InspoStyle, RenderSettings, PostCopy, JobStage, RenderPlan } from "./processing/types";
 import { optionsFromJson, type VideoOptions } from "./video-options";
 
 // Data access for the "create a video" flow. Every function takes the
@@ -460,4 +460,12 @@ export async function updateRender(projectId: string, renderId: string, u: Rende
           AND (SELECT max(version) FROM renders WHERE project_id = ${projectId})
               = (SELECT version FROM renders WHERE id = ${renderId})`,
   ]);
+}
+
+/** Adds the inspo's editing style to a breakdown made before style analysis existed. */
+export async function saveInspoStyle(projectId: string, style: InspoStyle) {
+  await getSql()`
+    UPDATE inspirations
+    SET breakdown_json = jsonb_set(breakdown_json, '{style}', ${JSON.stringify(style)}::jsonb), updated_at = now()
+    WHERE project_id = ${projectId} AND breakdown_json IS NOT NULL AND NOT (breakdown_json ? 'style')`;
 }

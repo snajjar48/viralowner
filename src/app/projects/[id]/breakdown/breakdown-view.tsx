@@ -4,8 +4,57 @@ import { buttonClass } from "@/components/form";
 import { ArrowRightIcon, SparkleIcon } from "@/components/icons";
 import { ShotList } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
-import type { Breakdown } from "@/lib/processing/types";
+import type { Breakdown, InspoStyle } from "@/lib/processing/types";
 import { formatDuration } from "@/lib/video-options";
+
+const TRANSITION_NAMES: Record<string, string> = {
+  crossfade: "crossfade",
+  flash: "flash",
+  dip_to_black: "fade to black",
+  whip: "whip",
+  slide: "slide",
+  slide_up: "slide up",
+  zoom: "zoom",
+  glitch: "glitch",
+  wipe: "wipe",
+};
+const MOTION_NAMES: Record<string, string> = {
+  slow_zoom_in: "slow zoom in",
+  slow_zoom_out: "slow zoom out",
+  punch_in: "punch-in",
+  shake: "shake",
+};
+const FONT_NAMES: Record<string, string> = {
+  clean_sans: "clean sans",
+  heavy_sans: "heavy sans",
+  condensed: "tall bold",
+  tall_caps: "tall capitals",
+  serif: "serif",
+  typewriter: "typewriter",
+  marker: "marker",
+  script: "script",
+  rounded: "rounded",
+};
+
+function countList(values: string[], names: Record<string, string>) {
+  const counts = new Map<string, number>();
+  for (const v of values) if (names[v]) counts.set(names[v], (counts.get(names[v]) ?? 0) + 1);
+  return [...counts].map(([name, n]) => (n > 1 ? `${n} ${name}s` : name)).join(", ");
+}
+
+/** What the render will copy from the inspo, in plain words. */
+function styleStats(st: InspoStyle) {
+  const t = st.text;
+  return [
+    { label: "transitions", value: countList(st.transitions, TRANSITION_NAMES) || "hard cuts" },
+    { label: "effects", value: countList(st.motions, MOTION_NAMES) || "none" },
+    { label: "color", value: st.colorFilter === "none" ? "natural" : st.colorFilter.replaceAll("_", " ") },
+    {
+      label: "text look",
+      value: `${FONT_NAMES[t.font] ?? "sans"}, ${t.align}${t.animation !== "none" ? `, ${t.animation.replaceAll("_", " ")} in` : ""}`,
+    },
+  ];
+}
 
 /** The finished breakdown: summary, why it works, and the shot list. */
 export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId: string; breakdown: Breakdown; videoUrl: string }) {
@@ -77,6 +126,22 @@ export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId
                 <dd>{b.insights.audio}</dd>
               </div>
             )}
+          </dl>
+        </section>
+      )}
+
+      {b.style && (
+        <section aria-labelledby="style-heading" className="flex flex-col gap-3">
+          <h2 id="style-heading" className="text-lg font-medium">
+            editing style we’ll copy
+          </h2>
+          <dl className="grid grid-cols-2 gap-2">
+            {styleStats(b.style).map((st) => (
+              <div key={st.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                <dt className="text-xs text-muted">{st.label}</dt>
+                <dd className="text-sm font-medium">{st.value}</dd>
+              </div>
+            ))}
           </dl>
         </section>
       )}

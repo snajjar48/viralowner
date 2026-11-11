@@ -1,12 +1,15 @@
 // Step 3 options. Client-safe: used by the options page and validated on the
 // server with parseVideoOptions before anything is saved or rendered.
 
-export type TextMode = "match" | "custom";
+/** match: the inspo's own words, style and placement. adapt: its style and placement, words about
+ * the user's business. custom: the user's own lines, exactly as typed. */
+export type TextMode = "match" | "adapt" | "custom";
+export type TextAlign = "inspo" | "left" | "center" | "right";
 export type MusicMode = "track" | "original" | "inspo" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "boxed" | "karaoke";
 
 export interface VideoOptions {
-  text: { mode: TextMode; custom: string };
+  text: { mode: TextMode; custom: string; align: TextAlign };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; trackId: string | null; inspoAudioConfirmed: boolean };
   captions: { enabled: boolean; style: CaptionStyleId };
@@ -20,7 +23,7 @@ export const NOTES_MAX = 500;
 export const REQUEST_MAX = 500;
 
 export const DEFAULT_OPTIONS: VideoOptions = {
-  text: { mode: "match", custom: "" },
+  text: { mode: "match", custom: "", align: "inspo" },
   music: { mode: "original", trackId: null, inspoAudioConfirmed: false },
   captions: { enabled: true, style: "bold-pop" },
   notes: "",
@@ -59,7 +62,8 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
   { id: "karaoke", name: "highlight", description: "each word lights up as it's spoken" },
 ];
 
-const TEXT_MODES: TextMode[] = ["match", "custom"];
+const TEXT_MODES: TextMode[] = ["match", "adapt", "custom"];
+const TEXT_ALIGNS: TextAlign[] = ["inspo", "left", "center", "right"];
 const MUSIC_MODES: MusicMode[] = ["track", "original", "inspo", "none"];
 const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
 const TRACK_IDS = new Set(TRACKS.map((t) => t.id));
@@ -81,7 +85,16 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   const music = obj(raw.music);
   const captions = obj(raw.captions);
 
-  const custom = typeof text.custom === "string" ? text.custom.trim() : "";
+  // Keep the user's line breaks: each line they type is its own line on screen.
+  const custom =
+    typeof text.custom === "string"
+      ? text.custom
+          .replace(/\r/g, "")
+          .split("\n")
+          .map((line) => line.trim())
+          .join("\n")
+          .trim()
+      : "";
   if (custom.length > TEXT_MAX) {
     return { error: `on-screen text can be up to ${TEXT_MAX} characters.` };
   }
@@ -103,7 +116,11 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   if (musicMode === "inspo" && !inspoAudioConfirmed) return { error: INSPO_AUDIO_CONFIRM_ERROR };
 
   return {
-    text: { mode: textMode === "custom" && custom ? "custom" : "match", custom },
+    text: {
+      mode: textMode === "custom" && !custom ? "match" : textMode,
+      custom,
+      align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
+    },
     music: {
       mode: musicMode,
       trackId: musicMode === "track" ? trackId : null,

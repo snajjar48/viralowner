@@ -51,10 +51,29 @@ def _download_whisper() -> None:
 
 app = modal.App(APP_NAME)
 
+# Free fonts (SIL Open Font License / Apache) covering the looks short-form videos use.
+FONT_FILES = {
+    "Anton-Regular.ttf": "ofl/anton/Anton-Regular.ttf",
+    "BebasNeue-Regular.ttf": "ofl/bebasneue/BebasNeue-Regular.ttf",
+    "ArchivoBlack-Regular.ttf": "ofl/archivoblack/ArchivoBlack-Regular.ttf",
+    "DMSerifDisplay-Regular.ttf": "ofl/dmserifdisplay/DMSerifDisplay-Regular.ttf",
+    "CourierPrime-Bold.ttf": "ofl/courierprime/CourierPrime-Bold.ttf",
+    "PermanentMarker-Regular.ttf": "apache/permanentmarker/PermanentMarker-Regular.ttf",
+    "Pacifico-Regular.ttf": "ofl/pacifico/Pacifico-Regular.ttf",
+    "LilitaOne-Regular.ttf": "ofl/lilitaone/LilitaOne-Regular.ttf",
+}
+EXTRA_FONT_DIR = "/usr/share/fonts/truetype/viralowner"
+
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("ffmpeg", "fonts-montserrat", "libgl1", "libglib2.0-0")
-    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper")
+    .apt_install("ffmpeg", "fonts-montserrat", "fontconfig", "curl", "libgl1", "libglib2.0-0")
+    .run_commands(
+        f"mkdir -p {EXTRA_FONT_DIR}",
+        *[f"curl -fsSL -o {EXTRA_FONT_DIR}/{name} https://raw.githubusercontent.com/google/fonts/main/{src}"
+          for name, src in FONT_FILES.items()],
+        "fc-cache -f",
+    )
+    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper", "pillow")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
 )
 
@@ -380,6 +399,178 @@ def analyze_path(path: Path) -> dict:
     return json.loads(json.dumps(breakdown, default=float))
 
 
+def add_style(path: Path, breakdown: dict) -> dict:
+    """Adds the inspo's look to a breakdown. A failure here never fails the analysis."""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            style, cost = analyze_style(path, breakdown["shots"], Path(tmp))
+        breakdown["style"] = style
+        breakdown["meta"]["costUsd"] = round(breakdown["meta"]["costUsd"] + cost, 4)
+    except Exception as e:  # noqa: BLE001
+        print(f"style analysis failed: {type(e).__name__}: {e}")
+    return breakdown
+
+
+# ---------------------------------------------------------------- the inspo's look
+#
+# How the inspo is edited, so renders can copy it: the transition into each
+# shot, camera-style motion, color filter, and the overlaid text's font,
+# colors, size, alignment, animation and placement.
+
+TRANSITIONS = ["cut", "crossfade", "flash", "dip_to_black", "whip", "slide", "slide_up", "zoom", "glitch", "wipe"]
+MOTIONS = ["none", "slow_zoom_in", "slow_zoom_out", "punch_in", "shake"]
+COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
+# font key -> (family, bold, rough character width as a fraction of the font size)
+FONTS = {
+    "clean_sans": ("Montserrat", True, 0.60),
+    "heavy_sans": ("Archivo Black", False, 0.66),
+    "condensed": ("Anton", False, 0.46),
+    "tall_caps": ("Bebas Neue", False, 0.42),
+    "serif": ("DM Serif Display", False, 0.55),
+    "typewriter": ("Courier Prime", True, 0.62),
+    "marker": ("Permanent Marker", False, 0.60),
+    "script": ("Pacifico", False, 0.58),
+    "rounded": ("Lilita One", False, 0.52),
+}
+TEXT_ALIGNS = ["left", "center", "right"]
+# Height of a capital letter, as a fraction of the frame height, for each size name.
+TEXT_SIZES = {"small": 0.028, "medium": 0.038, "large": 0.052, "xl": 0.075}
+TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"]
+DEFAULT_TEXT_STYLE = {
+    "font": "clean_sans", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False,
+    "boxColor": "#FFFFFF", "shadow": False, "align": "center", "size": "large", "animation": "none",
+}
+
+STYLE_SYSTEM = """You study how a viral short-form video (TikTok, Reels, Shorts) is edited, so ViralOwner can rebuild the same look with someone else's footage.
+
+You get, for every shot: a frame from the middle of the shot, and a strip of 8 frames 0.1s apart starting 0.25s before the cut into it (for shot 1: the first 0.8s), read left to right.
+
+Describe only what the frames clearly show:
+- transition_in: how the video gets into this shot. most short-form cuts are hard cuts ('cut'); only report another transition when the strip clearly shows it (frames blending = crossfade, a white frame = flash, a black frame = dip_to_black, motion blur sweeping sideways = whip, the new shot pushing in from a side = slide or slide_up, a zoom blur = zoom, digital distortion = glitch, a hard edge sweeping across = wipe). shot 1 is always 'cut'.
+- motion: an edit effect moving the whole frame (slow zoom, a quick punch-in, shake). 'none' for normal handheld or static footage.
+- color_filter: an obvious grade on the whole video, otherwise 'none'.
+- text: the overlaid text (titles, labels, hooks), not burned-in speech captions. pick the closest font: clean_sans (geometric sans like tiktok's classic), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact/anton), tall_caps (thin tall capitals, like bebas), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful). colors as #RRGGBB. box = the text sits on a solid shape. size: small (a label), medium, large (a headline), xl (fills the width). animation: how text appears (pop = scales up, typewriter = letter by letter, word_by_word, fade, slide_up), 'none' if it's just there. if the video has no overlaid text, describe a clean default (clean_sans, white, thick black outline, centered, large, none).
+- text_x / text_y per shot: where that shot's overlaid text sits, as fractions of the frame (0 = left/top, 1 = right/bottom). text_x is the left edge for left-aligned text, the center for centered text, the right edge for right-aligned text; text_y is the vertical center of the whole text block. -1 for both when the shot has no overlaid text."""
+
+COLOR_RE = r"^#[0-9A-Fa-f]{6}$"
+
+STYLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "shots": {
+            "type": "array",
+            "description": "one entry per shot, in order.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "the shot number, starting at 1."},
+                    "transition_in": {"type": "string", "enum": TRANSITIONS},
+                    "motion": {"type": "string", "enum": MOTIONS},
+                    "text_x": {"type": "number"},
+                    "text_y": {"type": "number"},
+                    "text_lines": {
+                        "type": "string",
+                        "description": "the overlaid text exactly as shown, with \\n where its lines break. empty if none.",
+                    },
+                },
+                "required": ["index", "transition_in", "motion", "text_x", "text_y", "text_lines"],
+                "additionalProperties": False,
+            },
+        },
+        "color_filter": {"type": "string", "enum": COLOR_FILTERS},
+        "text": {
+            "type": "object",
+            "properties": {
+                "font": {"type": "string", "enum": list(FONTS)},
+                "color": {"type": "string", "description": "#RRGGBB"},
+                "outline": {"type": "string", "enum": ["none", "thin", "thick"]},
+                "outline_color": {"type": "string", "description": "#RRGGBB"},
+                "box": {"type": "boolean"},
+                "box_color": {"type": "string", "description": "#RRGGBB"},
+                "shadow": {"type": "boolean"},
+                "align": {"type": "string", "enum": TEXT_ALIGNS},
+                "size": {"type": "string", "enum": list(TEXT_SIZES)},
+                "letter_height": {
+                    "type": "number",
+                    "description": "height of a capital letter as a fraction of the frame height (about 0.03 for a small label, 0.06 for a headline, 0.1 for huge text).",
+                },
+                "animation": {"type": "string", "enum": TEXT_ANIMATIONS},
+            },
+            "required": ["font", "color", "outline", "outline_color", "box", "box_color", "shadow", "align", "size",
+                         "letter_height", "animation"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["shots", "color_filter", "text"],
+    "additionalProperties": False,
+}
+
+
+def cut_strip(path: Path, t: float, dest: Path) -> Path | None:
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-t", "0.8", "-i", str(path),
+         "-vf", "fps=10,scale=144:-2,tile=8x1", "-frames:v", "1", "-q:v", "5", str(dest)],
+        capture_output=True,
+    )
+    return dest if dest.exists() and dest.stat().st_size > 0 else None
+
+
+def clean_style(data: dict, n: int) -> dict:
+    """Claude's answer as the breakdown's `style` (camelCase, every value checked)."""
+    import re
+
+    by_index = {s["index"]: s for s in data.get("shots", [])}
+    t = data.get("text") or {}
+    color = lambda v, d: v.upper() if isinstance(v, str) and re.match(COLOR_RE, v) else d  # noqa: E731
+    pick = lambda v, options, d: v if v in options else d  # noqa: E731
+    spots = []
+    for i in range(n):
+        x, y = (by_index.get(i + 1) or {}).get("text_x", -1), (by_index.get(i + 1) or {}).get("text_y", -1)
+        ok = isinstance(x, (int, float)) and isinstance(y, (int, float)) and 0 <= x <= 1 and 0 <= y <= 1
+        spots.append([r2(x), r2(y)] if ok else None)
+    return {
+        "transitions": [pick((by_index.get(i + 2) or {}).get("transition_in"), TRANSITIONS, "cut") for i in range(n - 1)],
+        "motions": [pick((by_index.get(i + 1) or {}).get("motion"), MOTIONS, "none") for i in range(n)],
+        "colorFilter": pick(data.get("color_filter"), COLOR_FILTERS, "none"),
+        "text": {
+            "font": pick(t.get("font"), FONTS, "clean_sans"),
+            "color": color(t.get("color"), "#FFFFFF"),
+            "outline": pick(t.get("outline"), ["none", "thin", "thick"], "thick"),
+            "outlineColor": color(t.get("outline_color"), "#000000"),
+            "box": bool(t.get("box")),
+            "boxColor": color(t.get("box_color"), "#FFFFFF"),
+            "shadow": bool(t.get("shadow")),
+            "align": pick(t.get("align"), TEXT_ALIGNS, "center"),
+            "size": pick(t.get("size"), TEXT_SIZES, "large"),
+            "animation": pick(t.get("animation"), TEXT_ANIMATIONS, "none"),
+            **({"letterHeight": r2(min(0.15, max(0.015, float(t["letter_height"]))))}
+               if isinstance(t.get("letter_height"), (int, float)) and t["letter_height"] > 0 else {}),
+        },
+        "textSpots": spots,
+        "textLines": [((by_index.get(i + 1) or {}).get("text_lines") or "").strip() or None for i in range(n)],
+    }
+
+
+def analyze_style(path: Path, shots: list[dict], workdir: Path) -> tuple[dict, float]:
+    """The inspo's look (see STYLE_SYSTEM). `shots` are breakdown shots. Returns (style, cost)."""
+    content: list[dict] = [{"type": "text", "text": f"the video has {len(shots)} shots."}]
+    for i, s in enumerate(shots):
+        a, d = s["startS"], s["durationS"]
+        text = s.get("onScreenText")
+        content.append({"type": "text", "text": (
+            f"shot {i + 1}: {a:.1f}s–{a + d:.1f}s. overlaid text: {json.dumps(text, ensure_ascii=False) if text else 'none'}"
+        )})
+        mid = grab_frame(path, a + d / 2, workdir / f"style_mid{i:02d}.jpg", FRAME_WIDTH)
+        strip = cut_strip(path, a - 0.25 if i else 0.0, workdir / f"style_cut{i:02d}.jpg")
+        for p in (mid, strip):
+            if p:
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+    content.append({"type": "text", "text": f"describe all {len(shots)} shots and the text style."})
+    result = ask_claude(STYLE_SYSTEM, content, STYLE_SCHEMA, "we couldn’t read that video’s style.")
+    print(f"style: ${result['cost_usd']}, usage={result['usage']}")
+    return clean_style(result["data"], len(shots)), result["cost_usd"]
+
+
 # ---------------------------------------------------------------- rendering
 #
 # A render takes the inspo's breakdown and the user's clips and makes a
@@ -405,20 +596,19 @@ You get the inspo's shot list with one frame from each shot, then frames sampled
 
 Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Use different clips, or at least different moments, for different shots. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
 
-Writing: everything is about the user's business or topic, as their clips show it. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
+Writing: everything is about the user's business or topic, as their clips show it. The video will be posted on TikTok and Instagram, whose buttons and captions cover the top, bottom and right edge of the screen; the app places the text in the safe area, so keep on-screen text short enough to fit there. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
 
 TEXT_RULES = {
-    "match": (
+    "adapt": (
         "on-screen text: write the user's version of the inspo's overlaid text for each shot where the inspo has text: "
         "same format, rhythm, tone and roughly the same length (if the inspo says 'pov: you finally...', write a pov line "
-        "about what the user's clips show). give an empty string for shots where the inspo has no text. if the same text "
-        "stays on screen across several inspo shots, repeat it for each of those shots."
+        "about what the user's clips show), with the same number of lines: put \\n where the inspo's lines break. "
+        "give an empty string for shots where the inspo has no "
+        "text. if the same text stays on screen across several inspo shots, repeat it for each of those shots."
     ),
-    "custom": (
-        "on-screen text: the user wrote their own text (below). use their exact words, in order, without adding, removing "
-        "or changing any. split it into short pieces and spread them over the shots where the inspo has text, or over "
-        "the first shots if the inspo has none. give an empty string for every other shot."
-    ),
+    # The words are set without Claude for these: the inspo's exact text, the user's own lines, or kept.
+    "exact": "on-screen text: copied from the inspo word for word. return an empty string for every shot.",
+    "custom": "on-screen text: the user wrote it already. return an empty string for every shot.",
     "keep": "on-screen text: already written. return an empty string for every shot.",
 }
 
@@ -440,16 +630,6 @@ MATCH_SCHEMA = {
                 "additionalProperties": False,
             },
         },
-        "text_position": {
-            "type": "string",
-            "enum": ["top", "middle", "bottom"],
-            "description": "where the inspo places its overlaid text. 'top' if it has none.",
-        },
-        "text_look": {
-            "type": "string",
-            "enum": ["outline", "box", "plain"],
-            "description": "the inspo's overlaid text look: white with a dark outline, text on a solid box, or plain with a soft shadow.",
-        },
         "caption": {
             "type": "string",
             "description": "the post caption in the user's voice: a hook first line, then one short line. up to 2 emoji. max 40 words.",
@@ -460,7 +640,7 @@ MATCH_SCHEMA = {
             "description": "5 to 8 hashtags (with #), mixing broad and niche ones that fit what the clips show.",
         },
     },
-    "required": ["shots", "text_position", "text_look", "caption", "hashtags"],
+    "required": ["shots", "caption", "hashtags"],
     "additionalProperties": False,
 }
 
@@ -529,8 +709,9 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
         f"overlaid text: {overlay.get('style') or 'none'}\n"
         "inspo transcript:\n" + ("\n".join(lines) if lines else "(no speech)") + "\n\nthe inspo's shots:"
     )}]
+    lines_by_shot = ((b.get("style") or {}).get("textLines") or [])
     for i, s in enumerate(shots):
-        text = s.get("onScreenText")
+        text = (lines_by_shot[i] if i < len(lines_by_shot) else None) or s.get("onScreenText")
         content.append({"type": "text", "text": (
             f"inspo shot {i + 1} ({s['role']}, {s['durationS']:.1f}s): {s.get('description') or s.get('tip', '')}"
             f"\n  on-screen text: {json.dumps(text, ensure_ascii=False) if text else 'none'}"
@@ -606,18 +787,56 @@ def tonemap_filter() -> str:
             "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
 
 
-def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path) -> None:
-    """One shot: the clip from `start`, filling exactly `duration` seconds at 1080x1920."""
+COLOR_FILTER_VF = {
+    "warm": "colorbalance=rs=0.06:gs=0.02:bs=-0.06",
+    "cool": "colorbalance=rs=-0.05:bs=0.07",
+    "vintage": "curves=preset=vintage",
+    "black_and_white": "hue=s=0",
+    "high_contrast": "eq=contrast=1.18:saturation=1.15",
+    "faded": "eq=contrast=0.88:brightness=0.03:saturation=0.8",
+    "vivid": "eq=saturation=1.35",
+}
+
+
+def motion_filter(motion: str, frames: int) -> str | None:
+    """Camera-style motion over the whole shot (`frames` long)."""
+    zoom = lambda z: (  # noqa: E731
+        # Zoom on a 2x frame so slow zooms move smoothly instead of in whole-pixel steps.
+        f"scale={OUT_W * 2}:{OUT_H * 2}:flags=bicubic,zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+        f":d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS}"
+    )
+    n = max(1, frames)
+    if motion == "slow_zoom_in":
+        return zoom(f"1+0.10*on/{n}")
+    if motion == "slow_zoom_out":
+        return zoom(f"1.10-0.10*on/{n}")
+    if motion == "punch_in":
+        return zoom("if(lt(on,5),1+0.035*on,1.17)")
+    if motion == "shake":
+        w, h = round(OUT_W * 1.08), round(OUT_H * 1.08)
+        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{(w - OUT_W) // 2}+18*sin(n*1.9)':y='{(h - OUT_H) // 2}+14*cos(n*2.7)'"
+    return None
+
+
+def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
+             tail: float = 0.0, motion: str = "none", color: str = "none") -> None:
+    """One shot: the clip from `start`, filling exactly `duration` seconds at 1080x1920, plus `tail`
+    extra seconds of picture for a transition into the next shot (its audio is trimmed off later)."""
     slow = min(MAX_SLOWDOWN, duration / take) if take < duration - 0.02 else 1.0
+    total = duration + tail
+    # Use real footage for the tail when the clip has it; otherwise the last frame holds.
+    extra = max(0.0, min(tail / slow, clip["duration"] - start - take))
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
         f"crop={OUT_W}:{OUT_H}", "setsar=1", f"fps={OUT_FPS}",
         *([f"setpts={slow:.4f}*PTS"] if slow > 1 else []),
-        f"tpad=stop_mode=clone:stop_duration={duration:.3f}",
+        f"tpad=stop_mode=clone:stop_duration={total:.3f}",
+        *([m] if (m := motion_filter(motion, round(total * OUT_FPS))) else []),
+        *([COLOR_FILTER_VF[color]] if color in COLOR_FILTER_VF else []),
         "format=yuv420p",
     ]
-    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{take:.3f}", "-i", str(clip["path"])]
+    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{take + extra:.3f}", "-i", str(clip["path"])]
     if clip["has_audio"]:
         af = f"aresample=48000,{f'atempo={1 / slow:.4f},' if slow > 1 else ''}apad"
         audio = ["-map", "0:v:0", "-map", "0:a:0", "-af", af]
@@ -625,7 +844,7 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path)
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
         audio = ["-map", "0:v:0", "-map", "1:a:0"]
     cmd += [
-        *audio, "-vf", ",".join(vf), "-t", f"{duration:.3f}",
+        *audio, "-vf", ",".join(vf), "-t", f"{total:.3f}",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(OUT_FPS),
         # PCM audio, so joining the shots doesn't add clicks or drift at the cuts.
         "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(dest),
@@ -633,35 +852,133 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 and clip["hdr"]:
         # Tone mapping can fail on unusual files; plain conversion still gives a usable shot.
-        cut_shot({**clip, "hdr": False}, start, take, duration, dest)
+        cut_shot({**clip, "hdr": False}, start, take, duration, dest, tail, motion, color)
+    elif result.returncode != 0 and motion != "none":
+        print(f"motion '{motion}' failed, cutting without it: {result.stderr[-300:]}")
+        cut_shot(clip, start, take, duration, dest, tail, "none", color)
     elif result.returncode != 0:
         raise RuntimeError(f"cutting shot failed: {result.stderr[-500:]}")
 
 
+# transition -> (ffmpeg xfade transition, seconds)
+XFADES = {
+    "crossfade": ("fade", 0.4), "flash": ("fadewhite", 0.2), "dip_to_black": ("fadeblack", 0.4),
+    "whip": ("smoothleft", 0.25), "slide": ("slideleft", 0.3), "slide_up": ("slideup", 0.3),
+    "zoom": ("zoomin", 0.3), "glitch": ("pixelize", 0.25), "wipe": ("wipeleft", 0.3),
+}
+
+
+def transition_plan(durations: list[float], transitions: list[str]) -> list[tuple[str, float] | None]:
+    """For each cut: (xfade name, seconds), or None for a hard cut. Never more than 40% of either shot."""
+    out = []
+    for i in range(len(durations) - 1):
+        t = transitions[i] if i < len(transitions) else "cut"
+        if t not in XFADES:
+            out.append(None)
+            continue
+        name, d = XFADES[t]
+        d = min(d, 0.4 * durations[i], 0.4 * durations[i + 1])
+        out.append((name, round(d, 3)) if d >= 0.08 else None)
+    return out
+
+
+def join_shots(seg_paths: list[Path], durations: list[float], cuts: list[tuple[str, float] | None],
+               workdir: Path, dest: Path) -> None:
+    """Joins the shots, with the transitions in `cuts`, keeping every cut at its exact time."""
+    if not any(cuts):
+        list_file = workdir / "shots.txt"
+        list_file.write_text("".join(f"file '{p.name}'\n" for p in seg_paths))
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list_file.name,
+                        "-c", "copy", dest.name], cwd=workdir, check=True, capture_output=True)
+        return
+
+    n = len(seg_paths)
+    parts = [f"[{i}:v]settb=AVTB,fps={OUT_FPS},format=yuv420p[v{i}]" for i in range(n)]
+    # Hard cuts join shots into groups; transitions join the groups. Each shot before a
+    # transition carries extra picture (its tail), and the transition starts at the cut.
+    groups: list[list[int]] = [[0]]
+    for i, c in enumerate(cuts):
+        if c:
+            groups.append([i + 1])
+        else:
+            groups[-1].append(i + 1)
+    labels = []
+    for g, members in enumerate(groups):
+        if len(members) == 1:
+            labels.append(f"v{members[0]}")
+        else:
+            parts.append("".join(f"[v{m}]" for m in members) + f"concat=n={len(members)}:v=1:a=0[g{g}]")
+            labels.append(f"g{g}")
+    current, elapsed = labels[0], sum(durations[m] for m in groups[0])
+    for g in range(1, len(groups)):
+        name, d = cuts[groups[g][0] - 1]
+        parts.append(f"[{current}][{labels[g]}]xfade=transition={name}:duration={d}:offset={elapsed:.3f}[x{g}]")
+        current = f"x{g}"
+        elapsed += sum(durations[m] for m in groups[g])
+    # Audio keeps hard cuts at the exact times.
+    parts += [f"[{i}:a]atrim=0:{durations[i]:.3f},asetpts=PTS-STARTPTS[a{i}]" for i in range(n)]
+    parts.append("".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1[aout]")
+    cmd = ["ffmpeg", "-v", "error", "-y", *[x for p in seg_paths for x in ("-i", p.name)],
+           "-filter_complex", ";".join(parts), "-map", f"[{current}]", "-map", "[aout]",
+           "-t", f"{sum(durations):.3f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+           "-c:a", "pcm_s16le", dest.name]
+    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"transitions failed, joining with hard cuts: {result.stderr[-400:]}")
+        # Shots before a transition are longer than their slot: trim them back first.
+        parts = [f"[{i}:v]trim=0:{durations[i]:.3f},setpts=PTS-STARTPTS[v{i}];"
+                 f"[{i}:a]atrim=0:{durations[i]:.3f},asetpts=PTS-STARTPTS[a{i}]" for i in range(n)]
+        parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vout][aout]")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *[x for p in seg_paths for x in ("-i", p.name)],
+                        "-filter_complex", ";".join(parts), "-map", "[vout]", "-map", "[aout]",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "pcm_s16le", dest.name],
+                       cwd=workdir, check=True, capture_output=True)
+
+
 # ---- text and captions (ASS subtitles, burned in by libass)
+#
+# Safe zone: TikTok and Instagram Reels cover parts of a 9:16 video with their own
+# interface: the tabs/search bar at the top, the username, caption and music line at
+# the bottom, and the like/comment/share/profile column on the right. On-screen text
+# and captions always stay inside the area left over, as fractions of the frame.
+SAFE = {"top": 0.115, "bottom": 0.75, "left": 0.065, "right": 0.85}
+MARGIN_L, MARGIN_R = round(SAFE["left"] * OUT_W), round((1 - SAFE["right"]) * OUT_W)
+SAFE_CENTER_X = (SAFE["left"] + SAFE["right"]) / 2
+CAPTION_MARGIN = 620  # px from the bottom to the bottom of the captions (inside the safe zone)
+TOP_TEXT_Y = 0.2  # where "top" text sits by default (its top edge)
+SAFE_ZONE_RULE = (
+    "TikTok and Instagram cover parts of the video with their own buttons and text: the top ~12% (tabs and search), "
+    "the bottom ~25% (username, caption, music) and the right ~15% (like, comment, share). Keep on-screen text and "
+    "captions inside the rest: between 0.12 and 0.75 from the top, and between 0.07 and 0.85 from the left."
+)
+
 
 def ass_time(t: float) -> str:
     cs = max(0, round(t * 100))
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def ass_text(text: str) -> str:
-    """Escapes ASS override characters and drops emoji (the font has no emoji)."""
+def ass_part(text: str) -> str:
+    """Escapes ASS override characters and drops emoji (the fonts have no emoji). Keeps spacing."""
     import re
 
     text = re.sub(r"[\U00010000-\U0010FFFF☀-➿️‍]", "", text)
-    return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", "\\N").strip()
+    return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", "\\N")
 
 
-# Name, Fontsize, Primary, Outline(or box), Back, Bold, BorderStyle, Outline, Shadow, Alignment, MarginV
-WHITE, BLACK, NEAR_BLACK, SHADOW = "&H00FFFFFF", "&H00000000", "&H00141414", "&H90000000"
+def ass_text(text: str) -> str:
+    return ass_part(text).strip()
+
+
+def ass_color(hex_color: str, alpha: int = 0) -> str:
+    """#RRGGBB -> ASS's &HAABBGGRR."""
+    h = hex_color.lstrip("#") if isinstance(hex_color, str) and len(hex_color.lstrip("#")) == 6 else "FFFFFF"
+    return f"&H{alpha:02X}{h[4:6]}{h[2:4]}{h[0:2]}".upper()
+
+
+WHITE, BLACK, SHADOW = "&H00FFFFFF", "&H00000000", "&H90000000"
 HIGHLIGHT = "&H0000E5FF"  # yellow, in ASS's BGR order
 
-OVERLAY_LOOKS = {
-    "outline": dict(size=96, primary=WHITE, outline_c=BLACK, border=1, outline=7, shadow=0),
-    "box": dict(size=86, primary=NEAR_BLACK, outline_c=WHITE, border=3, outline=18, shadow=0),
-    "plain": dict(size=96, primary=WHITE, outline_c=BLACK, border=1, outline=0, shadow=3),
-}
 CAPTION_LOOKS = {
     "bold-pop": dict(size=136, primary=WHITE, outline_c=BLACK, border=1, outline=9, shadow=0, words=2, chars=14),
     "clean": dict(size=80, primary=WHITE, outline_c=BLACK, border=1, outline=4, shadow=2, words=5, chars=28),
@@ -670,9 +987,14 @@ CAPTION_LOOKS = {
 }
 
 
-def ass_style(name: str, look: dict, alignment: int, margin_v: int) -> str:
-    return (f"Style: {name},{FONT},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},{SHADOW},"
-            f"-1,0,0,0,100,100,0,0,{look['border']},{look['outline']},{look['shadow']},{alignment},90,90,{margin_v},1")
+def scaled(look: dict, scale: float) -> dict:
+    return {**look, "size": round(look["size"] * scale), "outline": max(0, round(look["outline"] * scale))}
+
+
+def caption_style_line(look: dict) -> str:
+    return (f"Style: Caption,{FONT},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},{SHADOW},"
+            f"-1,0,0,0,100,100,0,0,{look['border']},{look['outline']},{look['shadow']},2,"
+            f"{MARGIN_L},{MARGIN_R},{CAPTION_MARGIN},1")
 
 
 def caption_chunks(words: list[dict], max_words: int, max_chars: int) -> list[list[dict]]:
@@ -689,35 +1011,122 @@ def caption_chunks(words: list[dict], max_words: int, max_chars: int) -> list[li
     return chunks
 
 
-CAPTION_MARGIN = 620  # px from the bottom: above where the apps put their own buttons and caption
-TOP_MARGIN = 340
-
-
-def scaled(look: dict, scale: float) -> dict:
-    return {**look, "size": round(look["size"] * scale), "outline": max(0, round(look["outline"] * scale))}
-
-
-def block_height(text: str, look: dict) -> float:
-    """Roughly how tall a block of text is, as a fraction of the frame."""
-    import math
-
-    per_line = max(6, int((OUT_W - 180) / (look["size"] * 0.58)))
-    lines = max(1, math.ceil(len(text) / per_line))
-    pad = 2 * look["outline"] if look["border"] == 3 else 0
-    return (lines * look["size"] * 1.22 + pad) / OUT_H
-
-
-def default_text_center(position: str, h: float, captions: bool, cap_center: float) -> float:
-    if position == "top":
-        return TOP_MARGIN / OUT_H + h / 2
-    if position == "middle" or captions:
-        return 0.5
-    return cap_center
-
-
 def caption_center(cap: dict) -> float:
     lines = 1 if cap["words"] <= 3 else 2
     return 1 - CAPTION_MARGIN / OUT_H - lines * cap["size"] * 1.22 / OUT_H / 2
+
+
+def caption_height(cap: dict) -> float:
+    return (1 - CAPTION_MARGIN / OUT_H - caption_center(cap)) * 2
+
+
+_font_cache: dict = {}
+
+
+def font_metrics(key: str) -> dict:
+    """The real font file, measured: how libass sizes it, and its capital height."""
+    if key in _font_cache:
+        return _font_cache[key]
+    from PIL import ImageFont
+
+    family, bold, _w = FONTS.get(key, FONTS["clean_sans"])
+    path = run(["fc-match", "-f", "%{file}", f"{family}:bold" if bold else family]).strip()
+    font = ImageFont.truetype(path, 100)
+    ascent, descent = font.getmetrics()
+    box = font.getbbox("H")
+    m = {
+        "font": font,
+        # libass sizes a font so ascent + descent = the font size; PIL uses the em.
+        "em_per_size": 100 / (ascent + descent),
+        "cap": (box[3] - box[1]) / 100,
+    }
+    _font_cache[key] = m
+    return m
+
+
+def text_look(style: dict, scale: float) -> dict:
+    """How on-screen text is drawn, from a text style (see DEFAULT_TEXT_STYLE)."""
+    key = style.get("font") if style.get("font") in FONTS else "clean_sans"
+    family, bold, _w = FONTS[key]
+    m = font_metrics(key)
+    letter = style.get("letterHeight") or TEXT_SIZES.get(style.get("size"), TEXT_SIZES["large"])
+    size = round(letter * OUT_H / (m["cap"] * m["em_per_size"]) * scale)
+    if style.get("box"):
+        border, outline, outline_c = 3, max(6, round(size * 0.2)), ass_color(style.get("boxColor", "#FFFFFF"))
+    else:
+        outline = {"none": 0, "thin": max(2, round(size * 0.04)), "thick": max(4, round(size * 0.08))}.get(
+            style.get("outline"), 0)
+        border, outline_c = 1, ass_color(style.get("outlineColor", "#000000"))
+    return {"family": family, "bold": bold, "key": key, "size": size,
+            "primary": ass_color(style.get("color", "#FFFFFF")), "outline_c": outline_c,
+            "border": border, "outline": outline, "shadow": 3 if style.get("shadow") else 0}
+
+
+def text_style_line(look: dict) -> str:
+    return (f"Style: Text,{look['family']},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},"
+            f"{SHADOW},{-1 if look['bold'] else 0},0,0,0,100,100,0,0,{look['border']},{look['outline']},"
+            f"{look['shadow']},5,{MARGIN_L},{MARGIN_R},0,1")
+
+
+def line_width(line: str, look: dict, size: float) -> float:
+    """Width of one line drawn at `size`, as a fraction of the frame (measured with the real font)."""
+    m = font_metrics(look["key"])
+    return m["font"].getlength(line) * size * m["em_per_size"] / 100 / OUT_W
+
+
+def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[list[str], int]:
+    """The lines to draw and the font size. `keep_lines`: exactly the lines given (shrunk to fit if
+    needed). Otherwise wrapped to fit `avail` (a fraction of the width)."""
+    size = look["size"]
+    if keep_lines:
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()] or [text.strip()]
+    else:
+        lines = []
+        for para in text.split("\n"):
+            cur = ""
+            for word in para.split():
+                trial = f"{cur} {word}".strip()
+                if cur and line_width(trial, look, size) > avail:
+                    lines.append(cur)
+                    cur = word
+                else:
+                    cur = trial
+            if cur:
+                lines.append(cur)
+        lines = lines or [text.strip()]
+    widest = max(line_width(ln, look, size) for ln in lines)
+    if widest > avail:
+        size = max(round(size * 0.5), int(size * avail / widest))
+    return lines, size
+
+
+def block_size(lines: list[str], look: dict, size: int) -> tuple[float, float]:
+    """Width and height of a text block, as fractions of the frame."""
+    pad = 2 * look["outline"] if look["border"] == 3 else look["outline"]
+    w = max(line_width(ln, look, size) for ln in lines) + 2 * pad / OUT_W
+    h = (len(lines) * size * 1.2 + 2 * pad) / OUT_H
+    return w, h
+
+
+def default_x(align: str) -> float:
+    return {"left": SAFE["left"] + 0.01, "right": SAFE["right"] - 0.01}.get(align, SAFE_CENTER_X)
+
+
+def available_width(align: str, x: float) -> float:
+    if align == "left":
+        return SAFE["right"] - x
+    if align == "right":
+        return x - SAFE["left"]
+    return 2 * min(x - SAFE["left"], SAFE["right"] - x)
+
+
+def clamp_to_safe(align: str, x: float, y: float, w: float, h: float) -> tuple[float, float]:
+    lo_x, hi_x = {"left": (SAFE["left"], SAFE["right"] - w), "right": (SAFE["left"] + w, SAFE["right"])}.get(
+        align, (SAFE["left"] + w / 2, SAFE["right"] - w / 2))
+    x = min(max(x, lo_x), hi_x) if lo_x <= hi_x else default_x(align)
+    lo_y, hi_y = SAFE["top"] + h / 2, SAFE["bottom"] - h / 2
+    y = min(max(y, lo_y), hi_y) if lo_y <= hi_y else (SAFE["top"] + SAFE["bottom"]) / 2
+    return r2(x), r2(y)
 
 
 def segment_faces(clip: dict, start: float, take: float) -> list[tuple[float, float]]:
@@ -751,76 +1160,144 @@ def segment_faces(clip: dict, start: float, take: float) -> list[tuple[float, fl
 
 
 def free_spot(want: float, h: float, blocked: list[tuple[float, float]]) -> float | None:
-    """The nearest center to `want` that keeps a block of height `h` off everything blocked.
-    None if `want` is already clear (or nothing is)."""
+    """The nearest center to `want` that keeps a block of height `h` inside the safe zone and off
+    everything blocked. None if `want` is already clear (or nothing is)."""
     def clear(c: float) -> bool:
         top, bottom = c - h / 2, c + h / 2
-        return top >= 0.07 and bottom <= 0.93 and all(bottom + 0.015 <= y0 or top - 0.015 >= y1 for y0, y1 in blocked)
+        return (top >= SAFE["top"] and bottom <= SAFE["bottom"]
+                and all(bottom + 0.015 <= y0 or top - 0.015 >= y1 for y0, y1 in blocked))
 
     if clear(want):
         return None
-    spots = [c / 100 for c in range(8, 93) if clear(c / 100)]
+    spots = [c / 100 for c in range(10, 76) if clear(c / 100)]
     return min(spots, key=lambda c: abs(c - want)) if spots else None
 
 
-def effective_layout(plan: list[dict], texts: list[str], layout: dict, position: str, look: str,
-                     caption_style: str | None, faces: list[list[tuple[float, float]]]) -> tuple[list, list]:
-    """Where text and captions go in each shot: what was asked for, otherwise the default spot,
-    moved off any faces."""
-    text_look = scaled(OVERLAY_LOOKS.get(look, OVERLAY_LOOKS["outline"]), layout["textScale"])
+def inspo_spot(spots: list, i: int) -> list | None:
+    """Where the inspo puts text in shot i, or in the nearest earlier shot that has text."""
+    for j in range(min(i, len(spots) - 1), -1, -1):
+        if spots[j]:
+            return spots[j]
+    return next((s for s in spots if s), None)
+
+
+def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, inspo_align: str, spots: list,
+               position: str, caption_style: str | None, faces: list, keep_lines: bool) -> tuple[list, list]:
+    """Where everything goes in each shot. Text: where it was asked for, else where the inspo has it,
+    else the default spot moved off faces. Captions: where asked for, else the default spot moved off
+    faces and text. Everything stays inside the safe zone. Returns (text layouts, caption ys)."""
+    look = text_look(style, layout["textScale"])
+    align = style.get("align", "center")
     cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
-    cap_default = caption_center(cap)
-    cap_h = (1 - CAPTION_MARGIN / OUT_H - cap_default) * 2
-    text_ys, cap_ys = [], []
+    cap_default, cap_h = caption_center(cap), caption_height(cap)
+    lays, cap_ys = [], []
     for i in range(len(plan)):
         f = faces[i] if i < len(faces) else []
+        text = (texts[i] or "").strip()
+        lay = None
+        if text:
+            spot = inspo_spot(spots, i)
+            asked_x, asked_y = layout["textXs"][i], layout["textYs"][i]
+            x = asked_x if asked_x is not None else (spot[0] if spot and align == inspo_align else default_x(align))
+            lines, size = fit_lines(text, look, available_width(align, x), keep_lines)
+            w, h = block_size(lines, look, size)
+            if asked_y is not None:
+                y = asked_y
+            elif spot:
+                y = spot[1]  # same placement as the inspo
+            else:
+                y = {"top": TOP_TEXT_Y + h / 2, "middle": 0.45}.get(position, 0.45 if caption_style else cap_default)
+                band = [(cap_default - cap_h / 2, cap_default + cap_h / 2)] if caption_style else []
+                y = free_spot(y, h, f + band) or y
+            x, y = clamp_to_safe(align, x, y, w, h)
+            lay = {"x": x, "y": y, "lines": lines, "size": size, "align": align, "h": h}
+        lays.append(lay)
         cy = layout["captionYs"][i]
         if caption_style and cy is None:
-            cy = free_spot(cap_default, cap_h, f)
+            blocked = f + ([(lay["y"] - lay["h"] / 2, lay["y"] + lay["h"] / 2)] if lay else [])
+            cy = free_spot(cap_default, cap_h, blocked)
+        if cy is not None:
+            cy = min(max(cy, SAFE["top"] + cap_h / 2), SAFE["bottom"] - cap_h / 2)
         cap_ys.append(cy)
-        text = (texts[i] or "").strip()
-        ty = layout["textYs"][i]
-        if text and ty is None:
-            h = block_height(text, text_look)
-            want = default_text_center(position, h, bool(caption_style), cap_default)
-            band = [] if not caption_style else [((cy or cap_default) - cap_h / 2, (cy or cap_default) + cap_h / 2)]
-            ty = free_spot(want, h, f + band)
-        text_ys.append(ty)
-    return text_ys, cap_ys
+    return lays, cap_ys
 
 
-def build_ass(texts: list[tuple[float, float, str, float | None]], position: str, look: str,
-              words: list[dict], caption_style: str | None, layout: dict,
-              caption_y_at) -> str | None:
-    """The subtitle file for on-screen text and captions, or None if there's nothing to draw.
-    A y (center, as a fraction of the height) overrides the default placement."""
+def overlay_timeline(plan: list[dict], texts: list[str], lays: list) -> list[tuple[float, float, str, dict]]:
+    """Each shot's text over that shot; the same text in the same place on neighboring shots stays
+    up as one (no flicker, and its animation plays once)."""
+    out: list[tuple[float, float, str, dict]] = []
+    t = 0.0
+    for p, text, lay in zip(plan, texts, lays):
+        end = t + p["duration"]
+        text = (text or "").strip()
+        # Small differences in where the inspo's text was read in each shot shouldn't make it jump.
+        same = out and out[-1][2] == text and abs(out[-1][1] - t) < 0.01 and lay and (
+            abs(out[-1][3]["x"] - lay["x"]) < 0.04 and abs(out[-1][3]["y"] - lay["y"]) < 0.04
+            and out[-1][3]["lines"] == lay["lines"])
+        if text and lay and same:
+            out[-1] = (out[-1][0], end, text, out[-1][3])
+        elif text and lay:
+            out.append((t, end, text, lay))
+        t = end
+    return out
+
+
+def text_events(start: float, end: float, lay: dict, look: dict, animation: str) -> list[str]:
+    an = {"left": 4, "right": 6}.get(lay["align"], 5)
+    px, py = round(lay["x"] * OUT_W), round(lay["y"] * OUT_H)
+    size = f"\\fs{lay['size']}" if lay["size"] != look["size"] else ""
+    raw = "\n".join(lay["lines"])
+    dur = end - start
+
+    def event(a: float, b: float, tags: str, body: str) -> str:
+        return f"Dialogue: 1,{ass_time(a)},{ass_time(b)},Text,,0,0,0,,{{\\an{an}\\q2{size}{tags}}}{body}"
+
+    if animation in ("typewriter", "word_by_word"):
+        # Reveal letters (or words) one at a time; hidden ones are drawn invisible, so nothing moves.
+        if animation == "typewriter":
+            cuts = [k for k in range(1, len(raw) + 1) if raw[k - 1] not in " \n"]
+            step = min(0.05, 0.6 * dur / max(1, len(cuts)), 0.9 / max(1, len(cuts)))
+        else:
+            cuts = [k for k in range(1, len(raw) + 1) if (k == len(raw) or raw[k] in " \n") and raw[k - 1] not in " \n"]
+            step = min(0.3, 0.6 * dur / max(1, len(cuts)))
+        out = []
+        for n, k in enumerate(cuts):
+            a = start + n * step
+            b = end if n == len(cuts) - 1 else start + (n + 1) * step
+            out.append(event(a, b, f"\\pos({px},{py})", ass_part(raw[:k]) + "{\\alpha&HFF&}" + ass_part(raw[k:])))
+        return out
+    tags = f"\\pos({px},{py})"
+    if animation == "pop":
+        tags += "\\fscx70\\fscy70\\t(0,130,\\fscx100\\fscy100)"
+    elif animation == "fade":
+        tags += "\\fad(180,120)"
+    elif animation == "slide_up":
+        tags = f"\\move({px},{py + 50},{px},{py},0,220)\\fad(150,0)"
+    return [event(start, end, tags, ass_text(raw))]
+
+
+def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layout: dict,
+              words: list[dict], caption_style: str | None, caption_y_at) -> str | None:
+    """The subtitle file for on-screen text and captions, or None if there's nothing to draw."""
     events = []
-    captions = bool(caption_style and words)
-    if position == "top":
-        overlay_align, overlay_v = 8, TOP_MARGIN
-    elif position == "middle" or captions:
-        overlay_align, overlay_v = 5, 0
-    else:
-        overlay_align, overlay_v = 2, CAPTION_MARGIN
+    look = text_look(style, layout["textScale"])
+    styles = [text_style_line(look)]
+    for start, end, _text, lay in timeline:
+        events += text_events(start, end, lay, look, style.get("animation", "none"))
 
-    at = lambda y: f"{{\\an5\\pos({OUT_W // 2},{round(y * OUT_H)})}}" if y is not None else ""  # noqa: E731
-    text_look = scaled(OVERLAY_LOOKS.get(look, OVERLAY_LOOKS["outline"]), layout["textScale"])
-    styles = [ass_style("Text", text_look, overlay_align, overlay_v)]
-    for start, end, text, y in texts:
-        if ass_text(text):
-            events.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Text,,0,0,0,,{at(y)}{ass_text(text)}")
-
-    if captions:
+    if caption_style and words:
         cap = scaled(CAPTION_LOOKS.get(caption_style, CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
-        styles.append(ass_style("Caption", cap, 2, CAPTION_MARGIN))
+        styles.append(caption_style_line(cap))
         chunks = caption_chunks(words, cap["words"], cap["chars"])
+        cx = round(SAFE_CENTER_X * OUT_W)
         for n, chunk in enumerate(chunks):
             start = chunk[0]["s"]
             end = chunk[-1]["e"] + 0.3
             if n + 1 < len(chunks):
                 end = min(end, chunks[n + 1][0]["s"])
             end = max(end, start + 0.25)
-            pos = at(caption_y_at(start))
+            y = caption_y_at(start)
+            pos = f"{{\\an5\\pos({cx},{round(y * OUT_H)})}}" if y is not None else ""
             if caption_style == "karaoke":
                 for k, w in enumerate(chunk):
                     ws = start if k == 0 else w["s"]
@@ -851,19 +1328,42 @@ def build_ass(texts: list[tuple[float, float, str, float | None]], position: str
     ])
 
 
-def overlay_timeline(plan: list[dict], texts: list[str], ys: list) -> list[tuple[float, float, str, float | None]]:
-    """Each shot's text over that shot; the same text in the same place on neighboring shots stays
-    up without flickering."""
-    out: list[tuple[float, float, str, float | None]] = []
-    t = 0.0
-    for p, text, y in zip(plan, texts, ys):
-        end = t + p["duration"]
-        text = (text or "").strip()
-        if text and out and out[-1][2] == text and out[-1][3] == y and abs(out[-1][1] - t) < 0.01:
-            out[-1] = (out[-1][0], end, text, y)
-        elif text:
-            out.append((t, end, text, y))
-        t = end
+def spread_lines(custom: str, shots: list[dict]) -> list[str]:
+    """The user's own text, one entry per shot, keeping their lines exactly as typed. Lines go to the
+    shots where the inspo has text, in order (split only between lines). If the inspo has no text,
+    the lines share the video's running time."""
+    lines = [ln.strip() for ln in custom.replace("\r", "").split("\n") if ln.strip()]
+    n = len(shots)
+    out = [""] * n
+    if not lines:
+        return out
+    # Runs of shots showing the same inspo text count as one place for text.
+    places: list[list[int]] = []
+    for i, s in enumerate(shots):
+        t = (s.get("onScreenText") or "").strip()
+        if t and places and (shots[places[-1][-1]].get("onScreenText") or "").strip() == t and places[-1][-1] == i - 1:
+            places[-1].append(i)
+        elif t:
+            places.append([i])
+    if not places:
+        total = sum(s["durationS"] for s in shots) or 1.0
+        k = min(len(lines), n)
+        places = [[] for _ in range(k)]
+        t = 0.0
+        for i, s in enumerate(shots):
+            places[min(k - 1, int(k * (t + s["durationS"] / 2) / total))].append(i)
+            t += s["durationS"]
+        places = [p for p in places if p]
+    k = min(len(places), len(lines))
+    # Split the lines into k groups in order, as evenly as possible.
+    groups, at = [], 0
+    for g in range(k):
+        size = len(lines) // k + (1 if g < len(lines) % k else 0)
+        groups.append("\n".join(lines[at:at + size]))
+        at += size
+    for g, text in enumerate(groups):
+        for i in places[g]:
+            out[i] = text
     return out
 
 
@@ -873,10 +1373,12 @@ REVISE_SYSTEM = """You make changes to a short-form video a user already made wi
 
 You get the user's request, frames from every shot of the current version exactly as it looks now (with its on-screen text and captions), the plan behind it, where faces are in each shot, and frames from all of the user's clips.
 
-Make the change the user asks for and keep everything else exactly as it is. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in. You can change: which clip and moment fills a shot; the on-screen text of each shot; where the on-screen text sits in each shot; the on-screen text size and look; where captions sit in each shot; the caption size; the post caption and hashtags.
-You can't change: shot timing or the number of shots, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add effects, transitions, filters, zooms or stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+Make the change the user asks for and keep everything else exactly as it is. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
-Positions are the vertical center of the text as a fraction of the frame height: 0 is the top edge, 1 the bottom. Keep text between 0.1 and 0.88: the apps cover the top and bottom of the screen with their buttons. Use -1 to leave a position as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
+You can change: which clip and moment fills a shot; the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the post caption and hashtags.
+You can't change: shot timing or the number of shots, transitions, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add new effects, filters, zooms or stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+
+Positions are fractions of the frame: x from 0 (left edge) to 1 (right edge), y from 0 (top) to 1 (bottom). text_x is the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text; text_y and caption_y are the vertical center. """ + SAFE_ZONE_RULE + """ Use -1 to leave a position as it is, and "keep" to leave a setting as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
 
 REVISE_SCHEMA = {
     "type": "object",
@@ -891,55 +1393,67 @@ REVISE_SCHEMA = {
                     "clip": {"type": "integer", "description": "the clip number to use, starting at 1."},
                     "start_s": {"type": "number", "description": "where in that clip the shot starts, in seconds."},
                     "text": {"type": "string", "description": "on-screen text for this shot. empty string for none."},
-                    "text_y": {"type": "number", "description": "vertical center of the on-screen text (0 to 1), or -1 to leave it."},
-                    "caption_y": {"type": "number", "description": "vertical center of the captions (0 to 1), or -1 to leave it."},
+                    "text_x": {"type": "number", "description": "the on-screen text's x (see above), or -1 to leave it."},
+                    "text_y": {"type": "number", "description": "vertical center of the on-screen text, or -1 to leave it."},
+                    "caption_y": {"type": "number", "description": "vertical center of the captions, or -1 to leave it."},
                 },
-                "required": ["index", "clip", "start_s", "text", "text_y", "caption_y"],
+                "required": ["index", "clip", "start_s", "text", "text_x", "text_y", "caption_y"],
                 "additionalProperties": False,
             },
         },
         "text_scale": {"type": "number", "description": "on-screen text size, where 1 is the standard size."},
         "caption_scale": {"type": "number", "description": "caption size, where 1 is the standard size."},
-        "text_look": {"type": "string", "enum": ["outline", "box", "plain"]},
+        "font": {"type": "string", "enum": ["keep", *FONTS]},
+        "text_color": {"type": "string", "description": "#RRGGBB, or 'keep'."},
+        "text_look": {"type": "string", "enum": ["keep", "outline", "box", "plain"]},
+        "text_align": {"type": "string", "enum": ["keep", *TEXT_ALIGNS]},
+        "text_animation": {"type": "string", "enum": ["keep", *TEXT_ANIMATIONS]},
         "caption": {"type": "string", "description": "the post caption (keep it unless asked)."},
         "hashtags": {"type": "array", "items": {"type": "string"}},
         "summary": {
             "type": "string",
             "description": (
-                "what you changed, for the user, in one or two short lowercase sentences, speaking as 'we', in plain words with no numbers "
-                "or positions (e.g. 'we made the text bigger and moved it above her face in the first two shots.'). mention "
-                "anything you couldn't do."
+                "what you changed, for the user, in one or two short lowercase sentences, speaking as 'we', in plain "
+                "words with no numbers or positions (e.g. 'we made the text bigger and moved it above her face in the "
+                "first two shots.'). mention anything you couldn't do."
             ),
         },
     },
-    "required": ["shots", "text_scale", "caption_scale", "text_look", "caption", "hashtags", "summary"],
+    "required": ["shots", "text_scale", "caption_scale", "font", "text_color", "text_look", "text_align",
+                 "text_animation", "caption", "hashtags", "summary"],
     "additionalProperties": False,
 }
 
 
+def style_summary(style: dict) -> str:
+    look = "on a solid box" if style.get("box") else (
+        f"with a {style.get('outline')} outline" if style.get("outline") != "none" else "plain")
+    return (f"font {style.get('font')}, color {style.get('color')}, {look}, {style.get('align')}-aligned, "
+            f"animation {style.get('animation')}")
+
+
 def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], current: list[dict],
-                texts: list[str], layout: dict, look: str, post: dict, effective: tuple[list, list],
+                texts: list[str], layout: dict, style: dict, post: dict, lays: list, cap_ys: list,
                 faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None) -> dict:
-    text_ys, cap_ys = effective
-    cap_look = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
-    cap_default = caption_center(cap_look)
+    cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
+    cap_default = caption_center(cap)
     content: list[dict] = [{"type": "text", "text": (
         f"the user's request: {json.dumps(request, ensure_ascii=False)}\n"
         + (f"what the user told us about their video: {json.dumps(notes, ensure_ascii=False)}\n" if notes else "")
-        + f"\nthe current version ({len(shots)} shots). on-screen text size {layout['textScale']:.2f}, look '{look}'; "
+        + f"\nthe current version ({len(shots)} shots). on-screen text: {style_summary(style)}, size {layout['textScale']:.2f}; "
         + (f"captions on ('{caption_style}'), size {layout['captionScale']:.2f}." if caption_style else "captions off.")
         + f"\npost caption: {json.dumps(post.get('caption', ''), ensure_ascii=False)}\nhashtags: {' '.join(post.get('hashtags', []))}"
     )}]
     for i, s in enumerate(shots):
         c = current[i]
-        where = lambda y, default: f"{y:.2f}" if y is not None else default  # noqa: E731
+        lay = lays[i]
         face_text = ", ".join(f"{a:.2f}–{b:.2f}" for a, b in faces[i]) if faces[i] else "none found"
+        cy = cap_ys[i] if cap_ys[i] is not None else cap_default
         content.append({"type": "text", "text": (
-            f"shot {i + 1} ({s['role']}, {s['durationS']:.1f}s): "
-            + (f"clip {c['clip'] + 1} from {c['start']:.1f}s" if c["clip"] is not None else "no clip chosen yet: pick one")
+            f"shot {i + 1} ({s['role']}, {s['durationS']:.1f}s): clip {c['clip'] + 1} from {c['start']:.1f}s"
             + f"\n  on-screen text: {json.dumps(texts[i], ensure_ascii=False) if texts[i] else 'none'}"
-            + (f", centered at {where(text_ys[i], 'the default spot')}" if texts[i] else "")
-            + (f"\n  captions centered at {where(cap_ys[i], f'{cap_default:.2f}')}" if caption_style else "")
+            + (f", x {lay['x']:.2f}, y {lay['y']:.2f}" if lay else "")
+            + (f"\n  captions centered at y {cy:.2f}" if caption_style else "")
             + f"\n  faces (top–bottom): {face_text}"
         )})
         if frames[i]:
@@ -969,7 +1483,7 @@ def layout_from(src: dict | None, n: int) -> dict:
     """Text and caption sizes, and any positions asked for per shot (None = automatic)."""
     src = src or {}
 
-    def ys(key: str) -> list:
+    def per_shot(key: str) -> list:
         vals = [y if isinstance(y, (int, float)) else None for y in (src.get(key) or [])][:n]
         return vals + [None] * (n - len(vals))
 
@@ -977,12 +1491,38 @@ def layout_from(src: dict | None, n: int) -> dict:
         v = src.get(key)
         return min(1.6, max(0.5, float(v))) if isinstance(v, (int, float)) else 1.0
 
-    return {"textYs": ys("textYs"), "captionYs": ys("captionYs"),
+    return {"textXs": per_shot("textXs"), "textYs": per_shot("textYs"), "captionYs": per_shot("captionYs"),
             "textScale": scale("textScale"), "captionScale": scale("captionScale")}
+
+
+def default_inspo_style(n: int) -> dict:
+    return {"transitions": ["cut"] * max(0, n - 1), "motions": ["none"] * n, "colorFilter": "none",
+            "text": dict(DEFAULT_TEXT_STYLE), "textSpots": [None] * n}
+
+
+def clean_text_style(src: dict | None) -> dict:
+    import re
+
+    out = dict(DEFAULT_TEXT_STYLE)
+    for k, v in (src or {}).items():
+        if k in ("color", "outlineColor", "boxColor"):
+            if isinstance(v, str) and re.match(COLOR_RE, v):
+                out[k] = v.upper()
+        elif k in ("box", "shadow"):
+            out[k] = bool(v)
+        elif k in out and v in {"font": FONTS, "outline": ["none", "thin", "thick"], "align": TEXT_ALIGNS,
+                                "size": TEXT_SIZES, "animation": TEXT_ANIMATIONS}.get(k, []):
+            out[k] = v
+    return out
+
+
+def look_name(style: dict) -> str:
+    return "box" if style.get("box") else ("plain" if style.get("outline") == "none" else "outline")
 
 
 def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
     """The whole render. Returns the website's RenderOutput shape (plus the plan and meta)."""
+    import re
     from concurrent.futures import ThreadPoolExecutor
 
     started = time.time()
@@ -990,6 +1530,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     shots = breakdown["shots"]
     n = len(shots)
     options = req["options"]
+    text_opts = options["text"]
+    # "match": the inspo's own words; "adapt": the inspo's style, words about the user; "custom": the user's lines.
+    text_choice = text_opts.get("mode") if text_opts.get("mode") in ("match", "adapt", "custom") else "match"
+    align_choice = text_opts.get("align") if text_opts.get("align") in TEXT_ALIGNS else None
     notes = (options.get("notes") or "").strip()[:600]
     music = options["music"]["mode"]
     caption_style = options["captions"]["style"] if options["captions"]["enabled"] else None
@@ -1019,6 +1563,23 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         raise JobError("we couldn’t read your clips. try uploading them again.")
     index_of = {c["id"]: i for i, c in enumerate(clips)}
 
+    # The inspo's look. Inspos analyzed before it was part of the analysis get it now.
+    new_style = None
+    inspo_style = breakdown.get("style")
+    if not isinstance(inspo_style, dict):
+        try:
+            inspo_style, style_cost = analyze_style(inspo_path, shots, workdir)
+            cost += style_cost
+            new_style = inspo_style
+        except Exception as e:  # noqa: BLE001
+            print(f"style analysis failed: {type(e).__name__}: {e}")
+            inspo_style = default_inspo_style(n)
+    base = default_inspo_style(n)
+    inspo_style = {**base, **{k: v for k, v in inspo_style.items() if v is not None}}
+    spots = (list(inspo_style.get("textSpots") or []) + [None] * n)[:n]
+    inspo_lines = [(t or "").strip() for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
+    inspo_text = clean_text_style(inspo_style.get("text"))
+
     # What the user chose in step 2 or the editor, per shot.
     edits = {e["shotIndex"]: e for e in req["shots"]}
     fixed = []
@@ -1032,18 +1593,26 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         start = float(start) if isinstance(start, (int, float)) else (0.0 if end is not None else None)
         fixed.append({"clip": ci, "start": start, "end": end})
 
-    # Words and layout: kept from an earlier version, or written fresh below.
-    keep = previous["plan"] | {"postCopy": previous.get("postCopy")} if previous else req.get("reuse")
-    text_mode = "keep" if keep else ("custom" if options["text"]["mode"] == "custom" else "match")
-    plan_texts: list[str] = [""] * n
-    position, look = "top", "outline"
-    post = {"caption": "", "hashtags": []}
+    # Words, text style and layout: kept from an earlier version, or set fresh below.
+    keep = (previous["plan"] | {"postCopy": previous.get("postCopy")}) if previous else req.get("reuse")
     layout = layout_from(keep, n)
+    style = clean_text_style((keep or {}).get("textStyle") or inspo_text)
+    if align_choice:
+        style["align"] = align_choice
+    position = (keep or {}).get("textPosition") or "top"
+    post = (keep or {}).get("postCopy") or {"caption": "", "hashtags": []}
+    keep_lines = bool((keep or {}).get("keepLines")) if keep else text_choice == "custom"
     if keep:
         plan_texts = ([(t or "") for t in (keep.get("texts") or [])] + [""] * n)[:n]
-        position = keep.get("textPosition") or position
-        look = keep.get("textLook") or look
-        post = keep.get("postCopy") or post
+        text_mode = "keep"
+    elif text_choice == "custom":
+        plan_texts, text_mode = spread_lines(text_opts.get("custom", ""), shots), "custom"
+    elif text_choice == "match":
+        # Word for word, line for line.
+        plan_texts = [inspo_lines[i] or (s.get("onScreenText") or "").strip() for i, s in enumerate(shots)]
+        text_mode, keep_lines = "exact", any(inspo_lines)
+    else:
+        plan_texts, text_mode, keep_lines = [""] * n, "adapt", any(inspo_lines)
     note = None
 
     def clean_post(caption: str, hashtags: list[str]) -> dict:
@@ -1062,7 +1631,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         current = resolve_plan(shots, clips, fixed, {})
         with ThreadPoolExecutor(6) as pool:
             faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), current))
-        effective = effective_layout(current, plan_texts, layout, position, look, caption_style, faces)
+        lays, cap_ys = place_text(current, plan_texts, layout, style, inspo_text["align"], spots, position,
+                                  caption_style, faces, keep_lines)
         t = 0.0
         frames = []
         for i, p in enumerate(current):
@@ -1070,13 +1640,16 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             t += p["duration"]
         text_rule = None
         if previous.get("textChanged"):
-            text_rule = TEXT_RULES["custom" if options["text"]["mode"] == "custom" else "match"]
-            if options["text"]["mode"] == "custom":
-                text_rule += f" the user's text: {json.dumps(options['text'].get('custom', ''), ensure_ascii=False)}"
+            if text_choice == "custom":
+                text_rule = ("use exactly the user's own text, line by line as typed: "
+                             + json.dumps(text_opts.get("custom", ""), ensure_ascii=False))
+            elif text_choice == "match":
+                text_rule = "use the inspo's own on-screen text, word for word."
+            else:
+                text_rule = TEXT_RULES["adapt"]
         report("matching", 25)
-        result = revise_plan(request, notes, shots, clips,
-                             [{"clip": p["clip"], "start": p["start"]} for p in current],
-                             plan_texts, layout, look, post, effective, faces, frames, caption_style, text_rule)
+        result = revise_plan(request, notes, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
+                             plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule)
         cost += result["cost_usd"]
         data = result["data"]
         by_index = {s["index"]: s for s in data["shots"]}
@@ -1089,13 +1662,29 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
                     fixed[i] = {"clip": ci, "start": max(0.0, float(r["start_s"])), "end": None}
             plan_texts[i] = (r.get("text") or "").strip()
-            for key, field in (("text_y", "textYs"), ("caption_y", "captionYs")):
-                y = r.get(key)
-                if isinstance(y, (int, float)) and y >= 0:
-                    layout[field][i] = min(0.9, max(0.08, float(y)))
+            for key, field in (("text_x", "textXs"), ("text_y", "textYs"), ("caption_y", "captionYs")):
+                v = r.get(key)
+                if isinstance(v, (int, float)) and 0 <= v <= 1:
+                    layout[field][i] = float(v)
         layout["textScale"] = min(1.6, max(0.5, float(data["text_scale"])))
         layout["captionScale"] = min(1.6, max(0.5, float(data["caption_scale"])))
-        look = data["text_look"]
+        if data["font"] in FONTS:
+            style["font"] = data["font"]
+        if isinstance(data["text_color"], str) and re.match(COLOR_RE, data["text_color"]):
+            style["color"] = data["text_color"].upper()
+        if data["text_look"] == "box":
+            style["box"] = True
+        elif data["text_look"] == "outline":
+            style.update(box=False, outline="thick")
+        elif data["text_look"] == "plain":
+            style.update(box=False, outline="none", shadow=True)
+        if data["text_align"] in TEXT_ALIGNS and data["text_align"] != style["align"]:
+            style["align"] = data["text_align"]
+            # x positions were for the old alignment; use the new one's unless new ones were given.
+            layout["textXs"] = [x if x is not None and (by_index.get(i + 1) or {}).get("text_x", -1) >= 0 else None
+                                for i, x in enumerate(layout["textXs"])]
+        if data["text_animation"] in TEXT_ANIMATIONS:
+            style["animation"] = data["text_animation"]
         post = clean_post(data["caption"], data["hashtags"])
         note = data["summary"].strip()
         print(f"revise: ${result['cost_usd']}, usage={result['usage']}, summary={note!r}")
@@ -1111,19 +1700,23 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
         report("matching", 25)
         result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode,
-                             options["text"].get("custom", ""), bool(req.get("fresh")), notes)
+                             text_opts.get("custom", ""), bool(req.get("fresh")), notes)
         cost += result["cost_usd"]
         data = result["data"]
         picked = {s["index"]: s for s in data["shots"]}
+        if text_mode == "adapt":
+            plan_texts = [(picked.get(i + 1) or {}).get("text", "").strip() for i in range(n)]
         if text_mode != "keep":
-            plan_texts = [(picked.get(i + 1) or {}).get("text", "") for i in range(n)]
-            position, look = data["text_position"], data["text_look"]
             post = clean_post(data["caption"], data["hashtags"])
         print(f"matching: ${result['cost_usd']}, usage={result['usage']}")
 
     plan = resolve_plan(shots, clips, fixed, picked)
+    durations = [p["duration"] for p in plan]
+    cuts = transition_plan(durations, inspo_style["transitions"])
+    motions = (list(inspo_style["motions"]) + ["none"] * n)[:n]
+    color = inspo_style["colorFilter"]
 
-    # ---- editing: cut every shot, join them, add text and captions
+    # ---- editing: cut every shot (with the inspo's motion and color), join them with its transitions
     report("editing", 45)
     seg_paths = [workdir / f"shot{i:02d}.mkv" for i in range(len(plan))]
     done = 0
@@ -1131,24 +1724,22 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     def cut(i: int) -> None:
         nonlocal done
         p = plan[i]
-        cut_shot(clips[p["clip"]], p["start"], p["take"], p["duration"], seg_paths[i])
+        tail = cuts[i][1] if i < len(cuts) and cuts[i] else 0.0
+        cut_shot(clips[p["clip"]], p["start"], p["take"], p["duration"], seg_paths[i], tail, motions[i], color)
         done += 1
-        report("editing", 45 + int(30 * done / len(plan)))
+        report("editing", 45 + int(28 * done / len(plan)))
 
     with ThreadPoolExecutor(3) as pool:
         list(pool.map(cut, range(len(plan))))
 
-    list_file = workdir / "shots.txt"
-    list_file.write_text("".join(f"file '{p.name}'\n" for p in seg_paths))
     joined = workdir / "joined.mkv"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list_file.name,
-                    "-c", "copy", joined.name], cwd=workdir, check=True, capture_output=True)
-    total = sum(p["duration"] for p in plan)
+    join_shots(seg_paths, durations, cuts, workdir, joined)
+    total = sum(durations)
 
     use_inspo_audio = music == "inspo" and probe(inspo_path)["has_audio"]
     words: list[dict] = []
     if caption_style:
-        report("editing", 78)
+        report("editing", 76)
         if use_inspo_audio:
             # What you hear is the inspo's audio, so caption that.
             segments = (breakdown.get("transcript") or {}).get("segments") or []
@@ -1157,27 +1748,22 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         for seg in segments:
             words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
 
-    report("editing", 82)
-    has_text = any(t.strip() for t in plan_texts)
+    report("editing", 80)
     faces: list = [[] for _ in plan]
-    if has_text or words:
+    if any(t.strip() for t in plan_texts) or words:
         with ThreadPoolExecutor(6) as pool:
             faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), plan))
-    text_ys, cap_ys = effective_layout(plan, plan_texts, layout, position, look,
-                                       caption_style if words else None, faces)
-    starts = []
-    t = 0.0
-    for p in plan:
-        starts.append(t)
-        t += p["duration"]
+    shown_captions = caption_style if words else None
+    lays, cap_ys = place_text(plan, plan_texts, layout, style, inspo_text["align"], spots, position,
+                              shown_captions, faces, keep_lines)
+    starts = [sum(durations[:i]) for i in range(len(durations))]
 
     def caption_y_at(time_s: float):
         i = max(0, sum(1 for s0 in starts if s0 <= time_s + 1e-6) - 1)
         return cap_ys[i]
 
-    report("editing", 86)
-    ass = build_ass(overlay_timeline(plan, plan_texts, text_ys), position, look, words, caption_style,
-                    layout, caption_y_at)
+    report("editing", 85)
+    ass = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions, caption_y_at)
     out = workdir / "final.mp4"
     cmd = ["ffmpeg", "-v", "error", "-y", "-i", joined.name]
     if music == "none":
@@ -1191,10 +1777,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     cmd += ["-c:a", "aac", "-b:a", "192k"]
     if ass:
         (workdir / "text.ass").write_text(ass, encoding="utf-8")
-        cmd += ["-vf", f"ass=text.ass:fontsdir={FONT_DIR}", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        cmd += ["-vf", "ass=text.ass", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-profile:v", "high"]
     else:
-        cmd += ["-c:v", "copy"]
+        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
     cmd += ["-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
@@ -1206,7 +1792,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     report("finishing", 99)
 
     seconds = round(time.time() - started, 1)
-    print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s, faces={sum(map(len, faces))}")
+    print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s, "
+          f"faces={sum(map(len, faces))}, transitions={sum(1 for c in cuts if c)}, motions={sum(m != 'none' for m in motions)}, "
+          f"color={color}, font={style['font']}, animation={style['animation']}")
     return {
         "storageKey": req["outputKey"],
         "width": OUT_W,
@@ -1221,14 +1809,18 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             ],
             "texts": plan_texts,
             "textPosition": position,
-            "textLook": look,
+            "textLook": look_name(style),
+            "textStyle": style,
+            "keepLines": keep_lines,
             # Only positions someone asked for; automatic ones are worked out again for each version.
+            "textXs": layout["textXs"],
             "textYs": layout["textYs"],
             "captionYs": layout["captionYs"],
             "textScale": layout["textScale"],
             "captionScale": layout["captionScale"],
             "note": note,
         },
+        **({"inspoStyle": new_style} if new_style else {}),
         "meta": {"engine": "modal", "costUsd": round(cost, 4), "claude": needs_claude, "seconds": seconds,
                  "clipsSkipped": len(clip_ids) - len(clips)},
     }
@@ -1270,7 +1862,9 @@ def analyze_job(storage_key: str) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "inspo"
             r2_client().download_file(os.environ["R2_BUCKET"], storage_key, str(path))
-            return analyze_path(path)
+            breakdown = analyze_path(path)
+            report("reading the editing style", 97)
+            return add_style(path, breakdown)
     except JobError:
         raise
     except Exception as e:  # noqa: BLE001
@@ -1284,7 +1878,7 @@ def analyze_upload(video: bytes) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "inspo"
         path.write_bytes(video)
-        return analyze_path(path)
+        return add_style(path, analyze_path(path))
 
 
 @app.local_entrypoint()
@@ -1403,7 +1997,8 @@ def api():
         except Exception as e:  # noqa: BLE001
             checks["ffmpeg"] = {"ok": False, "detail": type(e).__name__}
 
-        fonts = list(Path(FONT_DIR).glob("*.otf")) if Path(FONT_DIR).exists() else []
+        families = run(["fc-list", ":", "family"])
+        fonts = [f for f, _b, _w in FONTS.values() if f in families]
         has_zscale = " zscale " in run(["ffmpeg", "-hide_banner", "-filters"])
         has_ass = " ass " in run(["ffmpeg", "-hide_banner", "-filters"])
         try:
@@ -1414,8 +2009,8 @@ def api():
         except Exception as e:  # noqa: BLE001
             faces, cv = False, type(e).__name__
         checks["render"] = {
-            "ok": bool(fonts) and has_ass and faces,
-            "detail": f"{len(fonts)} fonts, ass={has_ass}, zscale={has_zscale}, faces={faces}, {cv}",
+            "ok": bool(fonts) and has_ass and faces and len(fonts) == len(FONTS),
+            "detail": f"{len(fonts)}/{len(FONTS)} fonts, ass={has_ass}, zscale={has_zscale}, faces={faces}, {cv}",
         }
 
         try:

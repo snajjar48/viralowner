@@ -6,6 +6,7 @@ import {
   getInspiration,
   listClips,
   listRenders,
+  saveInspoStyle,
   setRenderJob,
   updateRender,
   type Clip,
@@ -162,6 +163,10 @@ export async function syncRender(projectId: string, render: Render): Promise<Ren
     plan: job.output?.plan,
     error: job.state === "failed" ? (job.error ?? "something went wrong while making your video.") : undefined,
   } as const;
+  // Older inspos get their editing style worked out by their first render: keep it.
+  if (job.output?.inspoStyle) {
+    await saveInspoStyle(projectId, job.output.inspoStyle).catch((e) => console.error("Saving inspo style failed:", e));
+  }
   if (status !== render.status || job.stage !== render.stage || job.progress !== render.progress) {
     await updateRender(projectId, render.id, update);
   }
@@ -209,14 +214,31 @@ export async function getStillActiveRender(projectId: string): Promise<Render | 
  */
 export function textToReuse(from: Render | undefined, options: VideoOptions): Extras["reuseText"] {
   if (!from?.plan || !from.postCopy || textChanged(from, options)) return undefined;
-  const { texts, textPosition, textLook, textYs, captionYs, textScale, captionScale } = from.plan;
-  return { texts, textPosition, textLook, textYs, captionYs, textScale, captionScale, postCopy: from.postCopy };
+  const { texts, textPosition, textLook, textXs, textYs, captionYs, textScale, captionScale, textStyle, keepLines } =
+    from.plan;
+  return {
+    texts,
+    textPosition,
+    textLook,
+    textXs,
+    textYs,
+    captionYs,
+    textScale,
+    captionScale,
+    textStyle,
+    keepLines,
+    postCopy: from.postCopy,
+  };
 }
 
-/** The words depend on the text options and the additional requests. */
+/** The words depend on the text mode, the user's own text and the additional requests (not alignment). */
 function textChanged(from: Render, options: VideoOptions) {
   const before = from.settings.options;
-  return JSON.stringify(before.text) !== JSON.stringify(options.text) || (before.notes ?? "") !== options.notes;
+  return (
+    before.text.mode !== options.text.mode ||
+    before.text.custom !== options.text.custom ||
+    (before.notes ?? "") !== options.notes
+  );
 }
 
 /** What "request a change" needs to know about the version being changed. */

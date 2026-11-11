@@ -6,6 +6,8 @@ import {
   NOTES_MAX,
   TEXT_MAX,
   type MusicMode,
+  type TextAlign,
+  type TextMode,
   type VideoOptions,
 } from "@/lib/video-options";
 import { CaptionStylePicker, Toggle } from "./caption-styles";
@@ -86,6 +88,19 @@ function Choice({
   );
 }
 
+const TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
+  { mode: "match", title: "match the inspo", description: "the same words, style and placement as the inspo" },
+  { mode: "adapt", title: "match the style, use my business", description: "same style and placement, words about you" },
+  { mode: "custom", title: "write my own", description: "your exact words and lines, in the inspo’s style" },
+];
+
+const ALIGN_CHOICES: { align: TextAlign; title: string }[] = [
+  { align: "inspo", title: "like inspo" },
+  { align: "left", title: "left" },
+  { align: "center", title: "center" },
+  { align: "right", title: "right" },
+];
+
 const MUSIC_CHOICES: { mode: MusicMode; title: string; description: string }[] =
   [
     {
@@ -156,36 +171,30 @@ export function OptionsFields({
         title="on-screen text"
         icon={<TextIcon className="size-4 text-muted" />}
       >
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Choice
-            name={`${id}-text`}
-            checked={value.text.mode === "match"}
-            onChange={() => set({ text: { ...value.text, mode: "match" } })}
-            title="match the inspo"
-            description="same style and placement, your words"
-          />
-          <Choice
-            name={`${id}-text`}
-            checked={value.text.mode === "custom"}
-            onChange={() => set({ text: { ...value.text, mode: "custom" } })}
-            title="write my own"
-            description="your exact wording"
-          />
+        <div className="flex flex-col gap-2">
+          {TEXT_CHOICES.map((c) => (
+            <Choice
+              key={c.mode}
+              name={`${id}-text`}
+              checked={value.text.mode === c.mode}
+              onChange={() => set({ text: { ...value.text, mode: c.mode } })}
+              title={c.title}
+              description={c.description}
+            />
+          ))}
         </div>
         {value.text.mode === "custom" && (
           <div className="flex flex-col gap-1.5">
             <label htmlFor={`${id}-custom`} className="text-sm text-muted">
-              your text or caption wording
+              your text. each line you type shows up as its own line, exactly as you wrote it.
             </label>
             <textarea
               id={`${id}-custom`}
               value={value.text.custom}
               maxLength={TEXT_MAX}
-              rows={3}
-              placeholder="e.g. 3 things nobody tells you about opening a café"
-              onChange={(e) =>
-                set({ text: { mode: "custom", custom: e.target.value } })
-              }
+              rows={4}
+              placeholder={"e.g.\npov:\nyou found the best croffles in town"}
+              onChange={(e) => set({ text: { ...value.text, mode: "custom", custom: e.target.value } })}
               className={`${inputClass} h-auto py-3`}
             />
             <span className="self-end text-xs text-muted tabular-nums">
@@ -193,6 +202,30 @@ export function OptionsFields({
             </span>
           </div>
         )}
+        <fieldset className="flex flex-col gap-1.5">
+          <legend className="mb-1.5 text-sm text-muted">alignment</legend>
+          <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/10 p-1">
+            {ALIGN_CHOICES.map((c) => (
+              <label
+                key={c.align}
+                className={`flex cursor-pointer items-center justify-center rounded-lg px-1 py-2 text-xs transition has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-coral sm:text-sm ${
+                  value.text.align === c.align
+                    ? "bg-linear-to-r from-violet to-coral font-medium text-white"
+                    : "text-muted hover:text-foreground"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name={`${id}-align`}
+                  checked={value.text.align === c.align}
+                  onChange={() => set({ text: { ...value.text, align: c.align } })}
+                  className="sr-only"
+                />
+                {c.title}
+              </label>
+            ))}
+          </div>
+        </fieldset>
       </Section>
 
       <Section title="music" icon={<MusicIcon className="size-4 text-muted" />}>

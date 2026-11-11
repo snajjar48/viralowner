@@ -80,6 +80,16 @@ What it does:
   exact length at 1080×1920 (HDR footage is tone-mapped), joins them, and burns in
   text and captions (ASS subtitles, Montserrat). Edits that keep the clips and
   text skip Claude. The finished MP4 goes to R2 next to the project's other files.
+- **Copying the inspo's look**: analysis also reads the inspo's editing style
+  (transition into each shot, motion effects, color filter, and its text: font,
+  colors, outline/box, size, alignment, animation, placement and line breaks).
+  Renders rebuild it with ffmpeg `xfade`/`zoompan` filters and 9 free fonts
+  (installed in the worker image). On-screen text modes: `match` (the inspo's
+  exact words and lines), `adapt` (its style, words about the user's business),
+  `custom` (the user's own lines, exactly as typed).
+- **Safe zone**: text and captions always stay clear of the TikTok/Instagram
+  interface (top bar, bottom caption area, right-hand buttons): `SAFE` in
+  `worker/app.py`.
 - The "pick a track" music option keeps the clips' audio until a licensed music
   library is added.
 
