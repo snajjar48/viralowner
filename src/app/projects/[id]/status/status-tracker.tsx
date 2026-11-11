@@ -29,7 +29,7 @@ export function StatusTracker({ projectId, renderId, initial }: { projectId: str
   const router = useRouter();
   const [state, setState] = useState(initial);
   const [retrying, setRetrying] = useState(false);
-  const [netError, setNetError] = useState(false);
+  const [checkError, setCheckError] = useState<"network" | "server" | null>(null);
 
   // Poll while the video is being made.
   useEffect(() => {
@@ -37,15 +37,16 @@ export function StatusTracker({ projectId, renderId, initial }: { projectId: str
     let stopped = false;
     const tick = async () => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/renders/${renderId}`, { cache: "no-store" });
-        if (!res.ok) throw new Error();
+        const res = await fetch(`/api/projects/${projectId}/renders/${renderId}`, { cache: "no-store" }).catch(() => null);
+        if (!res) throw new Error("network");
+        if (!res.ok) throw new Error("server");
         const next = (await res.json()) as RenderState;
         if (stopped) return;
-        setNetError(false);
+        setCheckError(null);
         setState(next);
         if (next.status === "done") router.replace(`/projects/${projectId}/preview?v=${next.version}`);
-      } catch {
-        if (!stopped) setNetError(true);
+      } catch (error) {
+        if (!stopped) setCheckError(error instanceof Error && error.message === "network" ? "network" : "server");
       }
     };
     const first = setTimeout(tick, 300);
@@ -142,9 +143,11 @@ export function StatusTracker({ projectId, renderId, initial }: { projectId: str
           })}
         </ol>
       </div>
-      {netError && (
+      {checkError && (
         <p role="status" className="text-center text-sm text-muted">
-          having trouble reaching us. we’ll keep trying.
+          {checkError === "network"
+            ? "having trouble reaching us. we’ll keep trying."
+            : "something’s off on our side while checking your video. we’ll keep trying."}
         </p>
       )}
       <p className="text-center text-sm text-muted">you can leave this page. we’ll email you when your video is ready.</p>

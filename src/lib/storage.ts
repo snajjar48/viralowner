@@ -34,21 +34,23 @@ function objectUrl(key: string) {
 }
 
 /**
- * A URL the browser can PUT one file to. The content type and exact size are
- * part of the signature, so storage rejects any other file.
+ * A URL the browser can PUT one file to.
+ *
+ * Only the URL itself is signed, not the file's size or type: phones (iPhones
+ * picking from Photos especially) can send slightly different bytes or headers
+ * than they reported, and R2 answers a signature mismatch without CORS headers,
+ * which the browser shows as a vague "network error". The server checks the
+ * stored file's real size, type and length after upload instead
+ * (completeInspo / completeClip) and deletes anything that doesn't pass.
  */
 export async function createUploadUrl(
   key: string,
-  { contentType, sizeBytes, expiresIn = 3600 }: { contentType: string; sizeBytes: number; expiresIn?: number },
+  { contentType, expiresIn = 3600 }: { contentType: string; sizeBytes: number; expiresIn?: number },
 ) {
   const url = new URL(objectUrl(key));
   url.searchParams.set("X-Amz-Expires", String(expiresIn));
-  const signed = await r2().client.sign(url.toString(), {
-    method: "PUT",
-    headers: { "content-type": contentType, "content-length": String(sizeBytes) },
-    aws: { signQuery: true, allHeaders: true },
-  });
-  // The browser sets content-length itself; it only needs to send content-type.
+  const signed = await r2().client.sign(url.toString(), { method: "PUT", aws: { signQuery: true } });
+  // Sent (not signed) so storage records the type.
   return { url: signed.url, headers: { "content-type": contentType } };
 }
 
@@ -88,11 +90,15 @@ export async function readRange(key: string, start: number, end: number) {
 }
 
 export async function putObject(key: string, body: Uint8Array, contentType: string) {
-  const res = await r2().client.fetch(objectUrl(key), {
+  // Sign first, then send the raw bytes ourselves. Passing aws4fetch's signed
+  // Request straight to Next.js's fetch streams the body without a
+  // content-length, which R2 rejects (411).
+  const signed = await r2().client.sign(objectUrl(key), {
     method: "PUT",
     headers: { "content-type": contentType },
     body: body as BodyInit,
   });
+  const res = await fetch(signed.url, { method: "PUT", headers: signed.headers, body: body as BodyInit });
   if (!res.ok) throw new Error(`Storage PUT failed (${res.status})`);
 }
 

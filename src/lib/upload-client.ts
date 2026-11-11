@@ -42,9 +42,24 @@ export function uploadToSignedUrl(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const startedAt = Date.now();
+    let loaded = 0;
+    const report = (kind: string) =>
+      reportUploadError({
+        kind,
+        status: xhr.status,
+        fileType: file.type,
+        fileExt: file.name.split(".").pop()?.toLowerCase(),
+        sizeBytes: file.size,
+        loadedBytes: loaded,
+        elapsedMs: Date.now() - startedAt,
+        online: navigator.onLine,
+      });
+
     xhr.open("PUT", upload.url);
     for (const [k, v] of Object.entries(upload.headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => {
+      loaded = e.loaded;
       if (e.lengthComputable) onProgress(Math.min(99, Math.floor((e.loaded / e.total) * 100)));
     };
     xhr.onload = () => {
@@ -52,14 +67,30 @@ export function uploadToSignedUrl(
         onProgress(100);
         resolve();
       } else {
+        report("http");
         reject(new UploadError("the upload didn’t go through. please try again."));
       }
     };
-    xhr.onerror = () => reject(new UploadError("the upload stopped. check your connection and try again."));
+    xhr.onerror = () => {
+      report("network");
+      reject(new UploadError("the upload stopped. check your connection and try again."));
+    };
     xhr.onabort = () => reject(new UploadError("upload canceled."));
     signal?.addEventListener("abort", () => xhr.abort());
     xhr.send(file);
   });
+}
+
+/** Tells our server an upload failed (best effort, never throws). */
+function reportUploadError(details: Record<string, unknown>) {
+  try {
+    const body = JSON.stringify(details);
+    if (!navigator.sendBeacon?.("/api/upload-errors", new Blob([body], { type: "application/json" }))) {
+      void fetch("/api/upload-errors", { method: "POST", body, keepalive: true }).catch(() => {});
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /** POST JSON to our API; returns the parsed body or throws with a friendly message. */
