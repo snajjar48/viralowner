@@ -16,17 +16,17 @@ const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
 
 const baseOptions = {
-  fonts: [{ cssSrc: "https://fonts.googleapis.com/css2?family=Geist:wght@400;500&display=swap" }],
+  fonts: [{ cssSrc: "https://fonts.googleapis.com/css2?family=Lexend:wght@400;500&display=swap" }],
   appearance: {
     theme: "night",
     variables: {
-      colorPrimary: "#7b2ff7",
+      colorPrimary: "#8a4cf0",
       colorBackground: "#18181d",
       colorText: "#f5f5f7",
       colorTextSecondary: "#a1a1aa",
       colorTextPlaceholder: "#71717a",
-      colorDanger: "#ff3d6e",
-      fontFamily: "Geist, system-ui, sans-serif",
+      colorDanger: "#f63165",
+      fontFamily: "Lexend, system-ui, sans-serif",
       fontSizeBase: "16px",
       borderRadius: "12px",
     },

@@ -41,7 +41,7 @@ export function Eyebrow({ children }: { children: ReactNode }) {
 
 export function GradientText({ children }: { children: ReactNode }) {
   return (
-    <span className="bg-linear-to-r from-violet via-[#c23ab4] to-coral bg-clip-text text-transparent">
+    <span className="bg-linear-to-r from-violet via-[#a826a8] to-coral bg-clip-text text-transparent">
       {children}
     </span>
   );
@@ -75,7 +75,7 @@ export function AuthLayout({
         </aside>
 
         <main className="w-full">
-          <div className="rounded-[28px] bg-linear-to-b from-white/15 via-white/5 to-white/5 p-px shadow-[0_30px_80px_-20px_rgba(123,47,247,0.35)]">
+          <div className="rounded-[28px] bg-linear-to-b from-white/15 via-white/5 to-white/5 p-px shadow-[0_30px_80px_-20px_rgba(105,27,234,0.35)]">
             <div className="rounded-[27px] bg-[#0f0f14]/90 p-6 backdrop-blur-xl sm:p-8">
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
               {subtitle && <p className="mt-2 text-sm text-muted">{subtitle}</p>}
@@ -114,7 +114,7 @@ export function EditPreview() {
       </div>
 
       {/* Finished edit */}
-      <div className="relative aspect-[9/16] w-32 shrink-0 rounded-2xl bg-linear-to-b from-violet to-coral p-px shadow-[0_20px_60px_-15px_rgba(255,61,110,0.5)] sm:w-36">
+      <div className="relative aspect-[9/16] w-32 shrink-0 rounded-2xl bg-linear-to-b from-violet to-coral p-px shadow-[0_20px_60px_-15px_rgba(246,49,101,0.5)] sm:w-36">
         <div className="relative h-full overflow-hidden rounded-[15px] bg-[#120d1c]">
           <div className="absolute -top-8 -left-6 size-28 rounded-full bg-violet/50 blur-2xl" />
           <div className="absolute -right-6 -bottom-8 size-28 rounded-full bg-coral/40 blur-2xl" />

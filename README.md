@@ -10,7 +10,7 @@ Waitlist landing page. Next.js (App Router) + TypeScript + Tailwind, with signup
 | `src/app/waitlist-form.tsx` | Email form, honeypot field, success message |
 | `src/app/api/waitlist/route.ts` | `POST /api/waitlist`: validation, honeypot, rate limit, insert |
 | `src/lib/rate-limit.ts` | 5 attempts per IP per 10 minutes, stored in Postgres (IPs are hashed) |
-| `db/schema.sql` | Tables: `waitlist_signups` (unique on lowercased email), `rate_limits` |
+| `db/migrations/` | Numbered SQL migrations (waitlist, rate limits, video projects). Applied by `npm run db:migrate` |
 
 ## Setup
 
@@ -23,9 +23,9 @@ Waitlist landing page. Next.js (App Router) + TypeScript + Tailwind, with signup
    vercel link
    vercel env pull .env.local
    ```
-4. **Create the tables** (one time, safe to rerun):
+4. **Create or update the tables** (applies only new migrations, safe to rerun):
    ```sh
-   npm run db:setup
+   npm run db:migrate
    ```
 5. **Redeploy** on Vercel (Deployments → ⋯ → Redeploy) so the live site picks up the database.
 
