@@ -2,7 +2,11 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { BackgroundGlow } from "@/components/auth-layout";
+import Link from "next/link";
+import { buttonClass } from "@/components/form";
+import { listProjects, resumeHref, type ProjectStatus } from "@/lib/projects";
 import { createClient } from "@/lib/supabase/server";
+import { formatDuration } from "@/lib/video-options";
 import { ManageBillingButton } from "./manage-billing-button";
 import { SignOutButton } from "./sign-out-button";
 
@@ -20,6 +24,15 @@ const STATUS_LABELS: Record<string, string> = {
   canceled: "Canceled",
   unpaid: "Unpaid",
   paused: "Paused",
+};
+
+const PROJECT_LABELS: Record<ProjectStatus, string> = {
+  draft: "inspo not analyzed yet",
+  analyzing: "analyzing your inspo",
+  ready_for_clips: "ready for your clips",
+  processing: "editing your video",
+  done: "ready to post",
+  failed: "needs another try",
 };
 
 // Requires the site password AND a signed-in account (see src/proxy.ts).
@@ -86,6 +99,48 @@ async function Account() {
       </div>
 
       {status && <ManageBillingButton />}
+
+      <Link href="/new" className={`${buttonClass} flex max-w-sm items-center justify-center`}>
+        make a new video
+      </Link>
+      <Projects userId={user.id} />
     </>
+  );
+}
+
+async function Projects({ userId }: { userId: string }) {
+  const projects = await listProjects(userId).catch((error) => {
+    console.error("Listing projects failed:", error);
+    return null;
+  });
+  if (!projects) return <p className="text-sm text-coral">couldn’t load your videos. refresh to try again.</p>;
+  if (projects.length === 0) {
+    return <p className="text-sm text-muted">your videos will show up here.</p>;
+  }
+  return (
+    <section aria-labelledby="videos-heading" className="flex w-full max-w-sm flex-col gap-2 text-left">
+      <h2 id="videos-heading" className="text-sm text-muted">
+        your videos
+      </h2>
+      <ul className="flex flex-col gap-2">
+        {projects.map((p) => (
+          <li key={p.id}>
+            <Link
+              href={resumeHref(p)}
+              className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm transition hover:border-white/25 focus-visible:outline-2 focus-visible:outline-coral"
+            >
+              <span className="flex flex-col">
+                <span className="font-medium">
+                  {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  {p.inspoDurationS !== null && ` · ${formatDuration(p.inspoDurationS)} inspo`}
+                </span>
+                <span className="text-muted">{PROJECT_LABELS[p.status]}</span>
+              </span>
+              <span aria-hidden="true" className="text-muted">→</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

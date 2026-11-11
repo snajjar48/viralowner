@@ -91,3 +91,62 @@ export const PlayIcon = (p: SVGProps<SVGSVGElement>) => (
     <path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z" />
   </svg>
 );
+
+export const ArrowLeftIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M19 12H5M11 6l-6 6 6 6" />
+  </Icon>
+);
+
+export const CameraIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M15 10l5-3v10l-5-3z" />
+    <rect x="3" y="6" width="12" height="12" rx="2" />
+  </Icon>
+);
+
+export const FilmIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4" />
+  </Icon>
+);
+
+export const XIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M18 6L6 18M6 6l12 12" />
+  </Icon>
+);
+
+export const AlertIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8v5M12 16h.01" />
+  </Icon>
+);
+
+export const RefreshIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M20 11a8 8 0 0 0-14.9-4M4 4v4h4M4 13a8 8 0 0 0 14.9 4M20 20v-4h-4" />
+  </Icon>
+);
+
+export const TextIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M5 6V4h14v2M12 4v16M9 20h6" />
+  </Icon>
+);
+
+export const MusicIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9 18V5l11-2v13" />
+    <circle cx="6" cy="18" r="3" />
+    <circle cx="17" cy="16" r="3" />
+  </Icon>
+);
+
+export const GripIcon = (p: SVGProps<SVGSVGElement>) => (
+  <Icon {...p}>
+    <path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" strokeWidth={3} />
+  </Icon>
+);

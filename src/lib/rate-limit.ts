@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { getSql } from "./db";
 
 const WINDOW_SECONDS = 10 * 60; // 10 minutes
-const MAX_REQUESTS = 5; // per IP per window
+const MAX_REQUESTS = 5; // per key per window, unless the caller says otherwise
 
 function hashKey(value: string) {
   return createHash("sha256").update(`viralowner:${value}`).digest("hex");
@@ -13,7 +13,7 @@ function hashKey(value: string) {
  * Fixed-window rate limiter stored in Postgres, so it holds across serverless
  * instances. Returns true if the request is allowed.
  */
-export async function checkRateLimit(id: string): Promise<boolean> {
+export async function checkRateLimit(id: string, max = MAX_REQUESTS): Promise<boolean> {
   // Local development without a database: skip rate limiting.
   if (!process.env.DATABASE_URL && process.env.NODE_ENV === "development") {
     return true;
@@ -38,5 +38,5 @@ export async function checkRateLimit(id: string): Promise<boolean> {
     await sql`DELETE FROM rate_limits WHERE window_start < now() - interval '1 day'`;
   }
 
-  return Number(rows[0].count) <= MAX_REQUESTS;
+  return Number(rows[0].count) <= max;
 }
