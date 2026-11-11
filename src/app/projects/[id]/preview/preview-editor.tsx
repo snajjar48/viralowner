@@ -11,7 +11,7 @@ import { ROLE_LABELS } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
 import type { RenderSettings, Shot, ShotEdit } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
-import { formatDuration } from "@/lib/video-options";
+import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 
 interface EditorClip {
   id: string;
@@ -35,7 +35,7 @@ export function PreviewEditor({
   projectId: string;
   versions: number[];
   /** `shots`: what this version actually used (the engine's picks filled in). */
-  current: { version: number; videoUrl: string; settings: RenderSettings; shots: ShotEdit[] };
+  current: { version: number; videoUrl: string; settings: RenderSettings; shots: ShotEdit[]; note: string | null };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
   shots: Shot[];
@@ -55,6 +55,7 @@ export function PreviewEditor({
   const [options, setOptions] = useState(current.settings.options);
   const [shotEdits, setShotEdits] = useState(initialShots);
   const [busy, setBusy] = useState<"apply" | "regenerate" | null>(null);
+  const [request, setRequest] = useState("");
   const [error, setError] = useState("");
 
   const dirty =
@@ -80,7 +81,7 @@ export function PreviewEditor({
     try {
       const body =
         kind === "apply"
-          ? { mode: "edit", options, shots: shotEdits, fromVersion: current.version }
+          ? { mode: "edit", options, shots: shotEdits, fromVersion: current.version, request: request.trim() || undefined }
           : { mode: "regenerate", fromVersion: current.version };
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, body);
       router.push(`/projects/${projectId}/status?render=${renderId}`);
@@ -94,6 +95,7 @@ export function PreviewEditor({
   }
 
   const locked = !!inProgress || busy !== null;
+  const asking = request.trim().length > 0;
 
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,auto)_1fr] lg:items-start">
@@ -156,6 +158,39 @@ export function PreviewEditor({
           </Link>
         )}
 
+        {current.settings.request && (
+          <div className="flex flex-col gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
+            <p>
+              <span className="text-muted">you asked: </span>
+              {current.settings.request}
+            </p>
+            {current.note && (
+              <p>
+                <span className="text-muted">what we changed: </span>
+                {current.note}
+              </p>
+            )}
+          </div>
+        )}
+
+        <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
+          <label htmlFor="change-request" className="text-sm text-muted">
+            tell us what to change, in your own words. we’ll make a new version.
+          </label>
+          <textarea
+            id="change-request"
+            value={request}
+            maxLength={REQUEST_MAX}
+            rows={3}
+            placeholder="e.g. shrink the words and move them so they aren’t covering any faces"
+            onChange={(e) => setRequest(e.target.value)}
+            className={`${inputClass} h-auto py-3`}
+          />
+          <span className="self-end text-xs text-muted tabular-nums">
+            {request.length}/{REQUEST_MAX}
+          </span>
+        </Section>
+
         <Section title="shots">
           <ol className="flex flex-col gap-2">
             {shots.map((shot) => {
@@ -211,7 +246,7 @@ export function PreviewEditor({
           </ol>
         </Section>
 
-        <OptionsFields value={options} onChange={setOptions} />
+        <OptionsFields value={options} onChange={setOptions} showNotes={false} />
 
         {(problem || error) && (
           <p role="alert" className="text-center text-sm text-coral">
@@ -222,11 +257,15 @@ export function PreviewEditor({
           <button
             type="button"
             onClick={() => run("apply")}
-            disabled={!dirty || !!problem || locked}
+            disabled={(!dirty && !asking) || !!problem || locked}
             className={`${buttonClass} flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
           >
             <SparkleIcon className="size-4" />
-            {busy === "apply" ? "starting…" : dirty ? "apply changes (makes a new version)" : "make a change to apply it"}
+            {busy === "apply"
+              ? "starting…"
+              : dirty || asking
+                ? "apply changes (makes a new version)"
+                : "make a change to apply it"}
           </button>
         </div>
       </div>

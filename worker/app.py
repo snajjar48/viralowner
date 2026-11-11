@@ -53,8 +53,8 @@ app = modal.App(APP_NAME)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("ffmpeg", "fonts-montserrat")
-    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect[opencv-headless]", "faster-whisper")
+    .apt_install("ffmpeg", "fonts-montserrat", "libgl1", "libglib2.0-0")
+    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
 )
 
@@ -515,7 +515,7 @@ def sample_clip_frames(clips: list[dict], workdir: Path) -> None:
 
 
 def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict], fixed: list[dict],
-                text_mode: str, custom_text: str, fresh: bool) -> dict:
+                text_mode: str, custom_text: str, fresh: bool, notes: str = "") -> dict:
     """Claude's plan: a clip and start time per shot, on-screen text, and the post copy."""
     b = inspo["breakdown"]
     shots = b["shots"]
@@ -561,6 +561,10 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
         *(["the user's choices:", *rules] if rules else []),
         TEXT_RULES[text_mode],
         *([f"the user's text: {json.dumps(custom_text, ensure_ascii=False)}"] if text_mode == "custom" else []),
+        *([
+            "the user's additional requests and details about their video (follow them where they fit, use the "
+            f"details in the words you write): {json.dumps(notes, ensure_ascii=False)}"
+        ] if notes else []),
         *(["this is a fresh take: make different choices from the most obvious ones where it still works."] if fresh else []),
     ]
     content.append({"type": "text", "text": "\n".join(ask)})
@@ -685,28 +689,130 @@ def caption_chunks(words: list[dict], max_words: int, max_chars: int) -> list[li
     return chunks
 
 
-def build_ass(texts: list[tuple[float, float, str]], position: str, look: str,
-              words: list[dict], caption_style: str | None) -> str | None:
-    """The subtitle file for on-screen text and captions, or None if there's nothing to draw."""
+CAPTION_MARGIN = 620  # px from the bottom: above where the apps put their own buttons and caption
+TOP_MARGIN = 340
+
+
+def scaled(look: dict, scale: float) -> dict:
+    return {**look, "size": round(look["size"] * scale), "outline": max(0, round(look["outline"] * scale))}
+
+
+def block_height(text: str, look: dict) -> float:
+    """Roughly how tall a block of text is, as a fraction of the frame."""
+    import math
+
+    per_line = max(6, int((OUT_W - 180) / (look["size"] * 0.58)))
+    lines = max(1, math.ceil(len(text) / per_line))
+    pad = 2 * look["outline"] if look["border"] == 3 else 0
+    return (lines * look["size"] * 1.22 + pad) / OUT_H
+
+
+def default_text_center(position: str, h: float, captions: bool, cap_center: float) -> float:
+    if position == "top":
+        return TOP_MARGIN / OUT_H + h / 2
+    if position == "middle" or captions:
+        return 0.5
+    return cap_center
+
+
+def caption_center(cap: dict) -> float:
+    lines = 1 if cap["words"] <= 3 else 2
+    return 1 - CAPTION_MARGIN / OUT_H - lines * cap["size"] * 1.22 / OUT_H / 2
+
+
+def segment_faces(clip: dict, start: float, take: float) -> list[tuple[float, float]]:
+    """Vertical ranges (fractions of the finished frame) where faces are in this shot."""
+    import cv2
+    import numpy as np
+
+    w, h = OUT_W // 3, OUT_H // 3
+    vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=gray"
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    ranges = []
+    for f in (0.2, 0.5, 0.8):
+        raw = subprocess.run(
+            ["ffmpeg", "-v", "error", "-ss", f"{start + take * f:.3f}", "-i", str(clip["path"]), "-frames:v", "1",
+             "-vf", vf, "-f", "rawvideo", "-"], capture_output=True,
+        ).stdout
+        if len(raw) != w * h:
+            continue
+        img = np.frombuffer(raw, np.uint8).reshape(h, w)
+        for (_x, y, _fw, fh) in cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=6, minSize=(30, 30)):
+            # Include the forehead and chin, not just the detected box.
+            ranges.append((max(0.0, (y - 0.2 * fh) / h), min(1.0, (y + 1.3 * fh) / h)))
+    ranges.sort()
+    merged: list[list[float]] = []
+    for y0, y1 in ranges:
+        if merged and y0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], y1)
+        else:
+            merged.append([y0, y1])
+    return [(r2(a), r2(b)) for a, b in merged]
+
+
+def free_spot(want: float, h: float, blocked: list[tuple[float, float]]) -> float | None:
+    """The nearest center to `want` that keeps a block of height `h` off everything blocked.
+    None if `want` is already clear (or nothing is)."""
+    def clear(c: float) -> bool:
+        top, bottom = c - h / 2, c + h / 2
+        return top >= 0.07 and bottom <= 0.93 and all(bottom + 0.015 <= y0 or top - 0.015 >= y1 for y0, y1 in blocked)
+
+    if clear(want):
+        return None
+    spots = [c / 100 for c in range(8, 93) if clear(c / 100)]
+    return min(spots, key=lambda c: abs(c - want)) if spots else None
+
+
+def effective_layout(plan: list[dict], texts: list[str], layout: dict, position: str, look: str,
+                     caption_style: str | None, faces: list[list[tuple[float, float]]]) -> tuple[list, list]:
+    """Where text and captions go in each shot: what was asked for, otherwise the default spot,
+    moved off any faces."""
+    text_look = scaled(OVERLAY_LOOKS.get(look, OVERLAY_LOOKS["outline"]), layout["textScale"])
+    cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
+    cap_default = caption_center(cap)
+    cap_h = (1 - CAPTION_MARGIN / OUT_H - cap_default) * 2
+    text_ys, cap_ys = [], []
+    for i in range(len(plan)):
+        f = faces[i] if i < len(faces) else []
+        cy = layout["captionYs"][i]
+        if caption_style and cy is None:
+            cy = free_spot(cap_default, cap_h, f)
+        cap_ys.append(cy)
+        text = (texts[i] or "").strip()
+        ty = layout["textYs"][i]
+        if text and ty is None:
+            h = block_height(text, text_look)
+            want = default_text_center(position, h, bool(caption_style), cap_default)
+            band = [] if not caption_style else [((cy or cap_default) - cap_h / 2, (cy or cap_default) + cap_h / 2)]
+            ty = free_spot(want, h, f + band)
+        text_ys.append(ty)
+    return text_ys, cap_ys
+
+
+def build_ass(texts: list[tuple[float, float, str, float | None]], position: str, look: str,
+              words: list[dict], caption_style: str | None, layout: dict,
+              caption_y_at) -> str | None:
+    """The subtitle file for on-screen text and captions, or None if there's nothing to draw.
+    A y (center, as a fraction of the height) overrides the default placement."""
     events = []
     captions = bool(caption_style and words)
-    # Captions sit in the lower third, above where the apps put their own buttons and caption.
-    caption_v = 620
     if position == "top":
-        overlay_align, overlay_v = 8, 340
+        overlay_align, overlay_v = 8, TOP_MARGIN
     elif position == "middle" or captions:
         overlay_align, overlay_v = 5, 0
     else:
-        overlay_align, overlay_v = 2, caption_v
+        overlay_align, overlay_v = 2, CAPTION_MARGIN
 
-    styles = [ass_style("Text", OVERLAY_LOOKS.get(look, OVERLAY_LOOKS["outline"]), overlay_align, overlay_v)]
-    for start, end, text in texts:
+    at = lambda y: f"{{\\an5\\pos({OUT_W // 2},{round(y * OUT_H)})}}" if y is not None else ""  # noqa: E731
+    text_look = scaled(OVERLAY_LOOKS.get(look, OVERLAY_LOOKS["outline"]), layout["textScale"])
+    styles = [ass_style("Text", text_look, overlay_align, overlay_v)]
+    for start, end, text, y in texts:
         if ass_text(text):
-            events.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Text,,0,0,0,,{ass_text(text)}")
+            events.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Text,,0,0,0,,{at(y)}{ass_text(text)}")
 
     if captions:
-        cap = CAPTION_LOOKS.get(caption_style, CAPTION_LOOKS["bold-pop"])
-        styles.append(ass_style("Caption", cap, 2, caption_v))
+        cap = scaled(CAPTION_LOOKS.get(caption_style, CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
+        styles.append(ass_style("Caption", cap, 2, CAPTION_MARGIN))
         chunks = caption_chunks(words, cap["words"], cap["chars"])
         for n, chunk in enumerate(chunks):
             start = chunk[0]["s"]
@@ -714,6 +820,7 @@ def build_ass(texts: list[tuple[float, float, str]], position: str, look: str,
             if n + 1 < len(chunks):
                 end = min(end, chunks[n + 1][0]["s"])
             end = max(end, start + 0.25)
+            pos = at(caption_y_at(start))
             if caption_style == "karaoke":
                 for k, w in enumerate(chunk):
                     ws = start if k == 0 else w["s"]
@@ -722,12 +829,12 @@ def build_ass(texts: list[tuple[float, float, str]], position: str, look: str,
                         f"{{\\c{HIGHLIGHT}&}}{ass_text(x['w'])}{{\\c{WHITE}&}}" if j == k else ass_text(x["w"])
                         for j, x in enumerate(chunk)
                     )
-                    events.append(f"Dialogue: 0,{ass_time(ws)},{ass_time(max(we, ws + 0.05))},Caption,,0,0,0,,{line}")
+                    events.append(f"Dialogue: 0,{ass_time(ws)},{ass_time(max(we, ws + 0.05))},Caption,,0,0,0,,{pos}{line}")
             else:
                 line = " ".join(ass_text(x["w"]) for x in chunk)
                 if caption_style == "bold-pop":
                     line = "{\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}" + line
-                events.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{line}")
+                events.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{pos}{line}")
 
     if not events:
         return None
@@ -744,19 +851,110 @@ def build_ass(texts: list[tuple[float, float, str]], position: str, look: str,
     ])
 
 
-def overlay_timeline(plan: list[dict], texts: list[str]) -> list[tuple[float, float, str]]:
-    """Each shot's text over that shot; the same text on neighboring shots stays up without flickering."""
-    out: list[tuple[float, float, str]] = []
+def overlay_timeline(plan: list[dict], texts: list[str], ys: list) -> list[tuple[float, float, str, float | None]]:
+    """Each shot's text over that shot; the same text in the same place on neighboring shots stays
+    up without flickering."""
+    out: list[tuple[float, float, str, float | None]] = []
     t = 0.0
-    for p, text in zip(plan, texts):
+    for p, text, y in zip(plan, texts, ys):
         end = t + p["duration"]
         text = (text or "").strip()
-        if text and out and out[-1][2] == text and abs(out[-1][1] - t) < 0.01:
-            out[-1] = (out[-1][0], end, text)
+        if text and out and out[-1][2] == text and out[-1][3] == y and abs(out[-1][1] - t) < 0.01:
+            out[-1] = (out[-1][0], end, text, y)
         elif text:
-            out.append((t, end, text))
+            out.append((t, end, text, y))
         t = end
     return out
+
+
+# ---- "request a change": Claude edits an existing version
+
+REVISE_SYSTEM = """You make changes to a short-form video a user already made with ViralOwner (an app that remakes a proven viral video, the "inspo", with the user's own footage, keeping the inspo's exact shot timing).
+
+You get the user's request, frames from every shot of the current version exactly as it looks now (with its on-screen text and captions), the plan behind it, where faces are in each shot, and frames from all of the user's clips.
+
+Make the change the user asks for and keep everything else exactly as it is. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in. You can change: which clip and moment fills a shot; the on-screen text of each shot; where the on-screen text sits in each shot; the on-screen text size and look; where captions sit in each shot; the caption size; the post caption and hashtags.
+You can't change: shot timing or the number of shots, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add effects, transitions, filters, zooms or stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+
+Positions are the vertical center of the text as a fraction of the frame height: 0 is the top edge, 1 the bottom. Keep text between 0.1 and 0.88: the apps cover the top and bottom of the screen with their buttons. Use -1 to leave a position as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
+
+REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "shots": {
+            "type": "array",
+            "description": "one entry per shot, in order.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "the shot number, starting at 1."},
+                    "clip": {"type": "integer", "description": "the clip number to use, starting at 1."},
+                    "start_s": {"type": "number", "description": "where in that clip the shot starts, in seconds."},
+                    "text": {"type": "string", "description": "on-screen text for this shot. empty string for none."},
+                    "text_y": {"type": "number", "description": "vertical center of the on-screen text (0 to 1), or -1 to leave it."},
+                    "caption_y": {"type": "number", "description": "vertical center of the captions (0 to 1), or -1 to leave it."},
+                },
+                "required": ["index", "clip", "start_s", "text", "text_y", "caption_y"],
+                "additionalProperties": False,
+            },
+        },
+        "text_scale": {"type": "number", "description": "on-screen text size, where 1 is the standard size."},
+        "caption_scale": {"type": "number", "description": "caption size, where 1 is the standard size."},
+        "text_look": {"type": "string", "enum": ["outline", "box", "plain"]},
+        "caption": {"type": "string", "description": "the post caption (keep it unless asked)."},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+        "summary": {
+            "type": "string",
+            "description": (
+                "what you changed, for the user, in one or two short lowercase sentences, speaking as 'we', in plain words with no numbers "
+                "or positions (e.g. 'we made the text bigger and moved it above her face in the first two shots.'). mention "
+                "anything you couldn't do."
+            ),
+        },
+    },
+    "required": ["shots", "text_scale", "caption_scale", "text_look", "caption", "hashtags", "summary"],
+    "additionalProperties": False,
+}
+
+
+def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], current: list[dict],
+                texts: list[str], layout: dict, look: str, post: dict, effective: tuple[list, list],
+                faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None) -> dict:
+    text_ys, cap_ys = effective
+    cap_look = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
+    cap_default = caption_center(cap_look)
+    content: list[dict] = [{"type": "text", "text": (
+        f"the user's request: {json.dumps(request, ensure_ascii=False)}\n"
+        + (f"what the user told us about their video: {json.dumps(notes, ensure_ascii=False)}\n" if notes else "")
+        + f"\nthe current version ({len(shots)} shots). on-screen text size {layout['textScale']:.2f}, look '{look}'; "
+        + (f"captions on ('{caption_style}'), size {layout['captionScale']:.2f}." if caption_style else "captions off.")
+        + f"\npost caption: {json.dumps(post.get('caption', ''), ensure_ascii=False)}\nhashtags: {' '.join(post.get('hashtags', []))}"
+    )}]
+    for i, s in enumerate(shots):
+        c = current[i]
+        where = lambda y, default: f"{y:.2f}" if y is not None else default  # noqa: E731
+        face_text = ", ".join(f"{a:.2f}–{b:.2f}" for a, b in faces[i]) if faces[i] else "none found"
+        content.append({"type": "text", "text": (
+            f"shot {i + 1} ({s['role']}, {s['durationS']:.1f}s): "
+            + (f"clip {c['clip'] + 1} from {c['start']:.1f}s" if c["clip"] is not None else "no clip chosen yet: pick one")
+            + f"\n  on-screen text: {json.dumps(texts[i], ensure_ascii=False) if texts[i] else 'none'}"
+            + (f", centered at {where(text_ys[i], 'the default spot')}" if texts[i] else "")
+            + (f"\n  captions centered at {where(cap_ys[i], f'{cap_default:.2f}')}" if caption_style else "")
+            + f"\n  faces (top–bottom): {face_text}"
+        )})
+        if frames[i]:
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(frames[i])}})
+    content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
+    for ci, c in enumerate(clips):
+        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long)"})
+        for t, p in c["frames"]:
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+    ask = ["make the requested change and return the whole updated plan."]
+    if text_rule:
+        ask.append("the user also changed their text settings: " + text_rule)
+    content.append({"type": "text", "text": "\n".join(ask)})
+    return ask_claude(REVISE_SYSTEM, content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.")
 
 
 def r2_fetch(key: str, dest: Path) -> None:
@@ -767,6 +965,22 @@ def r2_store(path: Path, key: str) -> None:
     r2_client().upload_file(str(path), os.environ["R2_BUCKET"], key, ExtraArgs={"ContentType": "video/mp4"})
 
 
+def layout_from(src: dict | None, n: int) -> dict:
+    """Text and caption sizes, and any positions asked for per shot (None = automatic)."""
+    src = src or {}
+
+    def ys(key: str) -> list:
+        vals = [y if isinstance(y, (int, float)) else None for y in (src.get(key) or [])][:n]
+        return vals + [None] * (n - len(vals))
+
+    def scale(key: str) -> float:
+        v = src.get(key)
+        return min(1.6, max(0.5, float(v))) if isinstance(v, (int, float)) else 1.0
+
+    return {"textYs": ys("textYs"), "captionYs": ys("captionYs"),
+            "textScale": scale("textScale"), "captionScale": scale("captionScale")}
+
+
 def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
     """The whole render. Returns the website's RenderOutput shape (plus the plan and meta)."""
     from concurrent.futures import ThreadPoolExecutor
@@ -774,16 +988,23 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     started = time.time()
     breakdown = req["inspo"]["breakdown"]
     shots = breakdown["shots"]
+    n = len(shots)
     options = req["options"]
+    notes = (options.get("notes") or "").strip()[:600]
+    music = options["music"]["mode"]
+    caption_style = options["captions"]["style"] if options["captions"]["enabled"] else None
+    request = (req.get("request") or "").strip()[:600]
+    previous = req.get("previous") if request else None
     cost = 0.0
 
     # ---- analyzing: get everything and look at the clips
     report("analyzing", 3)
     inspo_path = workdir / "inspo"
+    prev_path = workdir / "previous.mp4"
     clip_ids = [c["id"] for c in req["clips"]]
     downloads = [(req["inspo"]["storageKey"], inspo_path)] + [
         (c["storageKey"], workdir / f"clip{i:02d}") for i, c in enumerate(req["clips"])
-    ]
+    ] + ([(previous["storageKey"], prev_path)] if previous else [])
     with ThreadPoolExecutor(6) as pool:
         list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
 
@@ -801,7 +1022,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # What the user chose in step 2 or the editor, per shot.
     edits = {e["shotIndex"]: e for e in req["shots"]}
     fixed = []
-    for i in range(len(shots)):
+    for i in range(n):
         e = edits.get(i) or {}
         ci = index_of.get(e.get("clipId"))
         start = e.get("trimStartS") if ci is not None else None
@@ -811,24 +1032,74 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         start = float(start) if isinstance(start, (int, float)) else (0.0 if end is not None else None)
         fixed.append({"clip": ci, "start": start, "end": end})
 
-    reuse = req.get("reuse") or None
-    text_mode = "keep" if reuse else ("custom" if options["text"]["mode"] == "custom" else "match")
-    needs_claude = text_mode != "keep" or any(f["start"] is None for f in fixed)
-
-    plan_texts: list[str] = [""] * len(shots)
+    # Words and layout: kept from an earlier version, or written fresh below.
+    keep = previous["plan"] | {"postCopy": previous.get("postCopy")} if previous else req.get("reuse")
+    text_mode = "keep" if keep else ("custom" if options["text"]["mode"] == "custom" else "match")
+    plan_texts: list[str] = [""] * n
     position, look = "top", "outline"
     post = {"caption": "", "hashtags": []}
-    if reuse:
-        plan_texts = [(t or "") for t in (reuse.get("texts") or [])][: len(shots)]
-        plan_texts += [""] * (len(shots) - len(plan_texts))
-        position = reuse.get("textPosition") or position
-        look = reuse.get("textLook") or look
-        post = reuse.get("postCopy") or post
+    layout = layout_from(keep, n)
+    if keep:
+        plan_texts = ([(t or "") for t in (keep.get("texts") or [])] + [""] * n)[:n]
+        position = keep.get("textPosition") or position
+        look = keep.get("textLook") or look
+        post = keep.get("postCopy") or post
+    note = None
 
+    def clean_post(caption: str, hashtags: list[str]) -> dict:
+        return {"caption": caption.strip(),
+                "hashtags": [h if h.startswith("#") else f"#{h}" for h in (x.strip() for x in hashtags) if h][:8]}
+
+    needs_claude = bool(previous) or text_mode != "keep" or any(f["start"] is None for f in fixed)
     picked: dict[int, dict] = {}
     if needs_claude:
         report("analyzing", 8)
         sample_clip_frames(clips, workdir)
+
+    if previous:
+        # "request a change": Claude edits the current version.
+        report("analyzing", 14)
+        current = resolve_plan(shots, clips, fixed, {})
+        with ThreadPoolExecutor(6) as pool:
+            faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), current))
+        effective = effective_layout(current, plan_texts, layout, position, look, caption_style, faces)
+        t = 0.0
+        frames = []
+        for i, p in enumerate(current):
+            frames.append(grab_frame(prev_path, t + p["duration"] / 2, workdir / f"prev{i:02d}.jpg", MATCH_FRAME_WIDTH))
+            t += p["duration"]
+        text_rule = None
+        if previous.get("textChanged"):
+            text_rule = TEXT_RULES["custom" if options["text"]["mode"] == "custom" else "match"]
+            if options["text"]["mode"] == "custom":
+                text_rule += f" the user's text: {json.dumps(options['text'].get('custom', ''), ensure_ascii=False)}"
+        report("matching", 25)
+        result = revise_plan(request, notes, shots, clips,
+                             [{"clip": p["clip"], "start": p["start"]} for p in current],
+                             plan_texts, layout, look, post, effective, faces, frames, caption_style, text_rule)
+        cost += result["cost_usd"]
+        data = result["data"]
+        by_index = {s["index"]: s for s in data["shots"]}
+        for i in range(n):
+            r = by_index.get(i + 1)
+            if not r:
+                continue
+            if isinstance(r.get("clip"), int) and 0 < r["clip"] <= len(clips):
+                ci = r["clip"] - 1
+                if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
+                    fixed[i] = {"clip": ci, "start": max(0.0, float(r["start_s"])), "end": None}
+            plan_texts[i] = (r.get("text") or "").strip()
+            for key, field in (("text_y", "textYs"), ("caption_y", "captionYs")):
+                y = r.get(key)
+                if isinstance(y, (int, float)) and y >= 0:
+                    layout[field][i] = min(0.9, max(0.08, float(y)))
+        layout["textScale"] = min(1.6, max(0.5, float(data["text_scale"])))
+        layout["captionScale"] = min(1.6, max(0.5, float(data["caption_scale"])))
+        look = data["text_look"]
+        post = clean_post(data["caption"], data["hashtags"])
+        note = data["summary"].strip()
+        print(f"revise: ${result['cost_usd']}, usage={result['usage']}, summary={note!r}")
+    elif needs_claude:
         inspo_frames = [
             grab_frame(inspo_path, s["startS"] + s["durationS"] / 2, workdir / f"inspo{i:02d}.jpg", MATCH_FRAME_WIDTH)
             for i, s in enumerate(shots)
@@ -840,14 +1111,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
         report("matching", 25)
         result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode,
-                             options["text"].get("custom", ""), bool(req.get("fresh")))
+                             options["text"].get("custom", ""), bool(req.get("fresh")), notes)
         cost += result["cost_usd"]
         data = result["data"]
         picked = {s["index"]: s for s in data["shots"]}
         if text_mode != "keep":
-            plan_texts = [(picked.get(i + 1) or {}).get("text", "") for i in range(len(shots))]
+            plan_texts = [(picked.get(i + 1) or {}).get("text", "") for i in range(n)]
             position, look = data["text_position"], data["text_look"]
-            post = {"caption": data["caption"].strip(), "hashtags": [h if h.startswith("#") else f"#{h}" for h in data["hashtags"] if h.strip()][:8]}
+            post = clean_post(data["caption"], data["hashtags"])
         print(f"matching: ${result['cost_usd']}, usage={result['usage']}")
 
     plan = resolve_plan(shots, clips, fixed, picked)
@@ -874,20 +1145,46 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                     "-c", "copy", joined.name], cwd=workdir, check=True, capture_output=True)
     total = sum(p["duration"] for p in plan)
 
-    music = options["music"]["mode"]
+    use_inspo_audio = music == "inspo" and probe(inspo_path)["has_audio"]
     words: list[dict] = []
-    if options["captions"]["enabled"]:
+    if caption_style:
         report("editing", 78)
-        for seg in transcribe(joined)["segments"]:
-            words += [w for w in seg.get("words") or [] if w["w"] and w["e"] <= total + 0.5]
+        if use_inspo_audio:
+            # What you hear is the inspo's audio, so caption that.
+            segments = (breakdown.get("transcript") or {}).get("segments") or []
+        else:
+            segments = transcribe(joined)["segments"]
+        for seg in segments:
+            words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
 
-    report("editing", 85)
-    ass = build_ass(overlay_timeline(plan, plan_texts), position, look, words,
-                    options["captions"]["style"] if options["captions"]["enabled"] else None)
+    report("editing", 82)
+    has_text = any(t.strip() for t in plan_texts)
+    faces: list = [[] for _ in plan]
+    if has_text or words:
+        with ThreadPoolExecutor(6) as pool:
+            faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), plan))
+    text_ys, cap_ys = effective_layout(plan, plan_texts, layout, position, look,
+                                       caption_style if words else None, faces)
+    starts = []
+    t = 0.0
+    for p in plan:
+        starts.append(t)
+        t += p["duration"]
+
+    def caption_y_at(time_s: float):
+        i = max(0, sum(1 for s0 in starts if s0 <= time_s + 1e-6) - 1)
+        return cap_ys[i]
+
+    report("editing", 86)
+    ass = build_ass(overlay_timeline(plan, plan_texts, text_ys), position, look, words, caption_style,
+                    layout, caption_y_at)
     out = workdir / "final.mp4"
     cmd = ["ffmpeg", "-v", "error", "-y", "-i", joined.name]
     if music == "none":
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
+    elif use_inspo_audio:
+        # Same timing as the inspo, so its audio lines up from the first frame.
+        cmd += ["-i", inspo_path.name, "-map", "0:v:0", "-map", "1:a:0", "-af", "apad"]
     else:
         # "track" has no licensed library behind it yet, so it keeps the clips' audio for now.
         cmd += ["-map", "0:v:0", "-map", "0:a:0"]
@@ -909,7 +1206,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     report("finishing", 99)
 
     seconds = round(time.time() - started, 1)
-    print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s")
+    print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s, faces={sum(map(len, faces))}")
     return {
         "storageKey": req["outputKey"],
         "width": OUT_W,
@@ -925,6 +1222,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "texts": plan_texts,
             "textPosition": position,
             "textLook": look,
+            # Only positions someone asked for; automatic ones are worked out again for each version.
+            "textYs": layout["textYs"],
+            "captionYs": layout["captionYs"],
+            "textScale": layout["textScale"],
+            "captionScale": layout["captionScale"],
+            "note": note,
         },
         "meta": {"engine": "modal", "costUsd": round(cost, 4), "claude": needs_claude, "seconds": seconds,
                  "clipsSkipped": len(clip_ids) - len(clips)},
@@ -940,6 +1243,10 @@ def check_render_request(req: dict) -> str | None:
         return "invalid output key"
     prefix = re.match(KEY_PREFIX_RE, out).group(0)
     keys = [req.get("inspo", {}).get("storageKey")] + [c.get("storageKey") for c in req.get("clips") or []]
+    if req.get("request") and req.get("previous"):
+        keys.append(req["previous"].get("storageKey"))
+        if not isinstance(req["previous"].get("plan"), dict):
+            return "invalid previous version"
     if not req.get("clips") or any(not isinstance(k, str) or ".." in k or not k.startswith(prefix) for k in keys):
         return "invalid storage keys"
     shots = (req["inspo"].get("breakdown") or {}).get("shots")
@@ -1014,8 +1321,10 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
 
 
 @app.local_entrypoint()
-def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = ""):
-    """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4"""
+def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = "",
+               notes: str = "", music: str = "original", request: str = ""):
+    """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
+    With --request, also makes a second version with that change (saved as <dest>-changed.mp4)."""
     files = {"u/test/p/test/inspo": Path(inspo).read_bytes()}
     breakdown = analyze_upload.remote(files["u/test/p/test/inspo"])
     clip_list = []
@@ -1027,12 +1336,19 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
         "inspo": {"storageKey": "u/test/p/test/inspo", "breakdown": breakdown},
         "clips": clip_list,
         "shots": [{"shotIndex": s["index"], "clipId": None, "trimStartS": None, "trimEndS": None} for s in breakdown["shots"]],
-        "options": {"text": {"mode": text, "custom": custom}, "music": {"mode": "original", "trackId": None},
-                    "captions": {"enabled": captions != "off", "style": captions}},
+        "options": {"text": {"mode": text, "custom": custom}, "music": {"mode": music, "trackId": None},
+                    "captions": {"enabled": captions != "off", "style": captions}, "notes": notes},
     }
     out, video = render_upload.remote(req, files)
     Path(dest).write_bytes(video)
     print(json.dumps(out, indent=2, ensure_ascii=False))
+    if request:
+        files[req["outputKey"]] = video
+        req2 = {**req, "shots": out["plan"]["shots"], "request": request,
+                "previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"]}}
+        out2, video2 = render_upload.remote(req2, files)
+        Path(dest.removesuffix(".mp4") + "-changed.mp4").write_bytes(video2)
+        print(json.dumps(out2, indent=2, ensure_ascii=False))
 
 
 @app.function(image=image, secrets=secrets, timeout=300)
@@ -1090,9 +1406,16 @@ def api():
         fonts = list(Path(FONT_DIR).glob("*.otf")) if Path(FONT_DIR).exists() else []
         has_zscale = " zscale " in run(["ffmpeg", "-hide_banner", "-filters"])
         has_ass = " ass " in run(["ffmpeg", "-hide_banner", "-filters"])
+        try:
+            import cv2
+
+            faces = hasattr(cv2, "CascadeClassifier")
+            cv = f"opencv {cv2.__version__} {getattr(cv2, '__file__', '?')}"
+        except Exception as e:  # noqa: BLE001
+            faces, cv = False, type(e).__name__
         checks["render"] = {
-            "ok": bool(fonts) and has_ass,
-            "detail": f"{len(fonts)} fonts, ass={has_ass}, zscale={has_zscale}",
+            "ok": bool(fonts) and has_ass and faces,
+            "detail": f"{len(fonts)} fonts, ass={has_ass}, zscale={has_zscale}, faces={faces}, {cv}",
         }
 
         try:

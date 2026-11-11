@@ -7,16 +7,18 @@ import {
   parseShotEdits,
   settingsFor,
   shotsFromAssignments,
+  previousFor,
   startNewRender,
   textToReuse,
 } from "@/lib/renders";
-import { parseVideoOptions } from "@/lib/video-options";
+import { parseVideoOptions, REQUEST_MAX } from "@/lib/video-options";
 
 /**
  * Makes a new version of the video.
  *   { mode: "new", options }                 from step 3 (uses the step 2 assignments)
- *   { mode: "edit", options, shots, fromVersion }  from the preview editor (keeps that
- *                                            version's words if the text options didn't change)
+ *   { mode: "edit", options, shots, fromVersion, request? }  from the preview editor. Keeps that
+ *                                            version's words if the text options didn't change;
+ *                                            `request` is a typed "request a change" for that version.
  *   { mode: "regenerate", fromVersion }      a fresh take on an existing version
  */
 export async function POST(request: Request, ctx: RouteContext<"/api/projects/[id]/renders">) {
@@ -44,15 +46,22 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
         body.mode === "edit"
           ? (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done")
           : undefined;
+      const request = body.mode === "edit" && typeof body.request === "string" ? body.request.trim() : "";
+      if (request.length > REQUEST_MAX) return jsonError(`your request can be up to ${REQUEST_MAX} characters.`, 400);
+      const previous = request && from ? previousFor(from, options) : null;
+      if (request && !previous) {
+        return jsonError("this version can’t take requests. tap regenerate to make a new one, then ask again.", 400);
+      }
       result = await startNewRender(
         userId,
         project,
         ({ shotCount, clips }) => {
           if (body.mode === "new") return settingsFor(options, shotsFromAssignments(shotCount, clips));
           const shots = parseShotEdits(body.shots, shotCount, clips);
-          return "error" in shots ? shots : settingsFor(options, shots);
+          if ("error" in shots) return shots;
+          return { ...settingsFor(options, shots), ...(request ? { request, fromVersion: from!.version } : {}) };
         },
-        { reuseText: textToReuse(from, options) },
+        previous ? { request, previous } : { reuseText: textToReuse(from, options) },
       );
     } else if (body.mode === "regenerate") {
       const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);

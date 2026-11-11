@@ -67,6 +67,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           videoUrl,
           settings: current.settings,
           shots: current.plan?.shots ?? current.settings.shots ?? [],
+          note: current.plan?.note ?? null,
         }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}

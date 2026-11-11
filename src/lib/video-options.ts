@@ -2,22 +2,32 @@
 // server with parseVideoOptions before anything is saved or rendered.
 
 export type TextMode = "match" | "custom";
-export type MusicMode = "track" | "original" | "none";
+export type MusicMode = "track" | "original" | "inspo" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "boxed" | "karaoke";
 
 export interface VideoOptions {
   text: { mode: TextMode; custom: string };
-  music: { mode: MusicMode; trackId: string | null };
+  /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
+  music: { mode: MusicMode; trackId: string | null; inspoAudioConfirmed: boolean };
   captions: { enabled: boolean; style: CaptionStyleId };
+  /** "additional requests": anything the user wants the edit to know or do. */
+  notes: string;
 }
 
 export const TEXT_MAX = 300;
+export const NOTES_MAX = 500;
+/** A typed "request a change" in the preview editor. */
+export const REQUEST_MAX = 500;
 
 export const DEFAULT_OPTIONS: VideoOptions = {
   text: { mode: "match", custom: "" },
-  music: { mode: "original", trackId: null },
+  music: { mode: "original", trackId: null, inspoAudioConfirmed: false },
   captions: { enabled: true, style: "bold-pop" },
+  notes: "",
 };
+
+export const INSPO_AUDIO_CONFIRM_ERROR =
+  "please confirm the note about the inspo’s audio, or choose another music option.";
 
 export interface Track {
   id: string;
@@ -50,7 +60,7 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
 ];
 
 const TEXT_MODES: TextMode[] = ["match", "custom"];
-const MUSIC_MODES: MusicMode[] = ["track", "original", "none"];
+const MUSIC_MODES: MusicMode[] = ["track", "original", "inspo", "none"];
 const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
 const TRACK_IDS = new Set(TRACKS.map((t) => t.id));
 
@@ -75,6 +85,10 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   if (custom.length > TEXT_MAX) {
     return { error: `on-screen text can be up to ${TEXT_MAX} characters.` };
   }
+  const notes = typeof raw.notes === "string" ? raw.notes.trim() : "";
+  if (notes.length > NOTES_MAX) {
+    return { error: `additional requests can be up to ${NOTES_MAX} characters.` };
+  }
   const textMode = TEXT_MODES.includes(text.mode as TextMode) ? (text.mode as TextMode) : DEFAULT_OPTIONS.text.mode;
 
   let musicMode = MUSIC_MODES.includes(music.mode as MusicMode)
@@ -85,16 +99,23 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
     if (music.mode === "track") return { error: "pick a track, or choose another music option." };
     musicMode = DEFAULT_OPTIONS.music.mode;
   }
+  const inspoAudioConfirmed = music.inspoAudioConfirmed === true;
+  if (musicMode === "inspo" && !inspoAudioConfirmed) return { error: INSPO_AUDIO_CONFIRM_ERROR };
 
   return {
     text: { mode: textMode === "custom" && custom ? "custom" : "match", custom },
-    music: { mode: musicMode, trackId: musicMode === "track" ? trackId : null },
+    music: {
+      mode: musicMode,
+      trackId: musicMode === "track" ? trackId : null,
+      inspoAudioConfirmed: musicMode === "inspo" && inspoAudioConfirmed,
+    },
     captions: {
       enabled: typeof captions.enabled === "boolean" ? captions.enabled : DEFAULT_OPTIONS.captions.enabled,
       style: CAPTION_IDS.includes(captions.style as CaptionStyleId)
         ? (captions.style as CaptionStyleId)
         : DEFAULT_OPTIONS.captions.style,
     },
+    notes,
   };
 }
 

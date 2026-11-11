@@ -5,6 +5,7 @@ import {
   getActiveRender,
   getInspiration,
   listClips,
+  listRenders,
   setRenderJob,
   updateRender,
   type Clip,
@@ -62,7 +63,7 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
-type Extras = Pick<RenderInput, "reuseText" | "fresh">;
+type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous">;
 
 export async function startNewRender(
   userId: string,
@@ -137,7 +138,13 @@ export async function retryRender(userId: string, project: Project, render: Rend
       s.clipId && !ids.has(s.clipId) ? { ...s, clipId: null, trimStartS: null, trimEndS: null } : s,
     ),
   };
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings);
+  let extras: Extras = {};
+  if (settings.request && settings.fromVersion) {
+    const from = (await listRenders(userId, project.id)).find((r) => r.version === settings.fromVersion);
+    const previous = from && previousFor(from, settings.options);
+    if (previous) extras = { request: settings.request, previous };
+  }
+  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, extras);
   return null;
 }
 
@@ -201,10 +208,21 @@ export async function getStillActiveRender(projectId: string): Promise<Render | 
  * words (on-screen text, caption, hashtags) instead of writing new ones.
  */
 export function textToReuse(from: Render | undefined, options: VideoOptions): Extras["reuseText"] {
-  if (!from?.plan || !from.postCopy) return undefined;
-  if (JSON.stringify(from.settings.options.text) !== JSON.stringify(options.text)) return undefined;
-  const { texts, textPosition, textLook } = from.plan;
-  return { texts, textPosition, textLook, postCopy: from.postCopy };
+  if (!from?.plan || !from.postCopy || textChanged(from, options)) return undefined;
+  const { texts, textPosition, textLook, textYs, captionYs, textScale, captionScale } = from.plan;
+  return { texts, textPosition, textLook, textYs, captionYs, textScale, captionScale, postCopy: from.postCopy };
+}
+
+/** The words depend on the text options and the additional requests. */
+function textChanged(from: Render, options: VideoOptions) {
+  const before = from.settings.options;
+  return JSON.stringify(before.text) !== JSON.stringify(options.text) || (before.notes ?? "") !== options.notes;
+}
+
+/** What "request a change" needs to know about the version being changed. */
+export function previousFor(from: Render, options: VideoOptions): Extras["previous"] | null {
+  if (!from.plan || !from.storageKey?.startsWith("u/")) return null;
+  return { storageKey: from.storageKey, plan: from.plan, postCopy: from.postCopy, textChanged: textChanged(from, options) };
 }
 
 export function settingsFor(options: VideoOptions, shots: ShotEdit[], seed = newSeed()): RenderSettings {

@@ -78,6 +78,9 @@ export interface RenderSettings {
   shots: ShotEdit[];
   /** Any number; a new seed asks for a fresh take ("regenerate"). */
   seed: number;
+  /** A typed "request a change", applied to version `fromVersion`. */
+  request?: string | null;
+  fromVersion?: number | null;
 }
 
 /** The words chosen for a version, reused by later versions that don't change the text options. */
@@ -87,6 +90,11 @@ export interface RenderText {
   textPosition: "top" | "middle" | "bottom";
   textLook: "outline" | "box" | "plain";
   postCopy: PostCopy;
+  /** Positions asked for per shot (vertical center, 0–1; null = automatic) and sizes (1 = standard). */
+  textYs?: (number | null)[];
+  captionYs?: (number | null)[];
+  textScale?: number;
+  captionScale?: number;
 }
 
 export interface RenderInput {
@@ -100,6 +108,9 @@ export interface RenderInput {
   reuseText?: RenderText;
   /** "regenerate": ask for different choices than last time. */
   fresh?: boolean;
+  /** "request a change": the version to change (with what made it) and the request itself. */
+  request?: string;
+  previous?: { storageKey: string; plan: RenderPlan; postCopy: PostCopy | null; textChanged: boolean };
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";
@@ -123,6 +134,8 @@ export interface RenderOutput {
 
 export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   shots: ShotEdit[];
+  /** For a "request a change" version: what was changed, for the user. */
+  note?: string | null;
 }
 
 export interface JobStatus {

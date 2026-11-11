@@ -1,13 +1,29 @@
 "use client";
 
 import { useId, type ReactNode } from "react";
-import { TEXT_MAX, type MusicMode, type VideoOptions } from "@/lib/video-options";
+import {
+  INSPO_AUDIO_CONFIRM_ERROR,
+  NOTES_MAX,
+  TEXT_MAX,
+  type MusicMode,
+  type VideoOptions,
+} from "@/lib/video-options";
 import { CaptionStylePicker, Toggle } from "./caption-styles";
-import { MusicIcon, TextIcon } from "./icons";
+import { MusicIcon, SparkleIcon, TextIcon } from "./icons";
 import { inputClass } from "./form";
 import { TrackPicker } from "./track-picker";
 
-export function Section({ title, icon, children, aside }: { title: string; icon?: ReactNode; children: ReactNode; aside?: ReactNode }) {
+export function Section({
+  title,
+  icon,
+  children,
+  aside,
+}: {
+  title: string;
+  icon?: ReactNode;
+  children: ReactNode;
+  aside?: ReactNode;
+}) {
   return (
     <section className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
@@ -38,40 +54,108 @@ function Choice({
   return (
     <label
       className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-coral ${
-        checked ? "border-coral/60 bg-coral/10" : "border-white/10 hover:border-white/25"
+        checked
+          ? "border-coral/60 bg-coral/10"
+          : "border-white/10 hover:border-white/25"
       }`}
     >
-      <input type="radio" name={name} checked={checked} onChange={onChange} className="sr-only" />
+      <input
+        type="radio"
+        name={name}
+        checked={checked}
+        onChange={onChange}
+        className="sr-only"
+      />
       <span
         aria-hidden="true"
         className={`mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border ${
           checked ? "border-coral" : "border-white/30"
         }`}
       >
-        {checked && <span className="size-2.5 rounded-full bg-linear-to-r from-violet to-coral" />}
+        {checked && (
+          <span className="size-2.5 rounded-full bg-linear-to-r from-violet to-coral" />
+        )}
       </span>
       <span className="flex flex-col">
         <span className="text-sm font-medium">{title}</span>
-        {description && <span className="text-xs text-muted">{description}</span>}
+        {description && (
+          <span className="text-xs text-muted">{description}</span>
+        )}
       </span>
     </label>
   );
 }
 
-const MUSIC_CHOICES: { mode: MusicMode; title: string; description: string }[] = [
-  { mode: "track", title: "pick a track", description: "licensed music, safe to post anywhere" },
-  { mode: "original", title: "keep my clips’ original audio", description: "your voice and sounds, as filmed" },
-  { mode: "none", title: "no music", description: "add a trending sound in the app when you post" },
-];
+const MUSIC_CHOICES: { mode: MusicMode; title: string; description: string }[] =
+  [
+    {
+      mode: "track",
+      title: "pick a track",
+      description: "licensed music, safe to post anywhere",
+    },
+    {
+      mode: "original",
+      title: "keep my clips’ original audio",
+      description: "your voice and sounds, as filmed",
+    },
+    {
+      mode: "inspo",
+      title: "use the inspo’s audio",
+      description: "the same sound as the video you’re recreating",
+    },
+    {
+      mode: "none",
+      title: "no music",
+      description: "add a trending sound in the app when you post",
+    },
+  ];
 
 /** On-screen text, music and captions. Used on step 3 and in the preview editor. */
-export function OptionsFields({ value, onChange }: { value: VideoOptions; onChange: (next: VideoOptions) => void }) {
+export function OptionsFields({
+  value,
+  onChange,
+  showNotes = true,
+}: {
+  value: VideoOptions;
+  onChange: (next: VideoOptions) => void;
+  /** The preview editor has "request a change" instead. */
+  showNotes?: boolean;
+}) {
   const id = useId();
-  const set = (patch: Partial<VideoOptions>) => onChange({ ...value, ...patch });
+  const set = (patch: Partial<VideoOptions>) =>
+    onChange({ ...value, ...patch });
 
   return (
     <div className="flex flex-col gap-4">
-      <Section title="on-screen text" icon={<TextIcon className="size-4 text-muted" />}>
+      {showNotes && (
+        <Section
+          title="additional requests"
+          icon={<SparkleIcon className="size-4 text-muted" />}
+          aside={<span className="text-xs text-muted">optional</span>}
+        >
+          <label htmlFor={`${id}-notes`} className="text-sm text-muted">
+            anything we should know? your business name, what to show off, words
+            to use or avoid, the vibe you want.
+          </label>
+          <textarea
+            id={`${id}-notes`}
+            value={value.notes}
+            maxLength={NOTES_MAX}
+            rows={3}
+            placeholder="e.g. we’re a dessert shop in north olmsted. show off the new strawberry croffle and keep it playful."
+            onChange={(e) => set({ notes: e.target.value })}
+            className={`${inputClass} h-auto py-3`}
+          />
+          <span className="self-end text-xs text-muted tabular-nums">
+            {value.notes.length}/{NOTES_MAX}
+          </span>
+        </Section>
+      )}
+
+      <Section
+        title="on-screen text"
+        icon={<TextIcon className="size-4 text-muted" />}
+      >
         <div className="grid gap-2 sm:grid-cols-2">
           <Choice
             name={`${id}-text`}
@@ -99,7 +183,9 @@ export function OptionsFields({ value, onChange }: { value: VideoOptions; onChan
               maxLength={TEXT_MAX}
               rows={3}
               placeholder="e.g. 3 things nobody tells you about opening a café"
-              onChange={(e) => set({ text: { mode: "custom", custom: e.target.value } })}
+              onChange={(e) =>
+                set({ text: { mode: "custom", custom: e.target.value } })
+              }
               className={`${inputClass} h-auto py-3`}
             />
             <span className="self-end text-xs text-muted tabular-nums">
@@ -116,14 +202,52 @@ export function OptionsFields({ value, onChange }: { value: VideoOptions; onChan
               key={c.mode}
               name={`${id}-music`}
               checked={value.music.mode === c.mode}
-              onChange={() => set({ music: { mode: c.mode, trackId: value.music.trackId } })}
+              onChange={() => set({ music: { ...value.music, mode: c.mode } })}
               title={c.title}
               description={c.description}
             />
           ))}
         </div>
         {value.music.mode === "track" && (
-          <TrackPicker value={value.music.trackId} onChange={(trackId) => set({ music: { mode: "track", trackId } })} />
+          <TrackPicker
+            value={value.music.trackId}
+            onChange={(trackId) =>
+              set({ music: { ...value.music, mode: "track", trackId } })
+            }
+          />
+        )}
+        {value.music.mode === "inspo" && (
+          <div className="flex flex-col gap-3 rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-sm">
+            <p className="text-muted">
+              <span className="font-medium text-foreground">heads up:</span> the
+              inspo’s sound usually belongs to someone else, like a song or
+              another creator’s voice. viralowner doesn’t own or license it.
+              posting it can get your video muted, taken down or hit with a
+              copyright claim. the safest way to use a trending sound is to pick
+              “no music” and add the sound inside tiktok or instagram when you
+              post.
+            </p>
+            <label className="flex cursor-pointer items-start gap-3">
+              <input
+                type="checkbox"
+                checked={value.music.inspoAudioConfirmed}
+                onChange={(e) =>
+                  set({
+                    music: {
+                      ...value.music,
+                      inspoAudioConfirmed: e.target.checked,
+                    },
+                  })
+                }
+                className="mt-0.5 size-4 shrink-0 accent-coral"
+              />
+              <span>
+                i own this audio or have permission to use it, and i take full
+                responsibility for how i use it. i understand viralowner isn’t
+                responsible for any claims about it.
+              </span>
+            </label>
+          </div>
         )}
       </Section>
 
@@ -132,13 +256,17 @@ export function OptionsFields({ value, onChange }: { value: VideoOptions; onChan
         aside={
           <Toggle
             checked={value.captions.enabled}
-            onChange={(enabled) => set({ captions: { ...value.captions, enabled } })}
+            onChange={(enabled) =>
+              set({ captions: { ...value.captions, enabled } })
+            }
             label="captions"
           />
         }
       >
         <p className="text-sm text-muted">
-          {value.captions.enabled ? "we’ll caption everything that’s said." : "captions are off."}
+          {value.captions.enabled
+            ? "we’ll caption everything that’s said."
+            : "captions are off."}
         </p>
         <CaptionStylePicker
           value={value.captions.style}
@@ -152,6 +280,9 @@ export function OptionsFields({ value, onChange }: { value: VideoOptions; onChan
 
 /** Problems that block making the video (shown next to the button). */
 export function optionsProblem(o: VideoOptions) {
-  if (o.music.mode === "track" && !o.music.trackId) return "pick a track, or choose another music option.";
+  if (o.music.mode === "track" && !o.music.trackId)
+    return "pick a track, or choose another music option.";
+  if (o.music.mode === "inspo" && !o.music.inspoAudioConfirmed)
+    return INSPO_AUDIO_CONFIRM_ERROR;
   return null;
 }

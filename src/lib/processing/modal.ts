@@ -98,11 +98,19 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     trimStartS: isNum(s?.trimStartS) ? Math.round(s.trimStartS * 10) / 10 : null,
     trimEndS: isNum(s?.trimEndS) ? Math.round(s.trimEndS * 10) / 10 : null,
   }));
+  const ys = (v: unknown) =>
+    Array.isArray(v) ? v.map((y) => (isNum(y) ? Math.min(0.95, Math.max(0.05, y)) : null)) : undefined;
+  const scale = (v: unknown) => (isNum(v) ? Math.min(1.6, Math.max(0.5, v)) : undefined);
   return {
     shots,
     texts: p.texts.map(str),
     textPosition: POSITIONS.includes(p.textPosition as never) ? p.textPosition! : "top",
     textLook: LOOKS.includes(p.textLook as never) ? p.textLook! : "outline",
+    textYs: ys(p.textYs),
+    captionYs: ys(p.captionYs),
+    textScale: scale(p.textScale),
+    captionScale: scale(p.captionScale),
+    note: str(p.note) || null,
   };
 }
 
@@ -152,6 +160,8 @@ export const modalEngine: ProcessingEngine = {
         options: input.settings.options,
         reuse: input.reuseText ?? null,
         fresh: !!input.fresh,
+        request: input.request ?? null,
+        previous: input.previous ?? null,
       },
     });
   },

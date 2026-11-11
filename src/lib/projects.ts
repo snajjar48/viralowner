@@ -108,7 +108,8 @@ function toRender(r: Row): Render {
     status: r.status as Render["status"],
     stage: (r.stage as JobStage | null) ?? null,
     progress: Number(r.progress),
-    settings: r.settings as RenderSettings,
+    // Older versions were saved before some options existed: fill in the defaults.
+    settings: { ...(r.settings as RenderSettings), options: optionsFromJson((r.settings as RenderSettings)?.options) },
     postCopy: result?.postCopy ?? null,
     plan: result?.plan ?? null,
     error: (r.error as string | null) ?? null,
