@@ -351,3 +351,86 @@ export async function saveSettings(projectId: string, options: VideoOptions) {
   await getSql()`
     UPDATE projects SET settings = ${JSON.stringify(options)}::jsonb, updated_at = now() WHERE id = ${projectId}`;
 }
+
+// ---- Renders (versions of the finished video) ------------------------------
+
+export async function getRender(projectId: string, renderId: string): Promise<Render | null> {
+  if (!isUuid(renderId)) return null;
+  const rows = await getSql()`SELECT * FROM renders WHERE id = ${renderId} AND project_id = ${projectId}`;
+  return rows[0] ? toRender(rows[0]) : null;
+}
+
+/** A render that's still being made (queued or processing), if any. */
+export async function getActiveRender(projectId: string): Promise<Render | null> {
+  const rows = await getSql()`
+    SELECT * FROM renders
+    WHERE project_id = ${projectId} AND status IN ('queued', 'processing')
+      AND updated_at > now() - interval '30 minutes'
+    ORDER BY version DESC LIMIT 1`;
+  return rows[0] ? toRender(rows[0]) : null;
+}
+
+/** Adds the next version (1, 2, 3…) as a queued render. */
+export async function createRender(projectId: string, settings: RenderSettings): Promise<Render> {
+  const sql = getSql();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const rows = await sql`
+        INSERT INTO renders (project_id, version, settings, status)
+        VALUES (${projectId},
+                COALESCE((SELECT max(version) + 1 FROM renders WHERE project_id = ${projectId}), 1),
+                ${JSON.stringify(settings)}::jsonb, 'queued')
+        RETURNING *`;
+      return toRender(rows[0]);
+    } catch (error) {
+      // Two renders started at the same moment: retry with the next number.
+      if (attempt < 2 && (error as { code?: string }).code === "23505") continue;
+      throw error;
+    }
+  }
+}
+
+/** The engine accepted the job. */
+export async function setRenderJob(projectId: string, renderId: string, jobId: string) {
+  const sql = getSql();
+  await sql.transaction([
+    sql`UPDATE renders
+        SET job_id = ${jobId}, status = 'processing', stage = 'analyzing', progress = 0, error = NULL,
+            storage_key = NULL, completed_at = NULL, updated_at = now()
+        WHERE id = ${renderId}`,
+    sql`UPDATE projects SET status = 'processing', updated_at = now() WHERE id = ${projectId}`,
+  ]);
+}
+
+export interface RenderUpdate {
+  status: Render["status"];
+  stage: JobStage | null;
+  progress: number;
+  storageKey?: string;
+  postCopy?: PostCopy;
+  error?: string;
+}
+
+/**
+ * Saves the engine's latest status. The project's status follows its newest
+ * version (an older version finishing doesn't change it).
+ */
+export async function updateRender(projectId: string, renderId: string, u: RenderUpdate) {
+  const sql = getSql();
+  const finished = u.status === "done" || u.status === "failed";
+  const projectStatus = u.status === "done" ? "done" : u.status === "failed" ? "failed" : "processing";
+  await sql.transaction([
+    sql`UPDATE renders
+        SET status = ${u.status}, stage = ${u.stage}, progress = ${u.progress},
+            storage_key = COALESCE(${u.storageKey ?? null}, storage_key),
+            result_json = COALESCE(${u.postCopy ? JSON.stringify({ postCopy: u.postCopy }) : null}::jsonb, result_json),
+            error = ${u.error ?? null},
+            completed_at = CASE WHEN ${finished} THEN now() ELSE NULL END,
+            updated_at = now()
+        WHERE id = ${renderId}`,
+    sql`UPDATE projects SET status = ${projectStatus}, updated_at = now()
+        WHERE id = ${projectId}
+          AND (SELECT max(version) FROM renders WHERE project_id = ${projectId})
+              = (SELECT version FROM renders WHERE id = ${renderId})`,
+  ]);
+}

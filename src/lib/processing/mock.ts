@@ -20,7 +20,7 @@ import type {
   ShotRole,
 } from "./types";
 
-/** Uploaded once to storage by `npm run storage:seed` (see README). */
+/** Copied into storage on first use by ensureMockRenderInStorage (./mock-output.ts). */
 export const MOCK_RENDER_KEY = "samples/mock-render.mp4";
 
 const RENDER_MS = 20_000;

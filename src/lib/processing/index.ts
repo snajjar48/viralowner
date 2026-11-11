@@ -1,5 +1,6 @@
 import "server-only";
 import { mockEngine } from "./mock";
+import { ensureMockRenderInStorage } from "./mock-output";
 import type { ProcessingEngine } from "./types";
 
 export * from "./types";
@@ -15,4 +16,9 @@ const engine: ProcessingEngine = mockEngine;
 
 export const analyzeInspo: ProcessingEngine["analyzeInspo"] = (input) => engine.analyzeInspo(input);
 export const startRender: ProcessingEngine["startRender"] = (input) => engine.startRender(input);
-export const getJobStatus: ProcessingEngine["getJobStatus"] = (jobId) => engine.getJobStatus(jobId);
+export const getJobStatus: ProcessingEngine["getJobStatus"] = async (jobId) => {
+  const status = await engine.getJobStatus(jobId);
+  // Mock only: make sure its sample output exists in storage. Remove with the mock.
+  if (status.state === "done" && engine === mockEngine) await ensureMockRenderInStorage();
+  return status;
+};

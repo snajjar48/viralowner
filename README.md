@@ -43,3 +43,15 @@ In the Neon console (Vercel → Storage → your database → **Open in Neon**),
 ```sql
 SELECT email, created_at FROM waitlist_signups ORDER BY created_at DESC;
 ```
+
+## Create-a-video flow
+
+`/new` → `/projects/[id]/breakdown` → `/clips` → `/options` → `/status` → `/preview` → `/export`
+
+| Path | Purpose |
+| --- | --- |
+| `src/lib/processing/` | **The processing engine interface** (`analyzeInspo`, `startRender`, `getJobStatus`). Currently a mock: fake shot lists, a ~20s simulated render, and one sample video (`assets/mock/mock-render.mp4`). Put `#fail` in the on-screen text option to test a failed render. |
+| `src/lib/storage.ts` | Cloudflare R2 with short-lived signed URLs; video bytes never pass through Vercel |
+| `src/lib/mp4.ts` | Reads a video's real length from its MP4/MOV header (server-side validation) |
+| `src/lib/projects.ts` | Database access; every query is scoped to the signed-in user |
+| `db/migrations/0001_video_projects.sql` | `projects`, `inspirations`, `clips`, `renders` |
