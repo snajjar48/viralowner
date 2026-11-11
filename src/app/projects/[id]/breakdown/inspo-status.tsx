@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { StateCard } from "@/components/flow-shell";
 import { AlertIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
+import { ProgressBar } from "@/components/progress-bar";
 import type { Inspiration } from "@/lib/projects";
 
 type Status = Inspiration["status"];
@@ -25,6 +26,8 @@ export function InspoStatus({
   const router = useRouter();
   const [status, setStatus] = useState<Status>(initial);
   const [error, setError] = useState(initialError);
+  const [step, setStep] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
 
   // Asks the server to finish (or check on) the analysis. Only sets state
   // after the response, so it's safe to call from effects.
@@ -38,7 +41,9 @@ export function InspoStatus({
         setError(data.error ?? "something went wrong. please try again.");
         return;
       }
-      setStatus(data.status ?? "analyzing"); // another request is analyzing it; keep polling
+      setStatus(data.status ?? "analyzing"); // still working; keep polling
+      if (typeof data.step === "string") setStep(data.step);
+      if (typeof data.progress === "number") setProgress((p) => Math.max(p, data.progress));
     } catch {
       setStatus("failed");
       setError("network error. check your connection and try again.");
@@ -56,7 +61,7 @@ export function InspoStatus({
   useEffect(() => {
     if (status === "failed") return;
     const first = setTimeout(check, 0);
-    const timer = setInterval(check, 4000);
+    const timer = setInterval(check, 3000);
     return () => {
       clearTimeout(first);
       clearInterval(timer);
@@ -96,7 +101,13 @@ export function InspoStatus({
         }
         title="analyzing your inspo..."
       >
-        <p className="text-sm text-muted">finding every cut, the pacing, and the text style.</p>
+        <p className="text-sm text-muted">
+          {step ? `${step}...` : "finding every cut, what’s in each shot, and why it works."}
+        </p>
+        <div className="w-full max-w-xs pt-2">
+          <ProgressBar value={progress} label="progress" />
+        </div>
+        <p className="text-xs text-muted">this usually takes under a minute. you can leave and come back.</p>
       </StateCard>
     </div>
   );

@@ -1,7 +1,15 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { analyzeInspo } from "./processing";
-import { claimInspirationAnalysis, failInspiration, getInspiration, replaceInspiration, saveBreakdown } from "./projects";
+import { getAnalysisStatus, startAnalysis } from "./processing";
+import {
+  claimInspirationAnalysis,
+  failInspiration,
+  getInspiration,
+  replaceInspiration,
+  saveBreakdown,
+  setInspirationJob,
+  type Inspiration,
+} from "./projects";
 import { createUploadUrl, deleteObject, headObject, readRange } from "./storage";
 import { readMp4Duration } from "./mp4";
 import {
@@ -45,19 +53,34 @@ export async function startInspoUpload(
   return { upload: await createUploadUrl(storageKey, { contentType, sizeBytes }) };
 }
 
+type CompleteResult = { status: number; body: Record<string, unknown> };
+
+const ANALYSIS_FAILED = "we couldn’t analyze that video. please try again.";
+
 /**
- * After the browser finishes uploading: checks the stored file for real
- * (size, type, length read from the file itself), then analyzes it.
- * Safe to call again: it only does work when there's work to do.
+ * Called after the browser finishes uploading, then every few seconds by the
+ * breakdown page until the shot list is ready. Safe to call any number of
+ * times, from any device:
+ *   - not started yet: checks the stored file for real (size, type, length
+ *     read from the file itself) and starts the analysis job
+ *   - running: checks on the job, and saves the breakdown when it's done
  */
-export async function completeInspo(userId: string, projectId: string) {
+export async function completeInspo(userId: string, projectId: string): Promise<CompleteResult> {
+  const current = await getInspiration(userId, projectId);
+  if (!current) return { status: 404, body: { error: "upload a video first." } };
+  if (current.status === "ready") return { status: 200, body: { status: "ready" } };
+  if (current.status === "analyzing" && current.analysisJobId) return checkAnalysis(projectId, current);
+
   const inspo = await claimInspirationAnalysis(projectId);
   if (!inspo) {
-    const current = await getInspiration(userId, projectId);
-    if (!current) return { status: 404, body: { error: "upload a video first." } };
-    return { status: 200, body: { status: current.status, error: current.error } };
+    // Another request is starting it, or it already finished or failed.
+    const now = await getInspiration(userId, projectId);
+    return { status: 200, body: { status: now?.status ?? "analyzing", error: now?.error ?? null } };
   }
+  return startInspoAnalysis(projectId, inspo);
+}
 
+async function startInspoAnalysis(projectId: string, inspo: Inspiration): Promise<CompleteResult> {
   const reject = async (error: string, durationS: number | null = null, deleteFile = true) => {
     await failInspiration(projectId, error, durationS);
     if (deleteFile) await deleteObject(inspo.storageKey).catch(() => {});
@@ -74,12 +97,37 @@ export async function completeInspo(userId: string, projectId: string) {
   if (durationS > INSPO_MAX_SECONDS + 0.5) return reject(MESSAGES.inspoTooLong(durationS), durationS);
 
   try {
-    const breakdown = await analyzeInspo({ inspirationId: inspo.id, storageKey: inspo.storageKey, durationS });
-    await saveBreakdown(projectId, Math.round(durationS * 100) / 100, breakdown);
-    return { status: 200, body: { status: "ready" } };
+    const { jobId } = await startAnalysis({ inspirationId: inspo.id, storageKey: inspo.storageKey, durationS });
+    await setInspirationJob(projectId, jobId, Math.round(durationS * 100) / 100);
+    return { status: 200, body: { status: "analyzing", step: null, progress: 0 } };
   } catch (error) {
-    console.error("Inspo analysis failed:", error);
-    await failInspiration(projectId, "we couldn’t analyze that video. please try again.", durationS);
-    return { status: 500, body: { status: "failed", error: "we couldn’t analyze that video. please try again." } };
+    console.error("Starting inspo analysis failed:", error);
+    await failInspiration(projectId, ANALYSIS_FAILED, durationS);
+    return { status: 502, body: { status: "failed", error: ANALYSIS_FAILED } };
   }
+}
+
+async function checkAnalysis(projectId: string, inspo: Inspiration): Promise<CompleteResult> {
+  const jobId = inspo.analysisJobId!;
+  let job;
+  try {
+    job = await getAnalysisStatus(jobId);
+  } catch (error) {
+    // The worker didn't answer this time; the page will ask again.
+    console.error("Checking inspo analysis failed:", error);
+    return { status: 200, body: { status: "analyzing", step: null, progress: 0 } };
+  }
+
+  if (job.state === "done" && job.breakdown) {
+    const b = job.breakdown;
+    if (b.meta) console.log(`Inspo analysis ${jobId}: ${b.shotCount} shots, $${b.meta.costUsd}, ${b.meta.seconds}s`);
+    await saveBreakdown(projectId, b.durationS, b, jobId);
+    return { status: 200, body: { status: "ready" } };
+  }
+  if (job.state === "failed") {
+    const error = job.error ?? ANALYSIS_FAILED;
+    await failInspiration(projectId, error, null, jobId);
+    return { status: 422, body: { status: "failed", error } };
+  }
+  return { status: 200, body: { status: "analyzing", step: job.step, progress: job.progress } };
 }

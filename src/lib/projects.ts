@@ -24,6 +24,8 @@ export interface Inspiration {
   breakdown: Breakdown | null;
   status: "uploading" | "uploaded" | "analyzing" | "ready" | "failed";
   error: string | null;
+  /** The worker job analyzing it, while status is "analyzing". */
+  analysisJobId: string | null;
 }
 
 export interface Clip {
@@ -77,6 +79,7 @@ function toInspiration(r: Row): Inspiration {
     breakdown: (r.breakdown_json as Breakdown | null) ?? null,
     status: r.status as Inspiration["status"],
     error: (r.error as string | null) ?? null,
+    analysisJobId: (r.analysis_job_id as string | null) ?? null,
   };
 }
 
@@ -227,7 +230,7 @@ export async function replaceInspiration(projectId: string, up: InspoUpload): Pr
       ON CONFLICT (project_id) DO UPDATE SET
         storage_key = EXCLUDED.storage_key, file_name = EXCLUDED.file_name,
         content_type = EXCLUDED.content_type, size_bytes = EXCLUDED.size_bytes,
-        duration_s = EXCLUDED.duration_s, status = 'uploading', breakdown_json = NULL, error = NULL,
+        duration_s = EXCLUDED.duration_s, status = 'uploading', breakdown_json = NULL, error = NULL, analysis_job_id = NULL,
         style_reference_confirmed_at = now(), updated_at = now()
       RETURNING (SELECT storage_key FROM old) AS old_key`,
   ]);
@@ -237,42 +240,61 @@ export async function replaceInspiration(projectId: string, up: InspoUpload): Pr
 
 /**
  * Marks the inspo as being checked and analyzed, unless that's already
- * happening (or done). Returns the inspo if this caller should do the work.
- * An "analyzing" state older than 2 minutes is treated as stuck and retried.
+ * happening (or done). Returns the inspo if this caller should start the work.
+ * An "analyzing" state with no job after 2 minutes is treated as stuck
+ * (the request that claimed it died before starting the job) and retried.
  */
 export async function claimInspirationAnalysis(projectId: string): Promise<Inspiration | null> {
   const sql = getSql();
   const rows = await sql`
-    UPDATE inspirations SET status = 'analyzing', error = NULL, updated_at = now()
+    UPDATE inspirations SET status = 'analyzing', error = NULL, analysis_job_id = NULL, updated_at = now()
     WHERE project_id = ${projectId}
       AND (status IN ('uploading', 'uploaded', 'failed')
-           OR (status = 'analyzing' AND updated_at < now() - interval '2 minutes'))
+           OR (status = 'analyzing' AND analysis_job_id IS NULL AND updated_at < now() - interval '2 minutes'))
     RETURNING *`;
   if (!rows[0]) return null;
   await sql`UPDATE projects SET status = 'analyzing', updated_at = now() WHERE id = ${projectId}`;
   return toInspiration(rows[0]);
 }
 
-export async function saveBreakdown(projectId: string, durationS: number, breakdown: Breakdown) {
-  const sql = getSql();
-  await sql.transaction([
-    sql`UPDATE inspirations
-        SET status = 'ready', duration_s = ${durationS}, breakdown_json = ${JSON.stringify(breakdown)}::jsonb,
-            error = NULL, updated_at = now()
-        WHERE project_id = ${projectId}`,
-    sql`UPDATE projects SET status = 'ready_for_clips', updated_at = now()
-        WHERE id = ${projectId} AND status IN ('draft', 'analyzing')`,
-  ]);
+/** Records the worker job analyzing this inspo. */
+export async function setInspirationJob(projectId: string, jobId: string, durationS: number) {
+  await getSql()`
+    UPDATE inspirations SET analysis_job_id = ${jobId}, duration_s = ${durationS}, updated_at = now()
+    WHERE project_id = ${projectId} AND status = 'analyzing'`;
 }
 
-export async function failInspiration(projectId: string, error: string, durationS: number | null = null) {
+/**
+ * Saves a finished analysis. With `jobId`, only if that job is still the one
+ * on record (the user may have uploaded a different inspo meanwhile).
+ */
+export async function saveBreakdown(projectId: string, durationS: number, breakdown: Breakdown, jobId?: string) {
   const sql = getSql();
-  await sql.transaction([
-    sql`UPDATE inspirations
-        SET status = 'failed', error = ${error}, duration_s = COALESCE(${durationS}, duration_s), updated_at = now()
-        WHERE project_id = ${projectId}`,
-    sql`UPDATE projects SET status = 'draft', updated_at = now() WHERE id = ${projectId}`,
-  ]);
+  const job = jobId ?? null;
+  const rows = await sql`
+    UPDATE inspirations
+    SET status = 'ready', duration_s = ${durationS}, breakdown_json = ${JSON.stringify(breakdown)}::jsonb,
+        error = NULL, analysis_job_id = NULL, updated_at = now()
+    WHERE project_id = ${projectId} AND (${job}::text IS NULL OR analysis_job_id = ${job})
+    RETURNING id`;
+  if (!rows.length) return false;
+  await sql`UPDATE projects SET status = 'ready_for_clips', updated_at = now()
+            WHERE id = ${projectId} AND status IN ('draft', 'analyzing')`;
+  return true;
+}
+
+export async function failInspiration(projectId: string, error: string, durationS: number | null = null, jobId?: string) {
+  const sql = getSql();
+  const job = jobId ?? null;
+  const rows = await sql`
+    UPDATE inspirations
+    SET status = 'failed', error = ${error}, duration_s = COALESCE(${durationS}, duration_s),
+        analysis_job_id = NULL, updated_at = now()
+    WHERE project_id = ${projectId} AND (${job}::text IS NULL OR analysis_job_id = ${job})
+    RETURNING id`;
+  if (!rows.length) return false;
+  await sql`UPDATE projects SET status = 'draft', updated_at = now() WHERE id = ${projectId}`;
+  return true;
 }
 
 // ---- Step 2: clips ---------------------------------------------------------

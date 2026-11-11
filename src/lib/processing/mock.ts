@@ -1,6 +1,7 @@
 // MOCK processing engine. Nothing here looks at the actual videos.
 //
-// - analyzeInspo returns a realistic, made-up breakdown (stable per inspo).
+// - analysis returns a realistic, made-up breakdown (stable per inspo) after
+//   about 2.5 seconds; the job id encodes everything it needs.
 // - startRender returns a job id that encodes its start time, so
 //   getJobStatus can work out the current stage on any server instance
 //   without storing anything (a render "takes" about 20 seconds).
@@ -99,7 +100,6 @@ function pick<T>(items: T[], rand: () => number) {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function roleFor(i: number, count: number, rand: () => number): ShotRole {
   if (i === 0) return "hook";
@@ -155,9 +155,19 @@ function decodeJob(jobId: string) {
 }
 
 export const mockEngine: ProcessingEngine = {
-  async analyzeInspo(input) {
-    await sleep(ANALYZE_MS);
-    return mockBreakdown(input);
+  async startAnalysis({ inspirationId, durationS }) {
+    return { jobId: `mocka_${Date.now()}_${durationS}_${inspirationId}` };
+  },
+
+  async getAnalysisStatus(jobId) {
+    const match = /^mocka_(\d+)_([\d.]+)_(.+)$/.exec(jobId);
+    if (!match) return { state: "failed", step: null, progress: 0, error: "we lost track of this analysis. please try again." };
+    const elapsed = Date.now() - Number(match[1]);
+    if (elapsed < ANALYZE_MS) {
+      return { state: "processing", step: "finding every cut", progress: Math.floor((elapsed / ANALYZE_MS) * 100) };
+    }
+    const breakdown = mockBreakdown({ inspirationId: match[3], durationS: Number(match[2]), storageKey: "" });
+    return { state: "done", step: null, progress: 100, breakdown };
   },
 
   async startRender(input: RenderInput) {

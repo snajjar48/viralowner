@@ -28,6 +28,7 @@ export function ShotList({
   selected,
   onSelect,
   compact = false,
+  detailed = false,
 }: {
   shots: Shot[];
   /** Shot indexes that have a clip assigned (shows a check). */
@@ -35,6 +36,8 @@ export function ShotList({
   selected?: number | null;
   onSelect?: (shotIndex: number) => void;
   compact?: boolean;
+  /** Breakdown page: what's in the shot, its text and why it works. */
+  detailed?: boolean;
 }) {
   return (
     <ol className="flex flex-col gap-2">
@@ -57,7 +60,7 @@ export function ShotList({
                 shot {shot.index + 1}: {ROLE_LABELS[shot.role]}
                 <span className="font-normal text-muted"> · {shotSeconds(shot.durationS)}</span>
               </span>
-              {!compact && <span className="text-sm text-muted">{shot.tip}.</span>}
+              {detailed ? <ShotDetails shot={shot} /> : !compact && <span className="text-sm text-muted">{sentence(shot.tip)}</span>}
             </span>
             {covered && <span className="sr-only">{isCovered ? "(has a clip)" : "(no clip yet)"}</span>}
           </>
@@ -83,5 +86,30 @@ export function ShotList({
         );
       })}
     </ol>
+  );
+}
+
+const sentence = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
+
+function ShotDetails({ shot }: { shot: Shot }) {
+  return (
+    <span className="flex flex-col gap-2 pt-1">
+      {shot.description && <span className="text-sm text-muted">{sentence(shot.description)}</span>}
+      {shot.onScreenText && (
+        <span className="self-start rounded-lg bg-white/[0.06] px-2.5 py-1 text-sm">
+          <span className="sr-only">on-screen text: </span>“{shot.onScreenText}”
+        </span>
+      )}
+      {shot.whyItWorks && (
+        <span className="text-sm">
+          <span className="font-medium text-coral">why it works: </span>
+          <span className="text-muted">{sentence(shot.whyItWorks)}</span>
+        </span>
+      )}
+      <span className="text-sm">
+        <span className="font-medium text-foreground">your version: </span>
+        <span className="text-muted">{sentence(shot.tip)}</span>
+      </span>
+    </span>
   );
 }

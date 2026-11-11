@@ -14,6 +14,20 @@ export interface Shot {
   tip: string;
   startS: number;
   durationS: number;
+  /** What's on screen (real analysis only). */
+  description?: string;
+  /** Overlaid text in this shot, as written; null if none. */
+  onScreenText?: string | null;
+  /** Why this shot keeps people watching. */
+  whyItWorks?: string;
+}
+
+export interface TranscriptSegment {
+  startS: number;
+  endS: number;
+  text: string;
+  /** Word timings, for captions. */
+  words?: { w: string; s: number; e: number }[];
 }
 
 export interface Breakdown {
@@ -25,12 +39,27 @@ export interface Breakdown {
   textOverlays: { present: boolean; style: string | null };
   captionStyle: string;
   shots: Shot[];
+  /** The video as a whole (real analysis only). */
+  insights?: { hook: string; structure: string; whyItWorks: string[]; audio: string };
+  transcript?: { language: string | null; segments: TranscriptSegment[] };
+  /** Internal: which engine/model made this and what it cost. Never shown to users. */
+  meta?: { engine: string; model: string; costUsd: number; frames: number; seconds: number };
 }
 
 export interface AnalyzeInput {
   inspirationId: string;
   storageKey: string;
   durationS: number;
+}
+
+export interface AnalysisStatus {
+  state: "queued" | "processing" | "done" | "failed";
+  /** What it's doing now, e.g. "finding every cut" (user-facing). */
+  step: string | null;
+  progress: number;
+  breakdown?: Breakdown;
+  /** Friendly, user-facing message when state is "failed". */
+  error?: string;
 }
 
 /** A user edit of one shot, made in the preview editor. */
@@ -88,7 +117,9 @@ export interface JobStatus {
 }
 
 export interface ProcessingEngine {
-  analyzeInspo(input: AnalyzeInput): Promise<Breakdown>;
+  /** Starts analyzing an uploaded inspo; follow it with getAnalysisStatus. */
+  startAnalysis(input: AnalyzeInput): Promise<{ jobId: string }>;
+  getAnalysisStatus(jobId: string): Promise<AnalysisStatus>;
   startRender(input: RenderInput): Promise<{ jobId: string }>;
   getJobStatus(jobId: string): Promise<JobStatus>;
 }
