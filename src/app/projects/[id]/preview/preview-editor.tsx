@@ -47,7 +47,7 @@ export function PreviewEditor({
   oneTake?: boolean;
   uploadedAudio?: { fileName: string } | null;
   /** Changes (new versions) this video has left, and whether the account has a plan. */
-  changes: { left: number; subscribed: boolean };
+  changes: { left: number | null; subscribed: boolean };
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
@@ -102,7 +102,7 @@ export function PreviewEditor({
     }
   }
 
-  const outOfChanges = changes.left <= 0;
+  const outOfChanges = changes.left !== null && changes.left <= 0;
   const locked = !!inProgress || busy !== null || outOfChanges;
   const asking = request.trim().length > 0;
 
@@ -291,7 +291,8 @@ export function PreviewEditor({
   );
 }
 
-function ChangesLeft({ changes }: { changes: { left: number; subscribed: boolean } }) {
+function ChangesLeft({ changes }: { changes: { left: number | null; subscribed: boolean } }) {
+  if (changes.left === null) return null;
   if (changes.left > 0) {
     return (
       <p className="text-sm text-muted">

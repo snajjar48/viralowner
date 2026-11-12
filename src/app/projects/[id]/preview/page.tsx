@@ -78,7 +78,10 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
         clips={clipList}
         changes={{
-          left: changesLeft(membership, project, renders.filter((r) => r.status !== "failed").length),
+          // Unlimited accounts: null (nothing to count down).
+          left: membership.unlimited
+            ? null
+            : changesLeft(membership, project, renders.filter((r) => r.status !== "failed").length),
           subscribed: !!membership.plan,
         }}
       />

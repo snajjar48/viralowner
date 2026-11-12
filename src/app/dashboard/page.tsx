@@ -96,7 +96,11 @@ async function Account() {
 
 function MembershipCard({ m }: { m: Membership }) {
   const rows: [string, string][] = [];
-  if (m.plan) {
+  if (m.unlimited) {
+    rows.push(["Plan", "Owner · unlimited"]);
+    rows.push(["Videos", "unlimited"]);
+    rows.push(["Changes", "unlimited"]);
+  } else if (m.plan) {
     rows.push(["Plan", `${TIER_NAMES[m.plan.tier]} · ${m.plan.interval}`]);
     rows.push(["Status", STATUS_LABELS[m.plan.status] ?? m.plan.status]);
     if (m.videos) {

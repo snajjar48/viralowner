@@ -35,6 +35,15 @@ export interface Membership {
   /** This month's videos on the paid plan. */
   videos: { limit: number; used: number; resetsAt: string } | null;
   hasCustomer: boolean;
+  /** Owner account(s) in UNLIMITED_EMAILS: no limits, no trial or plan needed. */
+  unlimited: boolean;
+}
+
+/** Accounts with unlimited access, from the UNLIMITED_EMAILS env var (comma-separated). */
+function isUnlimitedEmail(email: string | null | undefined) {
+  if (!email) return false;
+  const list = (process.env.UNLIMITED_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+  return list.includes(email.trim().toLowerCase());
 }
 
 export async function getMembership(userId: string): Promise<Membership> {
@@ -42,7 +51,7 @@ export async function getMembership(userId: string): Promise<Membership> {
   const [{ data: profile, error }, claims, trialProjects] = await Promise.all([
     createAdminClient()
       .from("profiles")
-      .select("plan, subscription_status, current_period_end, cancel_at_period_end, stripe_customer_id")
+      .select("email, plan, subscription_status, current_period_end, cancel_at_period_end, stripe_customer_id")
       .eq("id", userId)
       .maybeSingle(),
     sql`SELECT 1 FROM trial_claims WHERE user_id = ${userId}`,
@@ -74,6 +83,7 @@ export async function getMembership(userId: string): Promise<Membership> {
     trial: trialProjects.length ? "used" : claims.length ? "available" : "none",
     videos,
     hasCustomer: Boolean(profile?.stripe_customer_id),
+    unlimited: isUnlimitedEmail(profile?.email as string | null),
   };
 }
 
@@ -122,6 +132,7 @@ export type Blocked = { reason: "subscribe" | "limit"; message: string };
 
 /** Can this account start a new video (count against trial or plan)? */
 export function canStartVideo(m: Membership): { as: "trial" | "plan" } | Blocked {
+  if (m.unlimited) return { as: "plan" };
   if (m.trial === "available") return { as: "trial" };
   if (m.plan && m.videos) {
     if (m.videos.used < m.videos.limit) return { as: "plan" };
@@ -142,6 +153,7 @@ export function canStartVideo(m: Membership): { as: "trial" | "plan" } | Blocked
  * videos get TRIAL_CHANGES until the account subscribes, then the full amount.
  */
 export function changesAllowed(m: Membership, project: Project) {
+  if (m.unlimited) return Infinity;
   if (m.plan) return CHANGES_PER_VIDEO;
   if (project.billing === "trial") return TRIAL_CHANGES;
   return 0;
@@ -192,7 +204,13 @@ export async function claimRender(
 
   const sql = getSql();
   let claimed;
-  if (can.as === "trial") {
+  if (m.unlimited) {
+    // Counted as a plan video for the record, but never limited.
+    claimed = await sql`
+      UPDATE projects SET billing = 'plan', counted_at = now()
+      WHERE id = ${project.id} AND user_id = ${userId} AND counted_at IS NULL
+      RETURNING id`;
+  } else if (can.as === "trial") {
     claimed = await sql`
       UPDATE projects SET billing = 'trial', counted_at = now()
       WHERE id = ${project.id} AND user_id = ${userId} AND counted_at IS NULL
@@ -229,6 +247,7 @@ export async function canCreateProject(userId: string): Promise<null | (Blocked 
   const rows = await getSql()`
     SELECT count(*)::int AS n FROM projects
     WHERE user_id = ${userId} AND counted_at IS NULL AND created_at > now() - interval '30 days'`;
+  if (m.unlimited) return null;
   const max = OPEN_DRAFTS[can.as];
   if (Number(rows[0]?.n ?? 0) >= max) {
     return {
