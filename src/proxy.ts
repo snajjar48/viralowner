@@ -9,12 +9,13 @@ const PUBLIC_PATHS = new Set([
   "/unlock", // password page
   "/api/unlock", // password check
   "/api/stripe/webhook", // Stripe can't know the password; verified by signature
+  "/api/worker/render-done", // the processing worker; verified by WORKER_TOKEN
   "/logo.svg",
   "/icon.svg",
 ]);
 
 // Pages that also need a signed-in account (on top of the site password).
-const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/projects", "/plans"];
+const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/projects", "/plans", "/reset-password"];
 
 function needsAccount(pathname: string) {
   return ACCOUNT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

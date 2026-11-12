@@ -14,12 +14,26 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   const [error, setError] = useState(searchParams.get("error") === "link" ? LINK_ERROR : "");
   const [submitting, setSubmitting] = useState(false);
+  // Set to the email when login says it isn't confirmed yet.
+  const [unconfirmed, setUnconfirmed] = useState("");
+  const [resent, setResent] = useState(false);
+
+  async function resend() {
+    setResent(true);
+    await fetch("/api/auth/resend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: unconfirmed }),
+    }).catch(() => null);
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setSubmitting(true);
     setError("");
+    setUnconfirmed("");
+    setResent(false);
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -33,6 +47,7 @@ export function LoginForm() {
       }
       const result = await res.json().catch(() => ({}));
       setError(result.error ?? "Something went wrong. Please try again.");
+      if (result.unconfirmed) setUnconfirmed(String(data.get("email") ?? ""));
     } catch {
       setError("Network error. Please try again.");
     }
@@ -47,6 +62,9 @@ export function LoginForm() {
       <Field label="Password" htmlFor="password">
         <PasswordInput id="password" name="password" required autoComplete="current-password" />
       </Field>
+      <Link href="/forgot-password" className="-mt-1 self-end text-sm text-muted underline underline-offset-4 hover:text-foreground">
+        forgot your password?
+      </Link>
       <div className="mt-4 flex flex-col gap-3">
         <button type="submit" disabled={submitting} className={`${buttonClass} group`}>
           <span className="inline-flex items-center justify-center gap-2">
@@ -57,6 +75,16 @@ export function LoginForm() {
           </span>
         </button>
         <FormError id="login-error" message={error} />
+        {unconfirmed && (
+          <button
+            type="button"
+            onClick={resend}
+            disabled={resent}
+            className="text-sm text-muted underline underline-offset-4 hover:text-foreground disabled:no-underline"
+          >
+            {resent ? "sent. check your inbox (and spam)." : "send the confirmation link again"}
+          </button>
+        )}
       </div>
 
       <div className="flex items-center gap-4 text-xs text-muted">

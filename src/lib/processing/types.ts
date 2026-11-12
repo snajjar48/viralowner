@@ -1,6 +1,6 @@
 // The contract between viralowner's pages and the video-processing engine.
 // The pages only ever use these types and the functions in ./index.ts, so the
-// mock engine can be swapped for the real worker without touching any page.
+// engine (the Modal worker, see ./modal.ts) can change without touching any page.
 
 import type { VideoOptions } from "../video-options";
 

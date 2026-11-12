@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { safeNextPath } from "@/lib/safe-next";
 import { createClient } from "@/lib/supabase/server";
 
-const OTP_TYPES = new Set<EmailOtpType>(["signup", "email", "invite", "magiclink", "email_change"]);
+const OTP_TYPES = new Set<EmailOtpType>(["signup", "email", "invite", "magiclink", "email_change", "recovery"]);
 
 /**
  * Where the "confirm your email" link lands. Handles both Supabase link styles:

@@ -1,5 +1,7 @@
 import "server-only";
 import type Stripe from "stripe";
+import { emailPlanWelcome } from "./notify";
+import { parsePlanId } from "./plan-format";
 import { getPlans, planForPrice } from "./plans";
 import { getStripe } from "./stripe";
 import { createAdminClient } from "./supabase/server";
@@ -25,7 +27,7 @@ export async function syncSubscription(sub: Stripe.Subscription) {
   const admin = createAdminClient();
   const { data: profile } = await admin
     .from("profiles")
-    .select("subscription_id")
+    .select("id, subscription_id, subscription_status")
     .eq("stripe_customer_id", customerId)
     .maybeSingle();
   if (!profile) return null;
@@ -34,18 +36,25 @@ export async function syncSubscription(sub: Stripe.Subscription) {
   }
 
   const item = sub.items.data[0];
+  const plan = planForPrice(item?.price.id);
   const { error } = await admin
     .from("profiles")
     .update({
       subscription_id: sub.id,
       subscription_status: sub.status,
-      plan: planForPrice(item?.price.id),
+      plan,
       current_period_end: item ? new Date(item.current_period_end * 1000).toISOString() : null,
       cancel_at_period_end: sub.cancel_at_period_end,
       has_payment_method: sub.default_payment_method != null,
     })
     .eq("stripe_customer_id", customerId);
   if (error) throw error;
+
+  // Just started (not a renewal or a plan switch): send the welcome email.
+  // The idempotency key stops a duplicate when the browser and webhook both sync.
+  const wasActive = profile.subscription_id === sub.id && isActiveStatus(profile.subscription_status);
+  const tier = parsePlanId(plan)?.tier;
+  if (sub.status === "active" && !wasActive && tier) await emailPlanWelcome(String(profile.id), tier, sub.id);
   return sub.status;
 }
 

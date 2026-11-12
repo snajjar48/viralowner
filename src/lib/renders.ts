@@ -1,4 +1,5 @@
 import "server-only";
+import { resetRenderEmail } from "./notify";
 import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit } from "./processing";
 import {
   createRender,
@@ -158,6 +159,7 @@ export async function retryRender(userId: string, project: Project, render: Rend
     const previous = from && previousFor(from, settings.options);
     if (previous) extras = { request: settings.request, previous };
   }
+  await resetRenderEmail(render.id); // email how this attempt turns out
   await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, {
     ...extras,
     ...audioFor(project, settings),

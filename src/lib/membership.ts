@@ -263,11 +263,15 @@ export async function canCreateProject(userId: string): Promise<null | (Blocked 
  * Records the free trial for an account and its card. One per account and
  * one per card, so a new account with the same card gets no second trial.
  */
-export async function claimTrial(userId: string, cardFingerprint: string): Promise<"claimed" | "card_used"> {
+export async function claimTrial(
+  userId: string,
+  cardFingerprint: string,
+): Promise<"new" | "claimed" | "card_used"> {
   const sql = getSql();
-  await sql`
+  const inserted = await sql`
     INSERT INTO trial_claims (user_id, card_fingerprint) VALUES (${userId}, ${cardFingerprint})
-    ON CONFLICT DO NOTHING`;
+    ON CONFLICT DO NOTHING RETURNING user_id`;
+  if (inserted.length) return "new";
   const rows = await sql`
     SELECT user_id FROM trial_claims WHERE user_id = ${userId} OR card_fingerprint = ${cardFingerprint}`;
   return rows.some((r) => String(r.user_id) === userId) ? "claimed" : "card_used";

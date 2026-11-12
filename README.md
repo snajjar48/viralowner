@@ -59,13 +59,26 @@ SELECT email, created_at FROM waitlist_signups ORDER BY created_at DESC;
 - **Nobody is ever subscribed automatically.** Trial users subscribe only on `/plans` by picking a plan, ticking the terms and pressing subscribe (`/api/billing/subscribe`). Plan switches, card updates and cancelling go through Stripe's billing portal (limited to viralowner prices).
 - The Stripe webhook needs these events: `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed` and `setup_intent.succeeded`.
 
+## Emails
+
+Sent through Resend (`src/lib/email.ts`, `RESEND_API_KEY`) from `hello@viralowner.com`. Supabase also sends its account emails through Resend (custom SMTP).
+
+| Email | When | Code |
+| --- | --- | --- |
+| your video is ready / we couldn’t finish it | the worker calls `/api/worker/render-done` a few seconds after a render returns; the site re-checks the result, then emails once (`renders.emailed_at`) | `src/lib/notify.ts`, `notify_job` in `worker/app.py` |
+| your free video is waiting | the trial is first recorded | `emailTrialWelcome` |
+| welcome to Basic/Pro | a subscription first becomes active | `emailPlanWelcome` (from `syncSubscription`) |
+| confirm your email, reset your password | Supabase | `supabase/email-templates/` (paste into Supabase → Authentication → Emails) |
+
+Payment receipts come from Stripe itself.
+
 ## Create-a-video flow
 
 `/new` → `/projects/[id]/breakdown` → `/clips` → `/options` → `/status` → `/preview` → `/export`
 
 | Path | Purpose |
 | --- | --- |
-| `src/lib/processing/` | **The processing engine interface** (`startAnalysis`, `startRender`, `getJobStatus`…). `modal.ts` talks to the worker below. (`mock.ts` is the old stand-in engine, no longer used.) |
+| `src/lib/processing/` | **The processing engine interface** (`startAnalysis`, `startRender`, `getJobStatus`…). `modal.ts` talks to the worker below. |
 | `src/lib/storage.ts` | Cloudflare R2 with short-lived signed URLs; video bytes never pass through Vercel |
 | `src/lib/mp4.ts` | Reads a video's real length from its MP4/MOV header (server-side validation) |
 | `src/lib/projects.ts` | Database access; every query is scoped to the signed-in user |

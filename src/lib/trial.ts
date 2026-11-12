@@ -2,6 +2,7 @@ import "server-only";
 import type Stripe from "stripe";
 import { APP_TAG } from "./billing";
 import { claimTrial } from "./membership";
+import { emailTrialWelcome } from "./notify";
 import { getStripe } from "./stripe";
 import { createAdminClient } from "./supabase/server";
 
@@ -35,5 +36,6 @@ export async function trialFromSetupIntent(si: Stripe.SetupIntent): Promise<"cla
   const result = await claimTrial(userId, fingerprint);
   await stripe.customers.update(customerId, { invoice_settings: { default_payment_method: paymentMethodId } });
   await admin.from("profiles").update({ has_payment_method: true }).eq("id", userId);
-  return result;
+  if (result === "new") await emailTrialWelcome(userId); // only the first time it's recorded
+  return result === "card_used" ? "card_used" : "claimed";
 }

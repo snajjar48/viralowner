@@ -1,5 +1,6 @@
 import "server-only";
 import { WorkerError, workerFetch } from "../worker";
+import { siteUrl } from "../site-url";
 import {
   JOB_STAGES,
   type AnalysisStatus,
@@ -180,6 +181,8 @@ export const modalEngine: ProcessingEngine = {
         previous: input.previous ?? null,
         cuts: input.cuts ?? null,
         audio: input.audio ?? null,
+        // The worker calls this when the video is done, so we can email the user.
+        notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
     });
   },

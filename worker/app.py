@@ -2332,6 +2332,48 @@ def try_analyze(path: str):
     print(json.dumps(breakdown, indent=2, ensure_ascii=False))
 
 
+# The website's "a render finished" endpoint. Only these hosts ever get the
+# worker token, whatever a request asks for.
+NOTIFY_HOSTS = {"www.viralowner.com", "viralowner.com", "viralowner.vercel.app"}
+NOTIFY_PATH = "/api/worker/render-done"
+
+
+def notify_target(req: dict) -> tuple[str, dict] | None:
+    from urllib.parse import urlparse
+
+    n = req.get("notify")
+    if not isinstance(n, dict) or not isinstance(n.get("url"), str):
+        return None
+    u = urlparse(n["url"])
+    if u.scheme != "https" or u.hostname not in NOTIFY_HOSTS or u.path != NOTIFY_PATH:
+        return None
+    payload = {"projectId": str(n.get("projectId", "")), "renderId": str(n.get("renderId", ""))}
+    return n["url"], payload
+
+
+@app.function(image=image, secrets=secrets, timeout=120)
+def notify_job(url: str, payload: dict) -> None:
+    """Tells the website a render finished (so it can email the user). Runs a
+    few seconds after the render returns, so its result is ready to read."""
+    import json as _json
+    import urllib.request
+
+    time.sleep(4)
+    for attempt in range(3):
+        try:
+            r = urllib.request.Request(
+                url,
+                data=_json.dumps(payload).encode(),
+                headers={"content-type": "application/json", "authorization": f"Bearer {os.environ['WORKER_TOKEN']}"},
+                method="POST",
+            )
+            urllib.request.urlopen(r, timeout=40).read()
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f"notify failed ({attempt + 1}/3): {e}")
+            time.sleep(5 * (attempt + 1))
+
+
 @app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=900)
 def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
@@ -2343,6 +2385,13 @@ def render_job(req: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"render failed: {type(e).__name__}: {e}")
         raise
+    finally:
+        target = notify_target(req)
+        if target:
+            try:
+                notify_job.spawn(*target)
+            except Exception as e:  # noqa: BLE001
+                print(f"couldn't schedule notify: {e}")
 
 
 @app.function(**job_resources, timeout=900)

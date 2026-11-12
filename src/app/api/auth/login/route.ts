@@ -31,7 +31,7 @@ export async function POST(request: Request) {
     if (error) {
       if (error.code === "email_not_confirmed") {
         return Response.json(
-          { error: "Please confirm your email first. Check your inbox for the link." },
+          { error: "Please confirm your email first. Check your inbox for the link.", unconfirmed: true },
           { status: 403 },
         );
       }
