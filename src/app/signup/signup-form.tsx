@@ -16,7 +16,7 @@ import { PASSWORD_MAX, PASSWORD_MIN, type BillingAddress } from "@/lib/signup-va
 
 export function SignupForm({ plans }: { plans: Plan[] | null }) {
   const [choice, setChoice] = useState<Choice>("trial");
-  const [interval, setInterval] = useState<Interval>("monthly");
+  const [interval, setInterval] = useState<Interval>("yearly");
   const plan = plans && choice !== "trial" ? findPlan(plans, choice, interval) : undefined;
   const currency = plans?.[0]?.currency ?? "usd";
   const options = useMemo<StripeElementsOptions>(
