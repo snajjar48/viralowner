@@ -10,7 +10,6 @@ const PUBLIC_PATHS = new Set([
   "/api/unlock", // password check
   "/api/stripe/webhook", // Stripe can't know the password; verified by signature
   "/api/worker/render-done", // the processing worker; verified by WORKER_TOKEN
-  "/api/dev/test-emails", // TEMP
   "/logo.svg",
   "/icon.svg",
 ]);
