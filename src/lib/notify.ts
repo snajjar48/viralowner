@@ -1,6 +1,6 @@
 import "server-only";
 import { getSql } from "./db";
-import { sendEmail } from "./email";
+import { sendEmail, type Email } from "./email";
 import { CHANGES_PER_VIDEO, TIER_NAMES, TRIAL_CHANGES, VIDEO_LIMITS, type Tier } from "./plan-format";
 import { getRender, isUuid } from "./projects";
 import { syncRender } from "./renders";
@@ -47,33 +47,11 @@ export async function emailRenderFinished(projectId: string, renderId: string) {
 
   const to = await recipient(String(owner[0].user_id));
   if (!to) return "no_email";
-  const site = siteUrl();
-  const ok =
+  const ok = await sendEmail(
     render.status === "done"
-      ? await sendEmail({
-          to: to.email,
-          subject: render.version === 1 ? "your video is ready 🎬" : `version ${render.version} of your video is ready`,
-          preview: "watch it, tweak it, then download it and post.",
-          heading: render.version === 1 ? "your video is ready." : `version ${render.version} is ready.`,
-          body: [
-            hi(to.firstName),
-            "we finished editing your video. watch it, ask for a change if anything’s off, then download it and post.",
-          ],
-          button: { label: "watch your video", href: `${site}/projects/${projectId}/preview?v=${render.version}` },
-          footnote: "we also wrote a caption and hashtags for you. they’re on the download page.",
-        })
-      : await sendEmail({
-          to: to.email,
-          subject: "we couldn’t finish your video",
-          preview: "trying again is free and doesn’t use a change.",
-          heading: "we hit a snag making your video.",
-          body: [
-            hi(to.firstName),
-            `something went wrong while we were editing version ${render.version}. ${render.error ?? ""}`.trim(),
-            "trying again is free and doesn’t use one of your videos or changes.",
-          ],
-          button: { label: "try again", href: `${site}/projects/${projectId}/status?render=${renderId}` },
-        });
+      ? videoReadyEmail(to, projectId, render.version)
+      : videoFailedEmail(to, projectId, renderId, render.version, render.error),
+  );
   if (!ok) await sql`UPDATE renders SET emailed_at = NULL WHERE id = ${renderId}`; // let a later callback retry
   return ok ? "sent" : "send_failed";
 }
@@ -88,41 +66,81 @@ export async function resetRenderEmail(renderId: string) {
 
 export async function emailTrialWelcome(userId: string) {
   const to = await recipient(userId);
-  if (!to) return;
-  await sendEmail(
-    {
-      to: to.email,
-      subject: "your free video is waiting",
-      preview: "pick a viral video, film your clips, we do the editing.",
-      heading: "welcome to viralowner.",
-      body: [
-        hi(to.firstName),
-        `your free trial is ready: 1 video with ${TRIAL_CHANGES} change and a free download. here’s how it works: upload a viral video you love, we break down every shot, you film your own clips, and we edit them into your version.`,
-        "your card is saved but hasn’t been charged, and it won’t be unless you choose a plan and press subscribe.",
-      ],
-      button: { label: "make my free video", href: `${siteUrl()}/new` },
-    },
-    `trial-welcome-${userId}`,
-  );
+  if (to) await sendEmail(trialWelcomeEmail(to), `trial-welcome-${userId}`);
 }
 
 export async function emailPlanWelcome(userId: string, tier: Tier, subscriptionId: string) {
   const to = await recipient(userId);
-  if (!to) return;
+  if (to) await sendEmail(planWelcomeEmail(to, tier), `plan-welcome-${subscriptionId}`);
+}
+
+// ---- the emails themselves (also used by the test route)
+
+type To = { email: string; firstName: string | null };
+
+export function videoReadyEmail(to: To, projectId: string, version: number): Email {
+  return {
+    to: to.email,
+    subject: version === 1 ? "your video is ready 🎬" : `version ${version} of your video is ready`,
+    preview: "watch it, tweak it, then download it and post.",
+    heading: version === 1 ? "your video is ready." : `version ${version} is ready.`,
+    body: [
+      hi(to.firstName),
+      "we finished editing your video. watch it, ask for a change if anything’s off, then download it and post.",
+    ],
+    button: { label: "watch your video", href: `${siteUrl()}/projects/${projectId}/preview?v=${version}` },
+    footnote: "we also wrote a caption and hashtags for you. they’re on the download page.",
+  };
+}
+
+export function videoFailedEmail(
+  to: To,
+  projectId: string,
+  renderId: string,
+  version: number,
+  error: string | null,
+): Email {
+  return {
+    to: to.email,
+    subject: "we couldn’t finish your video",
+    preview: "trying again is free and doesn’t use a change.",
+    heading: "we hit a snag making your video.",
+    body: [
+      hi(to.firstName),
+      `something went wrong while we were editing version ${version}. ${error ?? ""}`.trim(),
+      "trying again is free and doesn’t use one of your videos or changes.",
+    ],
+    button: { label: "try again", href: `${siteUrl()}/projects/${projectId}/status?render=${renderId}` },
+  };
+}
+
+export function trialWelcomeEmail(to: To): Email {
+  return {
+    to: to.email,
+    subject: "your free video is waiting",
+    preview: "pick a viral video, film your clips, we do the editing.",
+    heading: "welcome to viralowner.",
+    body: [
+      hi(to.firstName),
+      `your free trial is ready: 1 video with ${TRIAL_CHANGES} change and a free download. here’s how it works: upload a viral video you love, we break down every shot, you film your own clips, and we edit them into your version.`,
+      "your card is saved but hasn’t been charged, and it won’t be unless you choose a plan and press subscribe.",
+    ],
+    button: { label: "make my free video", href: `${siteUrl()}/new` },
+  };
+}
+
+export function planWelcomeEmail(to: To, tier: Tier): Email {
   const videos = tier === "pro" ? `up to ${VIDEO_LIMITS.pro}` : String(VIDEO_LIMITS.basic);
-  await sendEmail(
-    {
-      to: to.email,
-      subject: `welcome to viralowner ${TIER_NAMES[tier]}`,
-      preview: `${videos} videos a month, ${CHANGES_PER_VIDEO} changes each.`,
-      heading: `you’re on ${TIER_NAMES[tier]}.`,
-      body: [
-        hi(to.firstName),
-        `thanks for subscribing. you get ${videos} videos a month, each with ${CHANGES_PER_VIDEO} changes. your videos reset every month on the day you subscribed.`,
-        "stripe will email your receipt. you can switch plans, update your card or cancel anytime from your dashboard.",
-      ],
-      button: { label: "make a video", href: `${siteUrl()}/new` },
-    },
-    `plan-welcome-${subscriptionId}`,
-  );
+  return {
+    to: to.email,
+    subject: `welcome to viralowner ${TIER_NAMES[tier]}`,
+    preview: `${videos} videos a month, ${CHANGES_PER_VIDEO} changes each.`,
+    heading: `you’re on ${TIER_NAMES[tier]}.`,
+    body: [
+      hi(to.firstName),
+      `thanks for subscribing. you get ${videos} videos a month, each with ${CHANGES_PER_VIDEO} changes. your videos reset every month on the day you subscribed.`,
+      "stripe will email your receipt. you can switch plans, update your card or cancel anytime from your dashboard.",
+    ],
+    button: { label: "make a video", href: `${siteUrl()}/new` },
+  };
 }
