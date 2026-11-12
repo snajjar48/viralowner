@@ -5,6 +5,7 @@ import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
 import { createDownloadUrl } from "@/lib/storage";
+import { isOneTake } from "@/lib/processing/types";
 import { OptionsForm } from "./options-form";
 
 export const metadata: Metadata = {
@@ -49,7 +50,13 @@ async function Options({ id }: { id: string }) {
   return (
     <FlowShell step={3} projectId={id}>
       <PageTitle title="final touches" subtitle="all optional. the defaults work great, so you can go straight to the button." />
-      <OptionsForm projectId={id} initialOptions={project.settings} shots={inspo.breakdown.shots} clips={optionClips} />
+      <OptionsForm
+        projectId={id}
+        initialOptions={project.settings}
+        shots={inspo.breakdown.shots}
+        clips={optionClips}
+        oneTake={isOneTake(inspo.breakdown)}
+      />
     </FlowShell>
   );
 }

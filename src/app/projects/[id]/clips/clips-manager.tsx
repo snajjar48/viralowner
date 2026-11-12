@@ -59,11 +59,14 @@ const inFlight = (s: ItemStatus) => s === "queued" || s === "uploading" || s ===
 
 export function ClipsManager({
   projectId,
+  oneTake = false,
   shots,
   initialClips,
   rightsConfirmed,
 }: {
   projectId: string;
+  /** The inspo is one take with the pauses cut out: no shot list, just the take(s). */
+  oneTake?: boolean;
   shots: Shot[];
   initialClips: InitialClip[];
   rightsConfirmed: boolean;
@@ -285,10 +288,10 @@ export function ClipsManager({
   );
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_340px] lg:items-start">
+    <div className={`grid gap-6 lg:items-start ${oneTake ? "" : "lg:grid-cols-[1fr_340px]"}`}>
       <div className="flex min-w-0 flex-col gap-5">
         {/* Mobile: collapsible shot list */}
-        <details className="group rounded-2xl border border-white/10 bg-white/[0.03] lg:hidden">
+        <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] lg:hidden ${oneTake ? "hidden" : ""}`}>
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-sm font-medium focus-visible:outline-2 focus-visible:outline-coral">
             <span>
               shot list · {covered.size} of {shots.length} covered
@@ -306,7 +309,7 @@ export function ClipsManager({
           onFiles={addFiles}
           compact={items.length > 0}
           icon={<FilmIcon className="size-5" />}
-          title={items.length ? "add more clips" : "upload your clips"}
+          title={oneTake ? (items.length ? "add another clip" : "upload your take") : items.length ? "add more clips" : "upload your clips"}
           hint={
             <>
               <span className="sm:hidden">tap to choose from your camera roll.</span>
@@ -346,7 +349,9 @@ export function ClipsManager({
 
         {items.length === 0 ? (
           <p className="text-center text-sm text-muted">
-            no clips yet. film one clip for each shot in your shot list, then add them here.
+            {oneTake
+              ? "no take yet. film yourself saying your version in one go, then add it here."
+              : "no clips yet. film one clip for each shot in your shot list, then add them here."}
           </p>
         ) : (
           <DndContext id={dndId} sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
@@ -358,6 +363,7 @@ export function ClipsManager({
                     item={item}
                     index={index}
                     shots={shots}
+                    oneTake={oneTake}
                     selected={selected === item.key}
                     onSelect={() => setSelected(selected === item.key ? null : item.key)}
                     onRemove={() => remove(item)}
@@ -374,7 +380,12 @@ export function ClipsManager({
           i own or have permission to use these clips and the people in them.
         </ConsentCheckbox>
 
-        {uploaded.length > 0 && missing > 0 && !busy && (
+        {oneTake && uploaded.length > 1 && (
+          <p className="rounded-xl bg-white/[0.04] p-3 text-sm text-muted">
+            your clips play in this order. drag to change it.
+          </p>
+        )}
+        {!oneTake && uploaded.length > 0 && missing > 0 && !busy && (
           <p className="rounded-xl bg-white/[0.04] p-3 text-sm text-muted">
             {missing === 1 ? "1 shot doesn’t" : `${missing} shots don’t`} have a clip yet. we’ll make it work, or you can
             add more.
@@ -398,7 +409,7 @@ export function ClipsManager({
       </div>
 
       {/* Desktop: sticky checklist */}
-      <aside aria-label="shot list" className="sticky top-6 hidden flex-col gap-3 lg:flex">
+      <aside aria-label="shot list" className={`sticky top-6 hidden flex-col gap-3 ${oneTake ? "" : "lg:flex"}`}>
         <h2 className="text-lg font-medium">
           shot list <span className="text-sm font-normal text-muted">· {covered.size} of {shots.length} covered</span>
         </h2>
@@ -421,6 +432,7 @@ function ClipTile({
   item,
   index,
   shots,
+  oneTake,
   selected,
   onSelect,
   onRemove,
@@ -430,6 +442,7 @@ function ClipTile({
   item: Item;
   index: number;
   shots: Shot[];
+  oneTake: boolean;
   selected: boolean;
   onSelect: () => void;
   onRemove: () => void;
@@ -452,9 +465,9 @@ function ClipTile({
       <button
         type="button"
         onClick={onSelect}
-        disabled={!ready}
+        disabled={!ready || oneTake}
         aria-pressed={selected}
-        aria-label={`clip ${index + 1}, ${item.fileName}${ready ? ". tap to assign it to a shot" : ""}`}
+        aria-label={`clip ${index + 1}, ${item.fileName}${ready && !oneTake ? ". tap to assign it to a shot" : ""}`}
         className="relative block cursor-pointer rounded-xl focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-default"
       >
         <ClipThumb src={item.previewUrl} durationS={item.durationS} label="" />
@@ -483,12 +496,12 @@ function ClipTile({
         )}
       </button>
 
-      {ready ? (
+      {ready && !oneTake ? (
         <label className="sr-only" htmlFor={`shot-${item.key}`}>
           shot for clip {index + 1}
         </label>
       ) : null}
-      {ready && (
+      {ready && !oneTake && (
         <select
           id={`shot-${item.key}`}
           value={item.shotIndex ?? ""}

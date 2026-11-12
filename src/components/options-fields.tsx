@@ -20,14 +20,16 @@ export function Section({
   icon,
   children,
   aside,
+  className = "",
 }: {
   title: string;
   icon?: ReactNode;
   children: ReactNode;
   aside?: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+    <section className={`flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5 ${className}`}>
       <div className="flex items-center justify-between gap-3">
         <h2 className="flex items-center gap-2 text-base font-medium">
           {icon}

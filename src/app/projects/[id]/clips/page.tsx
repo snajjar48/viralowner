@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
+import { isOneTake } from "@/lib/processing/types";
 import { createDownloadUrl } from "@/lib/storage";
 import { ClipsManager } from "./clips-manager";
 
@@ -45,14 +46,20 @@ async function Clips({ id }: { id: string }) {
     })),
   );
 
+  const oneTake = isOneTake(inspo.breakdown);
   return (
     <FlowShell step={2} projectId={id} width="wide">
       <PageTitle
-        title="now add your clips"
-        subtitle="upload the clips you filmed. match each one to a shot, or let us figure it out."
+        title={oneTake ? "now add your take" : "now add your clips"}
+        subtitle={
+          oneTake
+            ? "upload your one long clip of you talking. we’ll cut out the pauses, retakes and “um”s to match the inspo."
+            : "upload the clips you filmed. match each one to a shot, or let us figure it out."
+        }
       />
       <ClipsManager
         projectId={id}
+        oneTake={oneTake}
         shots={inspo.breakdown.shots}
         initialClips={initialClips}
         rightsConfirmed={project.clipsRightsConfirmedAt !== null}

@@ -66,12 +66,13 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           version: current.version,
           videoUrl,
           settings: current.settings,
-          shots: current.plan?.shots ?? current.settings.shots ?? [],
+          shots: current.plan?.jumpcut ? [] : (current.plan?.shots ?? current.settings.shots ?? []),
           note: current.plan?.note ?? null,
         }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}
         shots={inspo.breakdown.shots}
+        oneTake={!!current.plan?.jumpcut}
         clips={clipList}
       />
     </FlowShell>

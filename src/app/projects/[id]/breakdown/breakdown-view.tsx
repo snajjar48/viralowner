@@ -4,7 +4,7 @@ import { buttonClass } from "@/components/form";
 import { ArrowRightIcon, SparkleIcon } from "@/components/icons";
 import { ShotList } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
-import type { Breakdown, InspoStyle } from "@/lib/processing/types";
+import { isOneTake, type Breakdown, type InspoStyle } from "@/lib/processing/types";
 import { formatDuration } from "@/lib/video-options";
 
 const TRANSITION_NAMES: Record<string, string> = {
@@ -66,11 +66,17 @@ export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId
     { label: "captions", value: b.captionStyle },
   ];
 
+  const oneTake = isOneTake(b);
+
   return (
     <>
       <PageTitle
         title="here’s how your inspo is built"
-        subtitle="film one clip for each shot below. it doesn’t have to be perfect. close enough works great."
+        subtitle={
+          oneTake
+            ? "this one is a single take with the pauses cut out. film yours in one go and we’ll cut it the same way."
+            : "film one clip for each shot below. it doesn’t have to be perfect. close enough works great."
+        }
       />
 
       <section aria-label="summary" className="flex gap-4">
@@ -146,16 +152,53 @@ export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId
         </section>
       )}
 
-      <section aria-labelledby="shots-heading" className="flex flex-col gap-3">
-        <h2 id="shots-heading" className="text-lg font-medium">
-          your shot list
-        </h2>
-        <ShotList shots={b.shots} detailed />
-      </section>
+      {oneTake ? (
+        <section
+          aria-labelledby="take-heading"
+          className="flex flex-col gap-3 rounded-2xl border border-violet/40 bg-violet/10 p-4 sm:p-5"
+        >
+          <h2 id="take-heading" className="text-lg font-medium">
+            film it in one take
+          </h2>
+          <p className="text-sm text-muted">
+            the inspo looks like {b.shotCount} shots, but it’s really one person talking with every pause, breath and
+            “um” cut out{b.style?.alternateZoom ? ", jumping between a normal and a zoomed-in shot" : ""}. you don’t need
+            separate clips.
+          </p>
+          <ul className="flex flex-col gap-1.5 text-sm">
+            {[
+              "set your phone up at eye level and talk to it, like the inspo.",
+              "say your version from start to finish. pause whenever you like.",
+              "messed up a line? just say it again. we keep the last good one.",
+              "one long clip is perfect. a few clips work too, in order.",
+            ].map((tip) => (
+              <li key={tip} className="flex gap-2">
+                <span aria-hidden="true" className="mt-2 size-1.5 shrink-0 rounded-full bg-linear-to-r from-violet to-coral" />
+                {tip}
+              </li>
+            ))}
+          </ul>
+          <details className="group">
+            <summary className="cursor-pointer text-sm text-muted underline underline-offset-4 hover:text-foreground">
+              see every cut in the inspo
+            </summary>
+            <div className="pt-3">
+              <ShotList shots={b.shots} detailed />
+            </div>
+          </details>
+        </section>
+      ) : (
+        <section aria-labelledby="shots-heading" className="flex flex-col gap-3">
+          <h2 id="shots-heading" className="text-lg font-medium">
+            your shot list
+          </h2>
+          <ShotList shots={b.shots} detailed />
+        </section>
+      )}
 
       <div className="sticky bottom-4 flex flex-col gap-3 pt-2">
         <Link href={`/projects/${projectId}/clips`} className={`${buttonClass} flex items-center justify-center gap-2`}>
-          looks good, upload my clips <ArrowRightIcon className="size-4" />
+          {oneTake ? "looks good, upload my take" : "looks good, upload my clips"} <ArrowRightIcon className="size-4" />
         </Link>
       </div>
       <Link

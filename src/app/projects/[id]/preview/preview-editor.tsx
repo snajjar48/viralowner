@@ -31,6 +31,7 @@ export function PreviewEditor({
   failedLatest,
   shots,
   clips,
+  oneTake = false,
 }: {
   projectId: string;
   versions: number[];
@@ -40,6 +41,8 @@ export function PreviewEditor({
   failedLatest: { id: string; version: number } | null;
   shots: Shot[];
   clips: EditorClip[];
+  /** Made from one take with the pauses cut out: no per-shot clip choices. */
+  oneTake?: boolean;
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
@@ -191,7 +194,14 @@ export function PreviewEditor({
           </span>
         </Section>
 
-        <Section title="shots">
+        {oneTake && (
+          <p className="rounded-xl bg-white/[0.04] p-3 text-sm text-muted">
+            this version is cut from your take, with the pauses, retakes and “um”s taken out. want it cut
+            differently? tap regenerate.
+          </p>
+        )}
+
+        <Section title="shots" className={oneTake ? "hidden" : undefined}>
           <ol className="flex flex-col gap-2">
             {shots.map((shot) => {
               const edit = shotEdits[shot.index];

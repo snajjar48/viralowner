@@ -26,11 +26,14 @@ export function OptionsForm({
   initialOptions,
   shots,
   clips: initialClips,
+  oneTake = false,
 }: {
   projectId: string;
   initialOptions: VideoOptions;
   shots: Shot[];
   clips: OptionClip[];
+  /** One take with the pauses cut out: there are no shots to assign clips to. */
+  oneTake?: boolean;
 }) {
   const router = useRouter();
   const [options, setOptions] = useState(initialOptions);
@@ -104,7 +107,7 @@ export function OptionsForm({
     <div className="flex flex-col gap-4">
       <OptionsFields value={options} onChange={setOptions} />
 
-      <details className="group rounded-2xl border border-white/10 bg-white/[0.03]">
+      <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-base font-medium focus-visible:outline-2 focus-visible:outline-coral sm:px-5">
           advanced: choose which clip goes in each shot
           <span className="text-muted transition group-open:rotate-180" aria-hidden="true">

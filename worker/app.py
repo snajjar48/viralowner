@@ -403,7 +403,7 @@ def add_style(path: Path, breakdown: dict) -> dict:
     """Adds the inspo's look to a breakdown. A failure here never fails the analysis."""
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            style, cost = analyze_style(path, breakdown["shots"], Path(tmp))
+            style, cost = analyze_style(path, breakdown["shots"], Path(tmp), breakdown.get("transcript"))
         breakdown["style"] = style
         breakdown["meta"]["costUsd"] = round(breakdown["meta"]["costUsd"] + cost, 4)
     except Exception as e:  # noqa: BLE001
@@ -419,6 +419,7 @@ def add_style(path: Path, breakdown: dict) -> dict:
 
 TRANSITIONS = ["cut", "crossfade", "flash", "dip_to_black", "whip", "slide", "slide_up", "zoom", "glitch", "wipe"]
 MOTIONS = ["none", "slow_zoom_in", "slow_zoom_out", "punch_in", "shake"]
+EDIT_TYPES = ["shots", "jump_cut"]
 COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
 # font key -> (family, bold, rough character width as a fraction of the font size)
 FONTS = {
@@ -445,7 +446,11 @@ STYLE_SYSTEM = """You study how a viral short-form video (TikTok, Reels, Shorts)
 
 You get, for every shot: a frame from the middle of the shot, and a strip of 8 frames 0.1s apart starting 0.25s before the cut into it (for shot 1: the first 0.8s), read left to right.
 
-Describe only what the frames clearly show:
+First decide the edit_type:
+- 'jump_cut': the video is really one continuous take (usually one person talking to the camera in the same place) with the pauses, breaths and dead air cut out, so the speech carries straight across the cuts. it may jump between a normal and a zoomed-in framing (alternate_zoom).
+- 'shots': separate shots that each need their own footage (different places, angles, subjects or moments), even if someone talks over them.
+
+Then describe only what the frames clearly show:
 - transition_in: how the video gets into this shot. most short-form cuts are hard cuts ('cut'); only report another transition when the strip clearly shows it (frames blending = crossfade, a white frame = flash, a black frame = dip_to_black, motion blur sweeping sideways = whip, the new shot pushing in from a side = slide or slide_up, a zoom blur = zoom, digital distortion = glitch, a hard edge sweeping across = wipe). shot 1 is always 'cut'.
 - motion: an edit effect moving the whole frame (slow zoom, a quick punch-in, shake). 'none' for normal handheld or static footage.
 - color_filter: an obvious grade on the whole video, otherwise 'none'.
@@ -477,6 +482,11 @@ STYLE_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "edit_type": {"type": "string", "enum": EDIT_TYPES},
+        "alternate_zoom": {
+            "type": "boolean",
+            "description": "jump_cut only: the framing jumps between normal and zoomed in at the cuts.",
+        },
         "color_filter": {"type": "string", "enum": COLOR_FILTERS},
         "text": {
             "type": "object",
@@ -501,7 +511,7 @@ STYLE_SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["shots", "color_filter", "text"],
+    "required": ["shots", "edit_type", "alternate_zoom", "color_filter", "text"],
     "additionalProperties": False,
 }
 
@@ -532,6 +542,9 @@ def clean_style(data: dict, n: int) -> dict:
         "transitions": [pick((by_index.get(i + 2) or {}).get("transition_in"), TRANSITIONS, "cut") for i in range(n - 1)],
         "motions": [pick((by_index.get(i + 1) or {}).get("motion"), MOTIONS, "none") for i in range(n)],
         "colorFilter": pick(data.get("color_filter"), COLOR_FILTERS, "none"),
+        # One take with the pauses cut out (n > 2: two shots can't tell us that).
+        "editType": pick(data.get("edit_type"), EDIT_TYPES, "shots") if n > 2 else "shots",
+        "alternateZoom": bool(data.get("alternate_zoom")) and data.get("edit_type") == "jump_cut",
         "text": {
             "font": pick(t.get("font"), FONTS, "clean_sans"),
             "color": color(t.get("color"), "#FFFFFF"),
@@ -551,9 +564,12 @@ def clean_style(data: dict, n: int) -> dict:
     }
 
 
-def analyze_style(path: Path, shots: list[dict], workdir: Path) -> tuple[dict, float]:
+def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict | None = None) -> tuple[dict, float]:
     """The inspo's look (see STYLE_SYSTEM). `shots` are breakdown shots. Returns (style, cost)."""
-    content: list[dict] = [{"type": "text", "text": f"the video has {len(shots)} shots."}]
+    said = [f"[{x['startS']:.1f}s–{x['endS']:.1f}s] {x['text']}" for x in (transcript or {}).get("segments", [])]
+    content: list[dict] = [{"type": "text", "text": (
+        f"the video has {len(shots)} shots.\nwhat's said:\n" + ("\n".join(said) if said else "(no speech)")
+    )}]
     for i, s in enumerate(shots):
         a, d = s["startS"], s["durationS"]
         text = s.get("onScreenText")
@@ -695,10 +711,11 @@ def sample_clip_frames(clips: list[dict], workdir: Path) -> None:
 
 
 def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict], fixed: list[dict],
-                text_mode: str, custom_text: str, fresh: bool, notes: str = "") -> dict:
+                text_mode: str, custom_text: str, fresh: bool, notes: str = "",
+                shots: list[dict] | None = None, lines: list[str] | None = None) -> dict:
     """Claude's plan: a clip and start time per shot, on-screen text, and the post copy."""
     b = inspo["breakdown"]
-    shots = b["shots"]
+    shots = shots or b["shots"]
     ins = b.get("insights") or {}
     lines = [f"[{s['startS']:.1f}s–{s['endS']:.1f}s] {s['text']}" for s in (b.get("transcript") or {}).get("segments", [])]
     overlay = b.get("textOverlays") or {}
@@ -709,7 +726,7 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
         f"overlaid text: {overlay.get('style') or 'none'}\n"
         "inspo transcript:\n" + ("\n".join(lines) if lines else "(no speech)") + "\n\nthe inspo's shots:"
     )}]
-    lines_by_shot = ((b.get("style") or {}).get("textLines") or [])
+    lines_by_shot = lines if lines is not None else ((b.get("style") or {}).get("textLines") or [])
     for i, s in enumerate(shots):
         text = (lines_by_shot[i] if i < len(lines_by_shot) else None) or s.get("onScreenText")
         content.append({"type": "text", "text": (
@@ -812,6 +829,11 @@ def motion_filter(motion: str, frames: int) -> str | None:
         return zoom(f"1.10-0.10*on/{n}")
     if motion == "punch_in":
         return zoom("if(lt(on,5),1+0.035*on,1.17)")
+    if motion == "zoomed":
+        # Jump-cut style: this cut is framed tighter than the one before (no movement).
+        w, h = round(OUT_W * 1.18), round(OUT_H * 1.18)
+        # A little above center: talking heads sit in the upper half.
+        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:{(w - OUT_W) // 2}:{round((h - OUT_H) * 0.35)}"
     if motion == "shake":
         w, h = round(OUT_W * 1.08), round(OUT_H * 1.08)
         return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{(w - OUT_W) // 2}+18*sin(n*1.9)':y='{(h - OUT_H) // 2}+14*cos(n*2.7)'"
@@ -1367,6 +1389,144 @@ def spread_lines(custom: str, shots: list[dict]) -> list[str]:
     return out
 
 
+# ---- one take, pauses cut out ("jump cut" inspos)
+#
+# Some inspos are one continuous take with every pause and breath cut out. For those
+# the user films one long take; we cut it the same way: at every pause, and Claude
+# drops retakes, flubs and filler.
+
+JUMPCUT_GAP_S = 0.35  # a pause longer than this is cut out
+JUMPCUT_PAD = (0.08, 0.14)  # kept before the first word / after the last word of a phrase
+MAX_TAKE_S = 600  # seconds of takes we'll listen to
+
+JUMPCUT_SYSTEM = """You edit talking-to-camera videos for ViralOwner, an app that remakes a proven viral video (the "inspo") with the user's own footage. This inspo is one take with every pause cut out, and the user filmed their own version as one long take (or a few).
+
+You get the inspo (what's said, its structure and length, its on-screen text) and the user's take split into numbered phrases at every pause. Choose which phrases to keep, in their original order, to make a tight video in the inspo's style:
+- cut retakes: when they say a line again, keep only the last good version.
+- cut flubs, false starts, filler ("um", "uh", "so yeah", "wait let me start over"), mumbling and anything off-topic.
+- keep the user's real message complete, and never cut in a way that changes what they mean.
+- never reorder phrases.
+- if the take has much more material than the inspo, aim for a length near the inspo's, but don't cut real content just to hit it.
+
+Writing: everything is about the user's business or topic. Never invent facts, prices or claims. No emoji or hashtags in on-screen text."""
+
+JUMPCUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keep": {"type": "array", "items": {"type": "integer"}, "description": "the phrase numbers to keep, in order."},
+        "texts": {
+            "type": "array",
+            "description": "one entry per inspo shot, in order.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "the inspo shot number, starting at 1."},
+                    "text": {"type": "string", "description": "on-screen text for this part of the video. empty string for none."},
+                },
+                "required": ["index", "text"],
+                "additionalProperties": False,
+            },
+        },
+        "caption": {
+            "type": "string",
+            "description": "the post caption in the user's voice: a hook first line, then one short line. up to 2 emoji. max 40 words.",
+        },
+        "hashtags": {"type": "array", "items": {"type": "string"}, "description": "5 to 8 hashtags (with #)."},
+    },
+    "required": ["keep", "texts", "caption", "hashtags"],
+    "additionalProperties": False,
+}
+
+
+def take_phrases(clips: list[dict]) -> list[dict]:
+    """Everything said in the takes (in clip order), split at every pause."""
+    phrases: list[dict] = []
+    budget = MAX_TAKE_S
+    for ci, c in enumerate(clips):
+        if not c["has_audio"] or budget <= 0:
+            continue
+        words = [w for seg in transcribe(c["path"])["segments"] for w in seg.get("words") or []
+                 if w["e"] > w["s"] and w["s"] < budget]
+        cur = None
+        for w in words:
+            if cur and w["s"] - cur["end"] <= JUMPCUT_GAP_S:
+                cur["end"] = w["e"]
+                cur["words"].append(w["w"])
+            else:
+                if cur:
+                    phrases.append(cur)
+                cur = {"clip": ci, "start": w["s"], "end": w["e"], "words": [w["w"]]}
+        if cur:
+            phrases.append(cur)
+        budget -= c["duration"]
+    for i, ph in enumerate(phrases):
+        ph["id"] = i + 1
+        ph["text"] = " ".join(ph["words"]).strip()
+    return phrases
+
+
+def select_phrases(inspo: dict, phrases: list[dict], text_mode: str, notes: str, inspo_lines: list[str]) -> dict:
+    b = inspo["breakdown"]
+    ins = b.get("insights") or {}
+    said = [f"[{x['startS']:.1f}s–{x['endS']:.1f}s] {x['text']}" for x in (b.get("transcript") or {}).get("segments", [])]
+    shots = [
+        f"inspo shot {i + 1} ({s['startS']:.1f}s, {s['durationS']:.1f}s): on-screen text: "
+        + (json.dumps(inspo_lines[i] or s.get("onScreenText"), ensure_ascii=False) if (inspo_lines[i] or s.get("onScreenText")) else "none")
+        for i, s in enumerate(b["shots"])
+    ]
+    take = [f"{ph['id']}. [clip {ph['clip'] + 1}, {ph['start']:.1f}s–{ph['end']:.1f}s] {ph['text']}" for ph in phrases]
+    text = "\n".join([
+        f"the inspo is {b['durationS']:.1f}s long. hook: {ins.get('hook', '')}. structure: {ins.get('structure', '')}",
+        "what's said in the inspo:", *(said or ["(no speech)"]),
+        "", "the inspo's shots and on-screen text:", *shots,
+        "", f"the user's take ({len(phrases)} phrases):", *take,
+        "",
+        *([f"the user's additional requests and details: {json.dumps(notes, ensure_ascii=False)}"] if notes else []),
+        "choose the phrases to keep.",
+        TEXT_RULES["adapt"] if text_mode == "adapt" else "on-screen text: set already. return an empty string for every inspo shot.",
+    ])
+    return ask_claude(JUMPCUT_SYSTEM, [{"type": "text", "text": text}], JUMPCUT_SCHEMA,
+                      "we couldn’t edit that take. try filming it again.")
+
+
+def phrase_ranges(phrases: list[dict], keep: list[int], clips: list[dict]) -> list[dict]:
+    """The kept phrases as cut ranges, joining phrases that run on without a pause."""
+    wanted = set(keep)
+    ranges: list[dict] = []
+    for ph in phrases:
+        if ph["id"] not in wanted:
+            continue
+        a = max(0.0, ph["start"] - JUMPCUT_PAD[0])
+        b = min(clips[ph["clip"]]["duration"], ph["end"] + JUMPCUT_PAD[1])
+        last = ranges[-1] if ranges else None
+        if last and last["clip"] == ph["clip"] and a <= last["end"] + 0.05 and a >= last["start"]:
+            last["end"] = max(last["end"], b)
+            continue
+        if last and last["clip"] == ph["clip"] and last["start"] <= a < last["end"]:
+            a = last["end"]
+        if b - a >= 0.25:
+            ranges.append({"clip": ph["clip"], "start": a, "end": b})
+    return ranges
+
+
+def jumpcut_shots(ranges: list[dict], inspo_shots: list[dict], inspo_duration: float) -> list[dict]:
+    """One "shot" per cut range. Each borrows the inspo shot at the same point in the video
+    (for its on-screen text and where that text sits)."""
+    total = sum(r["end"] - r["start"] for r in ranges) or 1.0
+    out, t = [], 0.0
+    for j, r in enumerate(ranges):
+        d = r["end"] - r["start"]
+        at = (t + d / 2) / total * inspo_duration
+        k = next((i for i, s in enumerate(inspo_shots) if s["startS"] <= at < s["startS"] + s["durationS"]),
+                 len(inspo_shots) - 1)
+        src = inspo_shots[k]
+        out.append({"index": j, "role": src["role"], "startS": r2(t), "durationS": d,
+                    "onScreenText": src.get("onScreenText"), "description": src.get("description"),
+                    "tip": src.get("tip", ""), "src": k, "inspoMidS": src["startS"] + src["durationS"] / 2})
+        t += d
+    return out
+
+
 # ---- "request a change": Claude edits an existing version
 
 REVISE_SYSTEM = """You make changes to a short-form video a user already made with ViralOwner (an app that remakes a proven viral video, the "inspo", with the user's own footage, keeping the inspo's exact shot timing).
@@ -1434,7 +1594,8 @@ def style_summary(style: dict) -> str:
 
 def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], current: list[dict],
                 texts: list[str], layout: dict, style: dict, post: dict, lays: list, cap_ys: list,
-                faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None) -> dict:
+                faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None,
+                one_take: bool = False) -> dict:
     cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
     cap_default = caption_center(cap)
     content: list[dict] = [{"type": "text", "text": (
@@ -1465,6 +1626,9 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
     ask = ["make the requested change and return the whole updated plan."]
+    if one_take:
+        ask.append("this video is the user's one take with the pauses cut out, so its footage can't be swapped: "
+                   "return every shot's clip and start exactly as given.")
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
     content.append({"type": "text", "text": "\n".join(ask)})
@@ -1568,7 +1732,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     inspo_style = breakdown.get("style")
     if not isinstance(inspo_style, dict):
         try:
-            inspo_style, style_cost = analyze_style(inspo_path, shots, workdir)
+            inspo_style, style_cost = analyze_style(inspo_path, shots, workdir, breakdown.get("transcript"))
             cost += style_cost
             new_style = inspo_style
         except Exception as e:  # noqa: BLE001
@@ -1580,8 +1744,63 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     inspo_lines = [(t or "").strip() for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
     inspo_text = clean_text_style(inspo_style.get("text"))
 
+    def clean_post(caption: str, hashtags: list[str]) -> dict:
+        return {"caption": caption.strip(),
+                "hashtags": [h if h.startswith("#") else f"#{h}" for h in (x.strip() for x in hashtags) if h][:8]}
+
+    keep = (previous["plan"] | {"postCopy": previous.get("postCopy")}) if previous else req.get("reuse")
+    req_shots = req["shots"]
+
+    # One take, pauses cut out: the cuts come from the user's take, not the inspo's timing.
+    jump = inspo_style.get("editType") == "jump_cut"
+    jump_ranges: list[dict] = []
+    jump_texts: list[str] | None = None
+    jump_post = None
+    inspo_motions, inspo_transitions = inspo_style["motions"], inspo_style["transitions"]
+    if jump:
+        earlier = req.get("cuts") or (keep or {}).get("jumpcut") or []
+        jump_ranges = [
+            {"clip": index_of[r["clipId"]], "start": float(r["startS"]), "end": float(r["endS"])}
+            for r in earlier
+            if isinstance(r, dict) and r.get("clipId") in index_of and isinstance(r.get("startS"), (int, float))
+            and isinstance(r.get("endS"), (int, float)) and r["endS"] > r["startS"]
+        ]
+        if len(jump_ranges) != len(earlier):
+            jump_ranges = []  # a clip was removed since: cut the take again
+        if not jump_ranges:
+            report("analyzing", 8)
+            phrases = take_phrases(clips)
+            if phrases:
+                report("matching", 25)
+                choice = "keep" if keep else text_choice
+                result = select_phrases(req["inspo"], phrases, "adapt" if choice == "adapt" else "set", notes, inspo_lines)
+                cost += result["cost_usd"]
+                data = result["data"]
+                keep_ids = [k for k in data["keep"] if isinstance(k, int)] or [ph["id"] for ph in phrases]
+                jump_ranges = phrase_ranges(phrases, keep_ids, clips)
+                by_shot = {x["index"]: (x.get("text") or "").strip() for x in data["texts"]}
+                jump_texts = [by_shot.get(i + 1, "") for i in range(n)]
+                jump_post = clean_post(data["caption"], data["hashtags"])
+                print(f"jump cut: kept {len(keep_ids)}/{len(phrases)} phrases -> {len(jump_ranges)} cuts, "
+                      f"${result['cost_usd']}, usage={result['usage']}")
+        if not jump_ranges:
+            print("jump cut: no speech in the takes, editing them as separate shots instead")
+            jump = False
+    if jump:
+        pseudo = jumpcut_shots(jump_ranges, shots, breakdown["durationS"])
+        src = [p["src"] for p in pseudo]
+        spots = [spots[k] for k in src]
+        inspo_lines = [inspo_lines[k] for k in src]
+        if jump_texts is not None:
+            jump_texts = [jump_texts[k] for k in src]
+        shots, n = pseudo, len(pseudo)
+        inspo_motions = ["zoomed" if inspo_style.get("alternateZoom") and j % 2 else "none" for j in range(n)]
+        inspo_transitions = ["cut"] * max(0, n - 1)
+        req_shots = [{"shotIndex": j, "clipId": clips[r["clip"]]["id"], "trimStartS": r["start"], "trimEndS": r["end"]}
+                     for j, r in enumerate(jump_ranges)]
+
     # What the user chose in step 2 or the editor, per shot.
-    edits = {e["shotIndex"]: e for e in req["shots"]}
+    edits = {e["shotIndex"]: e for e in req_shots}
     fixed = []
     for i in range(n):
         e = edits.get(i) or {}
@@ -1594,17 +1813,21 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         fixed.append({"clip": ci, "start": start, "end": end})
 
     # Words, text style and layout: kept from an earlier version, or set fresh below.
-    keep = (previous["plan"] | {"postCopy": previous.get("postCopy")}) if previous else req.get("reuse")
+    if keep and len(keep.get("texts") or []) != n:
+        # The number of cuts changed (a jump-cut take was cut again): keep the look, not the per-cut layout.
+        keep = {k: v for k, v in keep.items() if k not in ("texts", "textXs", "textYs", "captionYs")}
     layout = layout_from(keep, n)
     style = clean_text_style((keep or {}).get("textStyle") or inspo_text)
     if align_choice:
         style["align"] = align_choice
     position = (keep or {}).get("textPosition") or "top"
     post = (keep or {}).get("postCopy") or {"caption": "", "hashtags": []}
-    keep_lines = bool((keep or {}).get("keepLines")) if keep else text_choice == "custom"
-    if keep:
+    keep_lines = bool(keep.get("keepLines")) if keep and keep.get("texts") else text_choice == "custom"
+    if keep and keep.get("texts"):
         plan_texts = ([(t or "") for t in (keep.get("texts") or [])] + [""] * n)[:n]
         text_mode = "keep"
+    elif jump and text_choice == "adapt" and jump_texts is not None:
+        plan_texts, text_mode, keep_lines = jump_texts, "set", any(inspo_lines)
     elif text_choice == "custom":
         plan_texts, text_mode = spread_lines(text_opts.get("custom", ""), shots), "custom"
     elif text_choice == "match":
@@ -1614,12 +1837,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     else:
         plan_texts, text_mode, keep_lines = [""] * n, "adapt", any(inspo_lines)
     note = None
+    if jump_post and not keep:
+        post = jump_post
 
-    def clean_post(caption: str, hashtags: list[str]) -> dict:
-        return {"caption": caption.strip(),
-                "hashtags": [h if h.startswith("#") else f"#{h}" for h in (x.strip() for x in hashtags) if h][:8]}
-
-    needs_claude = bool(previous) or text_mode != "keep" or any(f["start"] is None for f in fixed)
+    # In jump-cut mode the take-editing call already wrote the post copy (and any words).
+    needs_claude = bool(previous) or (not jump_post and (text_mode != "keep" or any(f["start"] is None for f in fixed)))
     picked: dict[int, dict] = {}
     if needs_claude:
         report("analyzing", 8)
@@ -1649,7 +1871,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 text_rule = TEXT_RULES["adapt"]
         report("matching", 25)
         result = revise_plan(request, notes, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
-                             plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule)
+                             plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule,
+                             one_take=jump)
         cost += result["cost_usd"]
         data = result["data"]
         by_index = {s["index"]: s for s in data["shots"]}
@@ -1657,7 +1880,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             r = by_index.get(i + 1)
             if not r:
                 continue
-            if isinstance(r.get("clip"), int) and 0 < r["clip"] <= len(clips):
+            if not jump and isinstance(r.get("clip"), int) and 0 < r["clip"] <= len(clips):
                 ci = r["clip"] - 1
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
                     fixed[i] = {"clip": ci, "start": max(0.0, float(r["start_s"])), "end": None}
@@ -1690,7 +1913,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"revise: ${result['cost_usd']}, usage={result['usage']}, summary={note!r}")
     elif needs_claude:
         inspo_frames = [
-            grab_frame(inspo_path, s["startS"] + s["durationS"] / 2, workdir / f"inspo{i:02d}.jpg", MATCH_FRAME_WIDTH)
+            grab_frame(inspo_path, s.get("inspoMidS", s["startS"] + s["durationS"] / 2), workdir / f"inspo{i:02d}.jpg",
+                       MATCH_FRAME_WIDTH)
             for i, s in enumerate(shots)
         ]
         if sum(c["duration"] for c in clips if c["has_audio"]) <= MAX_CLIP_SPEECH_S:
@@ -1699,8 +1923,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 c["speech"] = transcribe(c["path"])["segments"] if c["has_audio"] else []
 
         report("matching", 25)
-        result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode,
-                             text_opts.get("custom", ""), bool(req.get("fresh")), notes)
+        result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode if text_mode != "set" else "keep",
+                             text_opts.get("custom", ""), bool(req.get("fresh")), notes, shots, inspo_lines)
         cost += result["cost_usd"]
         data = result["data"]
         picked = {s["index"]: s for s in data["shots"]}
@@ -1712,8 +1936,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     plan = resolve_plan(shots, clips, fixed, picked)
     durations = [p["duration"] for p in plan]
-    cuts = transition_plan(durations, inspo_style["transitions"])
-    motions = (list(inspo_style["motions"]) + ["none"] * n)[:n]
+    cuts = transition_plan(durations, inspo_transitions)
+    motions = (list(inspo_motions) + ["none"] * n)[:n]
     color = inspo_style["colorFilter"]
 
     # ---- editing: cut every shot (with the inspo's motion and color), join them with its transitions
@@ -1795,7 +2019,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s, "
           f"faces={sum(map(len, faces))}, transitions={sum(1 for c in cuts if c)}, motions={sum(m != 'none' for m in motions)}, "
           f"color={color}, font={style['font']}, animation={style['animation']}")
-    return {
+    out = {
         "storageKey": req["outputKey"],
         "width": OUT_W,
         "height": OUT_H,
@@ -1819,11 +2043,15 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "textScale": layout["textScale"],
             "captionScale": layout["captionScale"],
             "note": note,
+            **({"jumpcut": [{"clipId": clips[p["clip"]]["id"], "startS": r2(p["start"]), "endS": r2(p["start"] + p["take"])}
+                            for p in plan]} if jump else {}),
         },
         **({"inspoStyle": new_style} if new_style else {}),
         "meta": {"engine": "modal", "costUsd": round(cost, 4), "claude": needs_claude, "seconds": seconds,
-                 "clipsSkipped": len(clip_ids) - len(clips)},
+                 "clipsSkipped": len(clip_ids) - len(clips), "oneTake": jump},
     }
+    # Plain JSON types only (Whisper's timings are numpy numbers).
+    return json.loads(json.dumps(out, default=float))
 
 
 def check_render_request(req: dict) -> str | None:

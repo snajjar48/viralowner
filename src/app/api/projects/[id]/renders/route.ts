@@ -61,7 +61,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
           if ("error" in shots) return shots;
           return { ...settingsFor(options, shots), ...(request ? { request, fromVersion: from!.version } : {}) };
         },
-        previous ? { request, previous } : { reuseText: textToReuse(from, options) },
+        // One-take videos keep where the take was cut, unless it's a fresh take.
+        { ...(previous ? { request, previous } : { reuseText: textToReuse(from, options) }), cuts: from?.plan?.jumpcut },
       );
     } else if (body.mode === "regenerate") {
       const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);

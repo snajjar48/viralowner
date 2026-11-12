@@ -124,6 +124,9 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     textScale: scale(p.textScale),
     captionScale: scale(p.captionScale),
     note: str(p.note) || null,
+    jumpcut: Array.isArray(p.jumpcut)
+      ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
+      : undefined,
   };
 }
 
@@ -175,6 +178,7 @@ export const modalEngine: ProcessingEngine = {
         fresh: !!input.fresh,
         request: input.request ?? null,
         previous: input.previous ?? null,
+        cuts: input.cuts ?? null,
       },
     });
   },

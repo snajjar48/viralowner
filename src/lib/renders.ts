@@ -64,7 +64,7 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
-type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous">;
+type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts">;
 
 export async function startNewRender(
   userId: string,

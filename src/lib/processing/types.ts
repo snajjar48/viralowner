@@ -58,7 +58,21 @@ export interface InspoStyle {
   textSpots: ([number, number] | null)[];
   /** Per shot: the overlaid text exactly as shown, with its line breaks. */
   textLines?: (string | null)[];
+  /** "jump_cut": one continuous take with the pauses cut out (film one long clip). */
+  editType?: "shots" | "jump_cut";
+  /** Jump cuts that alternate between normal and zoomed-in framing. */
+  alternateZoom?: boolean;
 }
+
+/** One cut of a one-take (jump-cut) video: a range of one clip. */
+export interface TakeCut {
+  clipId: string;
+  startS: number;
+  endS: number;
+}
+
+/** True when the inspo is one take with the pauses cut out. */
+export const isOneTake = (b: { style?: InspoStyle } | null | undefined) => b?.style?.editType === "jump_cut";
 
 export interface Breakdown {
   durationS: number;
@@ -147,6 +161,8 @@ export interface RenderInput {
   /** "request a change": the version to change (with what made it) and the request itself. */
   request?: string;
   previous?: { storageKey: string; plan: RenderPlan; postCopy: PostCopy | null; textChanged: boolean };
+  /** One-take videos: reuse these cuts instead of cutting the take again. */
+  cuts?: TakeCut[];
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";
@@ -174,6 +190,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   shots: ShotEdit[];
   /** For a "request a change" version: what was changed, for the user. */
   note?: string | null;
+  /** One-take videos: where the take was cut. */
+  jumpcut?: TakeCut[];
 }
 
 export interface JobStatus {
