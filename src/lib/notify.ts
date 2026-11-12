@@ -80,7 +80,10 @@ export async function emailRenderFinished(projectId: string, renderId: string) {
 
 /** A failed version is being tried again: its outcome should be emailed again. */
 export async function resetRenderEmail(renderId: string) {
-  await getSql()`UPDATE renders SET emailed_at = NULL WHERE id = ${renderId}`;
+  // Never block a retry over an email detail (e.g. before migration 0005 runs).
+  await getSql()`UPDATE renders SET emailed_at = NULL WHERE id = ${renderId}`.catch((error) =>
+    console.error("Resetting render email failed:", error),
+  );
 }
 
 export async function emailTrialWelcome(userId: string) {
