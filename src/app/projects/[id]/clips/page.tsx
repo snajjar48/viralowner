@@ -6,6 +6,8 @@ import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
 import { isOneTake } from "@/lib/processing/types";
 import { createDownloadUrl } from "@/lib/storage";
+import { AudioUploader } from "@/components/audio-uploader";
+import { audioView } from "@/lib/audio";
 import { ClipsManager } from "./clips-manager";
 
 export const metadata: Metadata = {
@@ -47,6 +49,7 @@ async function Clips({ id }: { id: string }) {
   );
 
   const oneTake = isOneTake(inspo.breakdown);
+  const audio = await audioView(project.audio);
   return (
     <FlowShell step={2} projectId={id} width="wide">
       <PageTitle
@@ -63,6 +66,7 @@ async function Clips({ id }: { id: string }) {
         shots={inspo.breakdown.shots}
         initialClips={initialClips}
         rightsConfirmed={project.clipsRightsConfirmedAt !== null}
+        extra={<AudioUploader projectId={id} initial={audio} />}
       />
     </FlowShell>
   );

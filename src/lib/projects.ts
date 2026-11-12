@@ -13,7 +13,20 @@ export interface Project {
   status: ProjectStatus;
   settings: VideoOptions;
   clipsRightsConfirmedAt: string | null;
+  /** The user's own audio file, if they added one. */
+  audio: ProjectAudio | null;
   createdAt: string;
+}
+
+export interface ProjectAudio {
+  storageKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  durationS: number | null;
+  status: "uploading" | "uploaded";
+  /** When the user accepted the audio rights notice. */
+  rightsConfirmedAt: string;
 }
 
 export interface Inspiration {
@@ -68,6 +81,7 @@ function toProject(r: Row): Project {
     status: r.status as ProjectStatus,
     settings: optionsFromJson(r.settings),
     clipsRightsConfirmedAt: iso(r.clips_rights_confirmed_at),
+    audio: (r.audio as ProjectAudio | null) ?? null,
     createdAt: iso(r.created_at)!,
   };
 }
@@ -376,6 +390,16 @@ export async function confirmClipRights(projectId: string) {
 export async function saveSettings(projectId: string, options: VideoOptions) {
   await getSql()`
     UPDATE projects SET settings = ${JSON.stringify(options)}::jsonb, updated_at = now() WHERE id = ${projectId}`;
+}
+
+/** Sets (or clears) the project's own audio file. Returns the previous file's key, to delete. */
+export async function setProjectAudio(projectId: string, audio: ProjectAudio | null): Promise<string | null> {
+  const rows = await getSql()`
+    WITH old AS (SELECT audio FROM projects WHERE id = ${projectId})
+    UPDATE projects SET audio = ${audio ? JSON.stringify(audio) : null}::jsonb, updated_at = now()
+    WHERE id = ${projectId}
+    RETURNING (SELECT audio->>'storageKey' FROM old) AS old_key`;
+  return (rows[0]?.old_key as string | null) ?? null;
 }
 
 // ---- Renders (versions of the finished video) ------------------------------

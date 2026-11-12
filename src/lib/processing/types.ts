@@ -163,6 +163,8 @@ export interface RenderInput {
   previous?: { storageKey: string; plan: RenderPlan; postCopy: PostCopy | null; textChanged: boolean };
   /** One-take videos: reuse these cuts instead of cutting the take again. */
   cuts?: TakeCut[];
+  /** The user's own audio file, when the music option is "upload". */
+  audio?: { storageKey: string };
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";

@@ -3,6 +3,7 @@
 import { useId, type ReactNode } from "react";
 import {
   INSPO_AUDIO_CONFIRM_ERROR,
+  NO_AUDIO_FILE_ERROR,
   NOTES_MAX,
   TEXT_MAX,
   type MusicMode,
@@ -10,6 +11,7 @@ import {
   type TextMode,
   type VideoOptions,
 } from "@/lib/video-options";
+import { AudioRightsNotice } from "./audio-rights";
 import { CaptionStylePicker, Toggle } from "./caption-styles";
 import { MusicIcon, SparkleIcon, TextIcon } from "./icons";
 import { inputClass } from "./form";
@@ -132,9 +134,12 @@ export function OptionsFields({
   value,
   onChange,
   showNotes = true,
+  uploadedAudio = null,
 }: {
   value: VideoOptions;
   onChange: (next: VideoOptions) => void;
+  /** The user's own audio file (added on the clips step), if any. */
+  uploadedAudio?: { fileName: string } | null;
   /** The preview editor has "request a change" instead. */
   showNotes?: boolean;
 }) {
@@ -232,7 +237,18 @@ export function OptionsFields({
 
       <Section title="music" icon={<MusicIcon className="size-4 text-muted" />}>
         <div className="flex flex-col gap-2">
-          {MUSIC_CHOICES.map((c) => (
+          {[
+            ...(uploadedAudio || value.music.mode === "upload"
+              ? [
+                  {
+                    mode: "upload" as MusicMode,
+                    title: "use my audio file",
+                    description: uploadedAudio ? uploadedAudio.fileName : "your file isn’t uploaded anymore",
+                  },
+                ]
+              : []),
+            ...MUSIC_CHOICES,
+          ].map((c) => (
             <Choice
               key={c.mode}
               name={`${id}-music`}
@@ -252,37 +268,14 @@ export function OptionsFields({
           />
         )}
         {value.music.mode === "inspo" && (
-          <div className="flex flex-col gap-3 rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-sm">
-            <p className="text-muted">
-              <span className="font-medium text-foreground">heads up:</span> the
-              inspo’s sound usually belongs to someone else, like a song or
-              another creator’s voice. viralowner doesn’t own or license it.
-              posting it can get your video muted, taken down or hit with a
-              copyright claim. the safest way to use a trending sound is to pick
-              “no music” and add the sound inside tiktok or instagram when you
-              post.
-            </p>
-            <label className="flex cursor-pointer items-start gap-3">
-              <input
-                type="checkbox"
-                checked={value.music.inspoAudioConfirmed}
-                onChange={(e) =>
-                  set({
-                    music: {
-                      ...value.music,
-                      inspoAudioConfirmed: e.target.checked,
-                    },
-                  })
-                }
-                className="mt-0.5 size-4 shrink-0 accent-coral"
-              />
-              <span>
-                i own this audio or have permission to use it, and i take full
-                responsibility for how i use it. i understand viralowner isn’t
-                responsible for any claims about it.
-              </span>
-            </label>
-          </div>
+          <AudioRightsNotice
+            source="inspo"
+            checked={value.music.inspoAudioConfirmed}
+            onChange={(inspoAudioConfirmed) => set({ music: { ...value.music, inspoAudioConfirmed } })}
+          />
+        )}
+        {value.music.mode === "upload" && !uploadedAudio && (
+          <p className="rounded-xl border border-coral/30 bg-coral/[0.06] p-3 text-sm">{NO_AUDIO_FILE_ERROR}</p>
         )}
       </Section>
 
@@ -314,10 +307,11 @@ export function OptionsFields({
 }
 
 /** Problems that block making the video (shown next to the button). */
-export function optionsProblem(o: VideoOptions) {
+export function optionsProblem(o: VideoOptions, hasAudioFile = true) {
   if (o.music.mode === "track" && !o.music.trackId)
     return "pick a track, or choose another music option.";
   if (o.music.mode === "inspo" && !o.music.inspoAudioConfirmed)
     return INSPO_AUDIO_CONFIRM_ERROR;
+  if (o.music.mode === "upload" && !hasAudioFile) return NO_AUDIO_FILE_ERROR;
   return null;
 }

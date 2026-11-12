@@ -32,6 +32,7 @@ export function PreviewEditor({
   shots,
   clips,
   oneTake = false,
+  uploadedAudio = null,
 }: {
   projectId: string;
   versions: number[];
@@ -43,6 +44,7 @@ export function PreviewEditor({
   clips: EditorClip[];
   /** Made from one take with the pauses cut out: no per-shot clip choices. */
   oneTake?: boolean;
+  uploadedAudio?: { fileName: string } | null;
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
@@ -72,7 +74,7 @@ export function PreviewEditor({
     return start < 0 || end > d + 0.05 || end - start < 0.3;
   });
   const problem =
-    optionsProblem(options) ??
+    optionsProblem(options, !!uploadedAudio) ??
     (trimProblem ? `shot ${trimProblem.shotIndex + 1}: the trim needs to be at least 0.3s and inside the clip.` : null);
 
   const setShot = (index: number, patch: Partial<ShotEdit>) =>
@@ -256,7 +258,7 @@ export function PreviewEditor({
           </ol>
         </Section>
 
-        <OptionsFields value={options} onChange={setOptions} showNotes={false} />
+        <OptionsFields value={options} onChange={setOptions} showNotes={false} uploadedAudio={uploadedAudio} />
 
         {(problem || error) && (
           <p role="alert" className="text-center text-sm text-coral">

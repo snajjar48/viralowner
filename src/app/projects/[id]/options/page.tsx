@@ -56,6 +56,7 @@ async function Options({ id }: { id: string }) {
         shots={inspo.breakdown.shots}
         clips={optionClips}
         oneTake={isOneTake(inspo.breakdown)}
+        uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
       />
     </FlowShell>
   );

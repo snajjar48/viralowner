@@ -1,5 +1,7 @@
 "use client";
 
+import type React from "react";
+
 import {
   closestCenter,
   DndContext,
@@ -63,8 +65,11 @@ export function ClipsManager({
   shots,
   initialClips,
   rightsConfirmed,
+  extra,
 }: {
   projectId: string;
+  /** Shown under the clips (the optional audio file). */
+  extra?: React.ReactNode;
   /** The inspo is one take with the pauses cut out: no shot list, just the take(s). */
   oneTake?: boolean;
   shots: Shot[];
@@ -375,6 +380,8 @@ export function ClipsManager({
             </SortableContext>
           </DndContext>
         )}
+
+        {extra}
 
         <ConsentCheckbox checked={confirmed} onChange={setConfirmed}>
           i own or have permission to use these clips and the people in them.

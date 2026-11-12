@@ -5,7 +5,8 @@
  * the user's business. custom: the user's own lines, exactly as typed. */
 export type TextMode = "match" | "adapt" | "custom";
 export type TextAlign = "inspo" | "left" | "center" | "right";
-export type MusicMode = "track" | "original" | "inspo" | "none";
+/** upload: the user's own audio file (added on the clips step). */
+export type MusicMode = "track" | "original" | "inspo" | "upload" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "boxed" | "karaoke";
 
 export interface VideoOptions {
@@ -28,6 +29,8 @@ export const DEFAULT_OPTIONS: VideoOptions = {
   captions: { enabled: true, style: "bold-pop" },
   notes: "",
 };
+
+export const NO_AUDIO_FILE_ERROR = "add your audio file on the clips step, or choose another music option.";
 
 export const INSPO_AUDIO_CONFIRM_ERROR =
   "please confirm the note about the inspo’s audio, or choose another music option.";
@@ -64,7 +67,7 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
 
 const TEXT_MODES: TextMode[] = ["match", "adapt", "custom"];
 const TEXT_ALIGNS: TextAlign[] = ["inspo", "left", "center", "right"];
-const MUSIC_MODES: MusicMode[] = ["track", "original", "inspo", "none"];
+const MUSIC_MODES: MusicMode[] = ["track", "original", "inspo", "upload", "none"];
 const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
 const TRACK_IDS = new Set(TRACKS.map((t) => t.id));
 

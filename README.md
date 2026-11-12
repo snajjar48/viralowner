@@ -100,6 +100,11 @@ What it does:
 - **Safe zone**: text and captions always stay clear of the TikTok/Instagram
   interface (top bar, bottom caption area, right-hand buttons): `SAFE` in
   `worker/app.py`.
+- **Own audio**: on the clips step users can add their own audio file (MP3,
+  M4A, AAC, WAV, 50 MB) after accepting the audio rights notice
+  (`src/components/audio-rights.tsx`, the same one as "use the inspo's audio").
+  It's stored on `projects.audio` and becomes the "use my audio file" music
+  option; captions follow what's said in it.
 - The "pick a track" music option keeps the clips' audio until a licensed music
   library is added.
 

@@ -13,7 +13,7 @@ import {
   type Project,
   type Render,
 } from "./projects";
-import type { VideoOptions } from "./video-options";
+import { NO_AUDIO_FILE_ERROR, type VideoOptions } from "./video-options";
 
 type Fail = { error: string; status: number };
 
@@ -64,7 +64,14 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
-type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts">;
+type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts" | "audio">;
+
+/** The user's own audio file, when this version uses it. */
+function audioFor(project: Project, settings: RenderSettings): Extras {
+  return settings.options.music.mode === "upload" && project.audio?.status === "uploaded"
+    ? { audio: { storageKey: project.audio.storageKey } }
+    : {};
+}
 
 export async function startNewRender(
   userId: string,
@@ -82,9 +89,15 @@ export async function startNewRender(
 
   const settings = build({ shotCount: inspo.breakdown.shotCount, clips: uploaded });
   if ("error" in settings) return settings;
+  if (settings.options.music.mode === "upload" && project.audio?.status !== "uploaded") {
+    return { status: 400, error: NO_AUDIO_FILE_ERROR };
+  }
 
   const render = await createRender(project.id, settings);
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, extras);
+  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, {
+    ...extras,
+    ...audioFor(project, settings),
+  });
   return { render };
 }
 
@@ -145,7 +158,10 @@ export async function retryRender(userId: string, project: Project, render: Rend
     const previous = from && previousFor(from, settings.options);
     if (previous) extras = { request: settings.request, previous };
   }
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, extras);
+  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, {
+    ...extras,
+    ...audioFor(project, settings),
+  });
   return null;
 }
 

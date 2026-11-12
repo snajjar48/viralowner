@@ -30,7 +30,7 @@ export default function PreviewPage({ params, searchParams }: PageProps<"/projec
 }
 
 async function Preview({ id, version }: { id: string; version: number | null }) {
-  const { userId } = await loadProject(id, `/projects/${id}/preview`);
+  const { userId, project } = await loadProject(id, `/projects/${id}/preview`);
   const [renders, clips, inspo] = await Promise.all([
     listRenders(userId, id).then((list) => syncUnfinished(id, list)),
     listClips(userId, id),
@@ -73,6 +73,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}
         shots={inspo.breakdown.shots}
         oneTake={!!current.plan?.jumpcut}
+        uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
         clips={clipList}
       />
     </FlowShell>

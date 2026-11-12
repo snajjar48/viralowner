@@ -1910,6 +1910,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     downloads = [(req["inspo"]["storageKey"], inspo_path)] + [
         (c["storageKey"], workdir / f"clip{i:02d}") for i, c in enumerate(req["clips"])
     ] + ([(previous["storageKey"], prev_path)] if previous else [])
+    # The user's own audio file, when that's the chosen sound.
+    own_audio = workdir / "own-audio"
+    if music == "upload" and isinstance(req.get("audio"), dict) and req["audio"].get("storageKey"):
+        downloads.append((req["audio"]["storageKey"], own_audio))
     with ThreadPoolExecutor(6) as pool:
         list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
 
@@ -2165,12 +2169,16 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     total = sum(durations)
 
     use_inspo_audio = music == "inspo" and probe(inspo_path)["has_audio"]
+    use_own_audio = music == "upload" and own_audio.exists() and own_audio.stat().st_size > 0
     words: list[dict] = []
     if caption_style:
         report("editing", 76)
         if use_inspo_audio:
             # What you hear is the inspo's audio, so caption that.
             segments = (breakdown.get("transcript") or {}).get("segments") or []
+        elif use_own_audio:
+            # A voiceover gets captioned; a song without words simply has none.
+            segments = transcribe(own_audio)["segments"]
         else:
             segments = transcribe(joined)["segments"]
         for seg in segments:
@@ -2199,6 +2207,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     elif use_inspo_audio:
         # Same timing as the inspo, so its audio lines up from the first frame.
         cmd += ["-i", inspo_path.name, "-map", "0:v:0", "-map", "1:a:0", "-af", "apad"]
+    elif use_own_audio:
+        # Plays from the start; cut at the video's end, or silence after it if it's shorter.
+        cmd += ["-i", own_audio.name, "-map", "0:v:0", "-map", "1:a:0", "-af", "aresample=48000,apad"]
     else:
         # "track" has no licensed library behind it yet, so it keeps the clips' audio for now.
         cmd += ["-map", "0:v:0", "-map", "0:a:0"]
@@ -2267,6 +2278,8 @@ def check_render_request(req: dict) -> str | None:
         return "invalid output key"
     prefix = re.match(KEY_PREFIX_RE, out).group(0)
     keys = [req.get("inspo", {}).get("storageKey")] + [c.get("storageKey") for c in req.get("clips") or []]
+    if isinstance(req.get("audio"), dict):
+        keys.append(req["audio"].get("storageKey"))
     if req.get("request") and req.get("previous"):
         keys.append(req["previous"].get("storageKey"))
         if not isinstance(req["previous"].get("plan"), dict):
@@ -2348,7 +2361,7 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
 
 @app.local_entrypoint()
 def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = "",
-               notes: str = "", music: str = "original", request: str = ""):
+               notes: str = "", music: str = "original", request: str = "", audio: str = ""):
     """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
     With --request, also makes a second version with that change (saved as <dest>-changed.mp4)."""
     files = {"u/test/p/test/inspo": Path(inspo).read_bytes()}
@@ -2357,7 +2370,11 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
     for i, c in enumerate(clips.split(",")):
         files[f"u/test/p/test/clip{i}"] = Path(c).read_bytes()
         clip_list.append({"id": f"clip{i}", "storageKey": f"u/test/p/test/clip{i}"})
+    if audio:
+        files["u/test/p/test/audio"] = Path(audio).read_bytes()
+        music = "upload"
     req = {
+        "audio": {"storageKey": "u/test/p/test/audio"} if audio else None,
         "outputKey": "u/test/p/test/renders/out.mp4",
         "inspo": {"storageKey": "u/test/p/test/inspo", "breakdown": breakdown},
         "clips": clip_list,

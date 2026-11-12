@@ -179,6 +179,7 @@ export const modalEngine: ProcessingEngine = {
         request: input.request ?? null,
         previous: input.previous ?? null,
         cuts: input.cuts ?? null,
+        audio: input.audio ?? null,
       },
     });
   },

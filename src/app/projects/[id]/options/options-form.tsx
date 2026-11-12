@@ -27,6 +27,7 @@ export function OptionsForm({
   shots,
   clips: initialClips,
   oneTake = false,
+  uploadedAudio = null,
 }: {
   projectId: string;
   initialOptions: VideoOptions;
@@ -34,6 +35,8 @@ export function OptionsForm({
   clips: OptionClip[];
   /** One take with the pauses cut out: there are no shots to assign clips to. */
   oneTake?: boolean;
+  /** The user's own audio file, if they added one on the clips step. */
+  uploadedAudio?: { fileName: string } | null;
 }) {
   const router = useRouter();
   const [options, setOptions] = useState(initialOptions);
@@ -49,7 +52,7 @@ export function OptionsForm({
       first.current = false;
       return;
     }
-    if (optionsProblem(options)) return;
+    if (optionsProblem(options, !!uploadedAudio)) return;
     const timer = setTimeout(async () => {
       setSave("saving");
       const res = await fetch(`/api/projects/${projectId}/settings`, {
@@ -60,7 +63,7 @@ export function OptionsForm({
       setSave(res?.ok ? "saved" : "error");
     }, 600);
     return () => clearTimeout(timer);
-  }, [options, projectId]);
+  }, [options, projectId, uploadedAudio]);
 
   async function assign(shotIndex: number, clipId: string | null) {
     const previous = clips;
@@ -101,11 +104,11 @@ export function OptionsForm({
     }
   }
 
-  const problem = optionsProblem(options);
+  const problem = optionsProblem(options, !!uploadedAudio);
 
   return (
     <div className="flex flex-col gap-4">
-      <OptionsFields value={options} onChange={setOptions} />
+      <OptionsFields value={options} onChange={setOptions} uploadedAudio={uploadedAudio} />
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-base font-medium focus-visible:outline-2 focus-visible:outline-coral sm:px-5">
