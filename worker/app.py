@@ -216,9 +216,61 @@ def transcribe(path: Path) -> dict:
         if text and s.no_speech_prob < 0.7:
             out.append({
                 "startS": r2(s.start), "endS": r2(s.end), "text": text,
-                "words": [{"w": w.word.strip(), "s": r2(w.start), "e": r2(w.end)} for w in (s.words or [])],
+                # p: how sure Whisper is of the word (a clarity signal when choosing between takes).
+                "words": [{"w": w.word.strip(), "s": r2(w.start), "e": r2(w.end), "p": r2(w.probability)}
+                          for w in (s.words or [])],
             })
     return {"language": info.language if out else None, "segments": out}
+
+
+def transcribe_take(path: Path) -> dict:
+    """Like transcribe(), for takes where the same line may be said several times. Whisper, given
+    the whole recording, tends to drop a sentence that repeats the one before it, so each stretch
+    of speech (found from the audio level, which also catches quiet takes) is transcribed on its own."""
+    global _whisper
+    import numpy as np
+
+    pcm = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+        capture_output=True,
+    ).stdout
+    if len(pcm) < 16000:
+        return {"language": None, "segments": []}
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    from faster_whisper import WhisperModel
+
+    _whisper = _whisper or WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
+
+    # Speech = 20ms frames louder than -45 dB; join stretches less than 0.5s apart.
+    hop = 320
+    frames = audio[: len(audio) // hop * hop].reshape(-1, hop)
+    loud = np.sqrt((frames ** 2).mean(axis=1)) > 10 ** (-45 / 20)
+    regions: list[list[float]] = []
+    for k in np.flatnonzero(loud):
+        t = k * hop / 16000
+        if regions and t - regions[-1][1] < 0.5:
+            regions[-1][1] = t + hop / 16000
+        else:
+            regions.append([t, t + hop / 16000])
+    out, language = [], None
+    for a, b in regions:
+        if b - a < 0.25:
+            continue
+        a0, b0 = max(0.0, a - 0.2), min(len(audio) / 16000, b + 0.2)
+        chunk = audio[int(a0 * 16000): int(b0 * 16000)]
+        segments, info = _whisper.transcribe(chunk, vad_filter=False, word_timestamps=True,
+                                             condition_on_previous_text=False)
+        for sg in segments:
+            text = sg.text.strip()
+            if not text or sg.no_speech_prob > 0.7:
+                continue
+            language = language or info.language
+            out.append({
+                "startS": r2(a0 + sg.start), "endS": r2(a0 + sg.end), "text": text,
+                "words": [{"w": w.word.strip(), "s": r2(a0 + w.start), "e": r2(a0 + w.end), "p": r2(w.probability)}
+                          for w in (sg.words or [])],
+            })
+    return {"language": language, "segments": out}
 
 
 # ---------------------------------------------------------------- Claude
@@ -1401,11 +1453,12 @@ MAX_TAKE_S = 600  # seconds of takes we'll listen to
 
 JUMPCUT_SYSTEM = """You edit talking-to-camera videos for ViralOwner, an app that remakes a proven viral video (the "inspo") with the user's own footage. This inspo is one take with every pause cut out, and the user filmed their own version as one long take (or a few).
 
-You get the inspo (what's said, its structure and length, its on-screen text) and the user's take split into numbered phrases at every pause. Choose which phrases to keep, in their original order, to make a tight video in the inspo's style:
-- cut retakes: when they say a line again, keep only the last good version.
+You get the inspo (what's said, its structure and length, its on-screen text) and the user's take as numbered lines, each with numbers describing how it was delivered. Choose which lines to keep:
+- people often say the same line several times to see which sounds best. those repeats are listed as "takes of the same line": keep exactly one of them, the one that sounds best and fits the lines around it. you can't hear the audio, so judge by the numbers: clear (high clarity), fluent (no filler, no long pause inside the line), complete (says the whole line), and with a pace and loudness close to the lines you're keeping around it, so the video sounds like one smooth take. when takes are equally good, prefer the later one (people usually get better).
+- the video must never say the same thing twice. if two lines say nearly the same thing and weren't flagged, keep only the better one.
 - cut flubs, false starts, filler ("um", "uh", "so yeah", "wait let me start over"), mumbling and anything off-topic.
 - keep the user's real message complete, and never cut in a way that changes what they mean.
-- never reorder phrases.
+- lines play in the order they were first said (a chosen take plays where that line first appears), so don't worry about where a later take was recorded.
 - if the take has much more material than the inspo, aim for a length near the inspo's, but don't cut real content just to hit it.
 
 Writing: everything is about the user's business or topic. Never invent facts, prices or claims. No emoji or hashtags in on-screen text."""
@@ -1413,7 +1466,7 @@ Writing: everything is about the user's business or topic. Never invent facts, p
 JUMPCUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "keep": {"type": "array", "items": {"type": "integer"}, "description": "the phrase numbers to keep, in order."},
+        "keep": {"type": "array", "items": {"type": "integer"}, "description": "the line numbers to keep."},
         "texts": {
             "type": "array",
             "description": "one entry per inspo shot, in order.",
@@ -1437,35 +1490,142 @@ JUMPCUT_SCHEMA = {
     "additionalProperties": False,
 }
 
+FILLERS = {"um", "umm", "uh", "uhh", "er", "erm", "hmm", "mm", "ah"}
+RESTART_CUES = {"wait", "sorry", "again", "restart", "over", "actually", "oops", "hold"}
+LINE_BREAK_S = 0.9  # a pause this long ends a line even without a full stop
+RETAKE_WINDOW = 6  # how many lines later a repeat still counts as a retake
+SAME_LINE = 0.75  # word overlap at which two lines are takes of the same line
 
-def take_phrases(clips: list[dict]) -> list[dict]:
-    """Everything said in the takes (in clip order), split at every pause."""
-    phrases: list[dict] = []
+
+def take_lines(clips: list[dict]) -> list[dict]:
+    """Everything said in the takes (in clip order), as lines (sentences, or runs ended by a long
+    pause). Each line keeps its words, so it can be cut again at every pause inside it."""
+    lines: list[dict] = []
     budget = MAX_TAKE_S
     for ci, c in enumerate(clips):
         if not c["has_audio"] or budget <= 0:
             continue
-        words = [w for seg in transcribe(c["path"])["segments"] for w in seg.get("words") or []
-                 if w["e"] > w["s"] and w["s"] < budget]
-        cur = None
+        words = [w for seg in transcribe_take(c["path"])["segments"] for w in seg.get("words") or []
+                 if w["e"] > w["s"] and w["s"] < budget and w["w"]]
+        cur: list[dict] = []
         for w in words:
-            if cur and w["s"] - cur["end"] <= JUMPCUT_GAP_S:
-                cur["end"] = w["e"]
-                cur["words"].append(w["w"])
-            else:
-                if cur:
-                    phrases.append(cur)
-                cur = {"clip": ci, "start": w["s"], "end": w["e"], "words": [w["w"]]}
+            if cur and (w["s"] - cur[-1]["e"] > LINE_BREAK_S or cur[-1]["w"][-1:] in ".?!"):
+                lines.append({"clip": ci, "words": cur})
+                cur = []
+            cur.append(w)
         if cur:
-            phrases.append(cur)
+            lines.append({"clip": ci, "words": cur})
         budget -= c["duration"]
-    for i, ph in enumerate(phrases):
-        ph["id"] = i + 1
-        ph["text"] = " ".join(ph["words"]).strip()
-    return phrases
+    for i, ln in enumerate(lines):
+        ln["id"] = i + 1
+        ln["start"], ln["end"] = ln["words"][0]["s"], ln["words"][-1]["e"]
+        ln["text"] = " ".join(w["w"] for w in ln["words"]).strip()
+    return lines
 
 
-def select_phrases(inspo: dict, phrases: list[dict], text_mode: str, notes: str, inspo_lines: list[str]) -> dict:
+def tokens(text: str) -> list[str]:
+    import re
+
+    return [t for t in re.findall(r"[a-z0-9']+", text.lower()) if t not in FILLERS]
+
+
+def similar(a: list[str], b: list[str]) -> float:
+    """How much two lines say the same thing (0–1). A false start that matches the beginning of a
+    full line counts as the same line."""
+    from difflib import SequenceMatcher
+
+    if not a or not b:
+        return 0.0
+    # Same opening words: a restart ("we started filming, wait...") or another take.
+    common = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        common += 1
+    restart = bool(RESTART_CUES & set(a) or RESTART_CUES & set(b))
+    cut_short = min(len(a), len(b)) <= common + 1  # one of them stops right after the shared words
+    if (common >= 2 and restart) or (common >= 3 and cut_short):
+        return 1.0
+    ratio = SequenceMatcher(None, a, b, autojunk=False).ratio()
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) >= 3:
+        prefix = SequenceMatcher(None, short, long_[: len(short) + 1], autojunk=False).ratio()
+        ratio = max(ratio, prefix * 0.9)
+    return ratio
+
+
+def retake_groups(lines: list[dict]) -> list[list[int]]:
+    """Lines that are takes of the same line (by line index), each group in recording order."""
+    toks = [tokens(ln["text"]) for ln in lines]
+    parent = list(range(len(lines)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(lines)):
+        for j in range(i + 1, min(len(lines), i + 1 + RETAKE_WINDOW)):
+            if len(toks[i]) >= 2 and len(toks[j]) >= 2 and similar(toks[i], toks[j]) >= SAME_LINE:
+                parent[root(j)] = root(i)
+    groups: dict[int, list[int]] = {}
+    for i in range(len(lines)):
+        groups.setdefault(root(i), []).append(i)
+    return [g for g in groups.values() if len(g) > 1]
+
+
+def mean_volume(path: Path, start: float, end: float) -> float | None:
+    out = subprocess.run(
+        ["ffmpeg", "-v", "info", "-ss", f"{start:.3f}", "-t", f"{max(0.1, end - start):.3f}", "-i", str(path),
+         "-vn", "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True,
+    ).stderr
+    for line in out.splitlines():
+        if "mean_volume:" in line:
+            try:
+                return float(line.split("mean_volume:")[1].split("dB")[0])
+            except ValueError:
+                return None
+    return None
+
+
+def delivery_stats(lines: list[dict], clips: list[dict]) -> None:
+    """Adds how each line was delivered (lines["stats"]) and an overall score for tie-breaks."""
+    import statistics
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(8) as pool:
+        volumes = list(pool.map(lambda ln: mean_volume(clips[ln["clip"]]["path"], ln["start"], ln["end"]), lines))
+    rates = []
+    for ln, vol in zip(lines, volumes):
+        ws = ln["words"]
+        spoken = [w for w in ws if tokens(w["w"])]
+        dur = max(0.2, ln["end"] - ln["start"])
+        probs = [w["p"] for w in ws if isinstance(w.get("p"), (int, float))]
+        gaps = [b["s"] - a["e"] for a, b in zip(ws, ws[1:])]
+        ln["stats"] = {
+            "clarity": round(sum(probs) / len(probs), 2) if probs else None,
+            "fillers": sum(1 for w in ws if w["w"].lower().strip(".,!?") in FILLERS),
+            "longest_pause": round(max(gaps), 2) if gaps else 0.0,
+            "words_per_s": round(len(spoken) / dur, 2),
+            "volume_db": round(vol, 1) if vol is not None else None,
+        }
+        rates.append(ln["stats"]["words_per_s"])
+    vols = [v for v in volumes if v is not None]
+    mid_vol = statistics.median(vols) if vols else None
+    mid_rate = statistics.median(rates) if rates else 0.0
+    for ln in lines:
+        st = ln["stats"]
+        st["volume_vs_rest_db"] = round(st["volume_db"] - mid_vol, 1) if st["volume_db"] is not None and mid_vol is not None else None
+        st["pace_vs_rest"] = round(st["words_per_s"] - mid_rate, 2)
+        ln["score"] = (
+            2 * (st["clarity"] or 0.7) - 0.6 * st["fillers"] - 0.8 * max(0.0, st["longest_pause"] - 0.5)
+            - abs(st["volume_vs_rest_db"] or 0.0) / 8 - abs(st["pace_vs_rest"]) / 3 + 0.03 * len(tokens(ln["text"]))
+        )
+
+
+def select_lines(inspo: dict, lines: list[dict], groups: list[list[int]], text_mode: str, notes: str,
+                 inspo_lines: list[str]) -> dict:
     b = inspo["breakdown"]
     ins = b.get("insights") or {}
     said = [f"[{x['startS']:.1f}s–{x['endS']:.1f}s] {x['text']}" for x in (b.get("transcript") or {}).get("segments", [])]
@@ -1474,38 +1634,75 @@ def select_phrases(inspo: dict, phrases: list[dict], text_mode: str, notes: str,
         + (json.dumps(inspo_lines[i] or s.get("onScreenText"), ensure_ascii=False) if (inspo_lines[i] or s.get("onScreenText")) else "none")
         for i, s in enumerate(b["shots"])
     ]
-    take = [f"{ph['id']}. [clip {ph['clip'] + 1}, {ph['start']:.1f}s–{ph['end']:.1f}s] {ph['text']}" for ph in phrases]
+    take = []
+    for ln in lines:
+        st = ln["stats"]
+        take.append(
+            f"{ln['id']}. [clip {ln['clip'] + 1}, {ln['start']:.1f}s–{ln['end']:.1f}s] {ln['text']}\n"
+            f"   clarity {st['clarity']}, filler words {st['fillers']}, longest pause {st['longest_pause']}s, "
+            f"pace {st['words_per_s']} words/s ({st['pace_vs_rest']:+} vs the rest), "
+            f"loudness {st['volume_vs_rest_db'] if st['volume_vs_rest_db'] is not None else '?'} dB vs the rest"
+        )
+    repeats = [f"- lines {', '.join(str(lines[i]['id']) for i in g)} are takes of the same line." for g in groups]
     text = "\n".join([
         f"the inspo is {b['durationS']:.1f}s long. hook: {ins.get('hook', '')}. structure: {ins.get('structure', '')}",
         "what's said in the inspo:", *(said or ["(no speech)"]),
         "", "the inspo's shots and on-screen text:", *shots,
-        "", f"the user's take ({len(phrases)} phrases):", *take,
+        "", f"the user's take ({len(lines)} lines):", *take,
+        "", "takes of the same line (keep exactly one from each):", *(repeats or ["(none found)"]),
         "",
         *([f"the user's additional requests and details: {json.dumps(notes, ensure_ascii=False)}"] if notes else []),
-        "choose the phrases to keep.",
+        "choose the lines to keep.",
         TEXT_RULES["adapt"] if text_mode == "adapt" else "on-screen text: set already. return an empty string for every inspo shot.",
     ])
     return ask_claude(JUMPCUT_SYSTEM, [{"type": "text", "text": text}], JUMPCUT_SCHEMA,
                       "we couldn’t edit that take. try filming it again.")
 
 
-def phrase_ranges(phrases: list[dict], keep: list[int], clips: list[dict]) -> list[dict]:
-    """The kept phrases as cut ranges, joining phrases that run on without a pause."""
-    wanted = set(keep)
+def final_lines(lines: list[dict], groups: list[list[int]], keep_ids: list[int]) -> list[dict]:
+    """The lines to use, in script order, with at most one take of each line and nothing said twice
+    in a row, whatever the selection was."""
+    wanted = {i for i, ln in enumerate(lines) if ln["id"] in set(keep_ids)}
+    group_of = {i: g for g in groups for i in g}
+    for g in groups:
+        chosen = [i for i in g if i in wanted]
+        if len(chosen) > 1:  # more than one take kept: keep the best-sounding one
+            best = max(chosen, key=lambda i: lines[i]["score"])
+            wanted -= set(chosen) - {best}
+    # A chosen take plays where its line was first said.
+    order = sorted(wanted, key=lambda i: (min(group_of.get(i, [i])), i))
+    out: list[int] = []
+    toks = [tokens(ln["text"]) for ln in lines]
+    for i in order:
+        if out and similar(toks[out[-1]], toks[i]) >= SAME_LINE:
+            if lines[i]["score"] > lines[out[-1]]["score"]:
+                out[-1] = i
+            continue
+        out.append(i)
+    return [lines[i] for i in out]
+
+
+def line_ranges(chosen: list[dict], clips: list[dict]) -> list[dict]:
+    """The chosen lines as cut ranges: each line is cut again at every pause inside it, and parts
+    that run straight on in the same clip are joined."""
     ranges: list[dict] = []
-    for ph in phrases:
-        if ph["id"] not in wanted:
-            continue
-        a = max(0.0, ph["start"] - JUMPCUT_PAD[0])
-        b = min(clips[ph["clip"]]["duration"], ph["end"] + JUMPCUT_PAD[1])
-        last = ranges[-1] if ranges else None
-        if last and last["clip"] == ph["clip"] and a <= last["end"] + 0.05 and a >= last["start"]:
-            last["end"] = max(last["end"], b)
-            continue
-        if last and last["clip"] == ph["clip"] and last["start"] <= a < last["end"]:
-            a = last["end"]
-        if b - a >= 0.25:
-            ranges.append({"clip": ph["clip"], "start": a, "end": b})
+    for ln in chosen:
+        parts: list[list[float]] = []
+        for w in ln["words"]:
+            if parts and w["s"] - parts[-1][1] <= JUMPCUT_GAP_S:
+                parts[-1][1] = w["e"]
+            else:
+                parts.append([w["s"], w["e"]])
+        dur = clips[ln["clip"]]["duration"]
+        for a, b in parts:
+            a = max(0.0, a - JUMPCUT_PAD[0])
+            b = min(dur, b + JUMPCUT_PAD[1])
+            last = ranges[-1] if ranges else None
+            if last and last["clip"] == ln["clip"] and last["start"] <= a <= last["end"] + 0.05:
+                last["end"] = max(last["end"], b)
+                continue
+            if b - a >= 0.25:
+                ranges.append({"clip": ln["clip"], "start": a, "end": b})
     return ranges
 
 
@@ -1769,20 +1966,27 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             jump_ranges = []  # a clip was removed since: cut the take again
         if not jump_ranges:
             report("analyzing", 8)
-            phrases = take_phrases(clips)
-            if phrases:
+            lines = take_lines(clips)
+            if lines:
+                delivery_stats(lines, clips)
+                groups = retake_groups(lines)
+                for ln in lines:
+                    print(f"  line {ln['id']} [{ln['start']:.1f}-{ln['end']:.1f}] {ln['text']!r} "
+                          f"{json.dumps(ln['stats'], default=float)}")
                 report("matching", 25)
                 choice = "keep" if keep else text_choice
-                result = select_phrases(req["inspo"], phrases, "adapt" if choice == "adapt" else "set", notes, inspo_lines)
+                result = select_lines(req["inspo"], lines, groups, "adapt" if choice == "adapt" else "set", notes, inspo_lines)
                 cost += result["cost_usd"]
                 data = result["data"]
-                keep_ids = [k for k in data["keep"] if isinstance(k, int)] or [ph["id"] for ph in phrases]
-                jump_ranges = phrase_ranges(phrases, keep_ids, clips)
+                keep_ids = [k for k in data["keep"] if isinstance(k, int)] or [ln["id"] for ln in lines]
+                chosen = final_lines(lines, groups, keep_ids)
+                jump_ranges = line_ranges(chosen, clips)
                 by_shot = {x["index"]: (x.get("text") or "").strip() for x in data["texts"]}
                 jump_texts = [by_shot.get(i + 1, "") for i in range(n)]
                 jump_post = clean_post(data["caption"], data["hashtags"])
-                print(f"jump cut: kept {len(keep_ids)}/{len(phrases)} phrases -> {len(jump_ranges)} cuts, "
-                      f"${result['cost_usd']}, usage={result['usage']}")
+                print(f"jump cut: {len(lines)} lines, retakes {[[lines[i]['id'] for i in g] for g in groups]}, "
+                      f"kept {[ln['id'] for ln in chosen]}")
+                print(f"jump cut: {len(jump_ranges)} cuts, ${result['cost_usd']}, usage={result['usage']}")
         if not jump_ranges:
             print("jump cut: no speech in the takes, editing them as separate shots instead")
             jump = False

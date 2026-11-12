@@ -89,8 +89,12 @@ What it does:
   `custom` (the user's own lines, exactly as typed).
 - **One-take inspos** ("jump cuts": one person talking with every pause cut out)
   are detected during analysis (`style.editType`). Users then upload one long
-  take; the render transcribes it, splits it at every pause, Claude drops
-  retakes/flubs/filler, and the kept phrases become the cuts (with the inspo's
+  take; the render transcribes it stretch by stretch (so Whisper can't drop
+  a repeated line), splits it into lines, finds lines said more than once,
+  measures each take's delivery (clarity, filler, pauses, pace and loudness vs
+  the rest), and Claude keeps the one best take of each line. A final check
+  guarantees nothing is said twice in a row and lines stay in script order.
+  The kept lines, cut again at every pause, become the cuts (with the inspo's
   alternating zoom, text, captions and color). The cuts are saved in the plan
   (`jumpcut`) so edits reuse them; regenerate cuts the take again.
 - **Safe zone**: text and captions always stay clear of the TikTok/Instagram
