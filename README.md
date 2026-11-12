@@ -44,6 +44,21 @@ In the Neon console (Vercel → Storage → your database → **Open in Neon**),
 SELECT email, created_at FROM waitlist_signups ORDER BY created_at DESC;
 ```
 
+## Plans and the free trial
+
+| | Price | Videos | Changes per video |
+| --- | --- | --- | --- |
+| Free trial | $0, card saved but never charged | 1 (plus a free download) | 1 (3 once they subscribe) |
+| Basic | Stripe `STRIPE_PRICE_BASIC_MONTHLY` / `_YEARLY` | 10 a month | 3 |
+| Pro | Stripe `STRIPE_PRICE_PRO_MONTHLY` / `_YEARLY` | up to 30 a month | 3 |
+
+- Limits live in `src/lib/plan-format.ts`; the rules in `src/lib/membership.ts`.
+- A video counts when its first version starts (`projects.billing` / `counted_at`). Later versions are changes; failed versions and retries are free.
+- Yearly plans reset videos monthly, on the day they subscribed. Nothing carries over. The trial video never counts toward the plan.
+- The trial saves the card with a SetupIntent (`/api/auth/signup`), then `/api/billing/trial` (and the `setup_intent.succeeded` webhook) records it in `trial_claims`: one per account and per card fingerprint.
+- **Nobody is ever subscribed automatically.** Trial users subscribe only on `/plans` by picking a plan, ticking the terms and pressing subscribe (`/api/billing/subscribe`). Plan switches, card updates and cancelling go through Stripe's billing portal (limited to viralowner prices).
+- The Stripe webhook needs these events: `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed` and `setup_intent.succeeded`.
+
 ## Create-a-video flow
 
 `/new` → `/projects/[id]/breakdown` → `/clips` → `/options` → `/status` → `/preview` → `/export`

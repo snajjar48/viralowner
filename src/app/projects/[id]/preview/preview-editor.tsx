@@ -33,6 +33,7 @@ export function PreviewEditor({
   clips,
   oneTake = false,
   uploadedAudio = null,
+  changes,
 }: {
   projectId: string;
   versions: number[];
@@ -45,6 +46,8 @@ export function PreviewEditor({
   /** Made from one take with the pauses cut out: no per-shot clip choices. */
   oneTake?: boolean;
   uploadedAudio?: { fileName: string } | null;
+  /** Changes (new versions) this video has left, and whether the account has a plan. */
+  changes: { left: number; subscribed: boolean };
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
@@ -99,7 +102,8 @@ export function PreviewEditor({
     }
   }
 
-  const locked = !!inProgress || busy !== null;
+  const outOfChanges = changes.left <= 0;
+  const locked = !!inProgress || busy !== null || outOfChanges;
   const asking = request.trim().length > 0;
 
   return (
@@ -177,6 +181,8 @@ export function PreviewEditor({
             )}
           </div>
         )}
+
+        <ChangesLeft changes={changes} />
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">
@@ -281,6 +287,33 @@ export function PreviewEditor({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ChangesLeft({ changes }: { changes: { left: number; subscribed: boolean } }) {
+  if (changes.left > 0) {
+    return (
+      <p className="text-sm text-muted">
+        {changes.left} {changes.left === 1 ? "change" : "changes"} left on this video. each change or regenerate
+        makes a new version.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm">
+      {changes.subscribed ? (
+        <p className="text-muted">you’ve used all the changes for this video. you can still download any version.</p>
+      ) : (
+        <>
+          <p className="text-muted">
+            you’ve used the free change on this video. you can still download it. to keep editing, choose a plan.
+          </p>
+          <Link href="/plans" className="self-start text-foreground underline underline-offset-4">
+            choose a plan
+          </Link>
+        </>
+      )}
     </div>
   );
 }

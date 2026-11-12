@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import type Stripe from "stripe";
 import { APP_TAG, isActiveStatus, syncSubscription } from "@/lib/billing";
 import { clientIp } from "@/lib/client-ip";
-import { isPlanId } from "@/lib/plan-format";
+import { isInterval, isTier } from "@/lib/plan-format";
 import { priceIdFor } from "@/lib/plans";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { parseSignup } from "@/lib/signup-validation";
@@ -12,10 +12,14 @@ import { createAdminClient, createClient } from "@/lib/supabase/server";
 const GENERIC_ERROR = "Something went wrong. Please try again.";
 
 /**
- * Sign-up: create the account, the Stripe customer, the profile and an
- * incomplete subscription, then return the first invoice's payment secret so
- * the browser can pay directly with Stripe (card details never touch this
- * server). The subscription activates once that payment succeeds.
+ * Sign-up: create the account, the Stripe customer and the profile, then
+ *  - free trial ({ choice: "trial" }): a SetupIntent that saves the card
+ *    without charging it. Returns { kind: "setup", clientSecret, setupIntentId }.
+ *    The trial is recorded by /api/billing/trial once the card is saved.
+ *  - a plan ({ choice: "basic" | "pro", interval }): an incomplete subscription.
+ *    Returns { kind: "payment", clientSecret, subscriptionId }; it activates
+ *    once the browser pays the first invoice.
+ * Card details go straight from the browser to Stripe, never to this server.
  */
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown>;
@@ -34,13 +38,14 @@ export async function POST(request: NextRequest) {
   if ("error" in input) {
     return Response.json({ error: input.error }, { status: 400 });
   }
-  if (!isPlanId(body.plan)) {
-    return Response.json({ error: "Please choose a plan." }, { status: 400 });
+  const trial = body.choice === "trial";
+  if (!trial && !(isTier(body.choice) && isInterval(body.interval))) {
+    return Response.json({ error: "Please choose the free trial or a plan." }, { status: 400 });
   }
   // Only viralowner's own prices can be bought here.
-  const priceId = priceIdFor(body.plan);
-  if (!priceId) {
-    console.error("Signup failed: STRIPE_PRICE_MONTHLY / STRIPE_PRICE_YEARLY not set.");
+  const priceId = isTier(body.choice) && isInterval(body.interval) ? priceIdFor(body.choice, body.interval) : "";
+  if (!trial && !priceId) {
+    console.error("Signup failed: STRIPE_PRICE_* for", body.choice, body.interval, "not set.");
     return Response.json({ error: "Plans aren’t set up yet." }, { status: 500 });
   }
 
@@ -168,6 +173,25 @@ export async function POST(request: NextRequest) {
       if (sub.status === "incomplete") await stripe.subscriptions.cancel(sub.id);
     }
 
+    const needsEmailConfirmation = !data.session;
+    if (trial) {
+      // Saves the card for later; nothing is charged.
+      const setupIntent = await stripe.setupIntents.create({
+        customer: customer.id,
+        allowed_payment_method_types: ["card"],
+        usage: "off_session",
+        description: "viralowner free trial: card saved, not charged",
+        metadata: { app: APP_TAG, purpose: "trial", supabase_user_id: user.id },
+      });
+      if (!setupIntent.client_secret) throw new Error(`No client secret for ${setupIntent.id}`);
+      return Response.json({
+        kind: "setup",
+        clientSecret: setupIntent.client_secret,
+        setupIntentId: setupIntent.id,
+        needsEmailConfirmation,
+      });
+    }
+
     const subscription = await stripe.subscriptions.create({
       customer: customer.id,
       items: [{ price: priceId }],
@@ -177,7 +201,7 @@ export async function POST(request: NextRequest) {
         payment_method_types: ["card"],
         save_default_payment_method: "on_subscription",
       },
-      metadata: { app: APP_TAG, supabase_user_id: user.id },
+      metadata: { app: APP_TAG, supabase_user_id: user.id, terms_accepted_at: new Date().toISOString() },
       expand: ["latest_invoice.confirmation_secret"],
     });
     await syncSubscription(subscription);
@@ -187,9 +211,10 @@ export async function POST(request: NextRequest) {
     if (!clientSecret) throw new Error(`No payment secret for ${subscription.id}`);
 
     return Response.json({
+      kind: "payment",
       clientSecret,
       subscriptionId: subscription.id,
-      needsEmailConfirmation: !data.session,
+      needsEmailConfirmation,
     });
   } catch (error) {
     console.error("Signup failed:", error);

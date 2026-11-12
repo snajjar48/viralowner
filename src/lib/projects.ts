@@ -15,6 +15,8 @@ export interface Project {
   clipsRightsConfirmedAt: string | null;
   /** The user's own audio file, if they added one. */
   audio: ProjectAudio | null;
+  /** How this video counted against the account (null until its first version starts). */
+  billing: "trial" | "plan" | null;
   createdAt: string;
 }
 
@@ -82,6 +84,7 @@ function toProject(r: Row): Project {
     settings: optionsFromJson(r.settings),
     clipsRightsConfirmedAt: iso(r.clips_rights_confirmed_at),
     audio: (r.audio as ProjectAudio | null) ?? null,
+    billing: r.billing === "trial" || r.billing === "plan" ? r.billing : null,
     createdAt: iso(r.created_at)!,
   };
 }

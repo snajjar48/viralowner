@@ -1,6 +1,7 @@
 import { jsonError, readJson, serverError, unauthorized } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import { startInspoUpload } from "@/lib/inspo";
+import { canCreateProject } from "@/lib/membership";
 import { createProject } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
 
@@ -14,6 +15,9 @@ export async function POST(request: Request) {
     if (!(await checkRateLimit(`projects:${userId}`, 20))) {
       return jsonError("you’ve started a lot of videos in the last few minutes. please wait a bit and try again.", 429);
     }
+
+    const blocked = await canCreateProject(userId);
+    if (blocked) return Response.json({ error: blocked.message, reason: blocked.reason }, { status: blocked.status });
 
     const project = await createProject(userId);
     const result = await startInspoUpload(userId, project.id, body);

@@ -1,6 +1,7 @@
 import type Stripe from "stripe";
 import { APP_TAG, syncSubscription } from "@/lib/billing";
 import { getStripe } from "@/lib/stripe";
+import { trialFromSetupIntent } from "@/lib/trial";
 
 const SUBSCRIPTION_EVENTS = new Set([
   "customer.subscription.created",
@@ -43,6 +44,19 @@ export async function POST(request: Request) {
       } catch (error) {
         console.error(`Webhook ${event.type} failed:`, error);
         return Response.json({ error: "Sync failed." }, { status: 500 }); // Stripe retries
+      }
+    }
+  }
+
+  if (event.type === "setup_intent.succeeded") {
+    // A free trial's card was saved (backup for /api/billing/trial).
+    const si = event.data.object as Stripe.SetupIntent;
+    if (si.metadata?.app === APP_TAG) {
+      try {
+        await trialFromSetupIntent(si);
+      } catch (error) {
+        console.error("Webhook setup_intent.succeeded failed:", error);
+        return Response.json({ error: "Trial failed." }, { status: 500 });
       }
     }
   }

@@ -50,10 +50,10 @@ export async function syncSubscription(sub: Stripe.Subscription) {
 }
 
 let portalConfigId: string | undefined;
-const PORTAL_VERSION = "1"; // bump to roll out portal setting changes
+const PORTAL_VERSION = "2"; // bump to roll out portal setting changes
 
 /**
- * A billing-portal configuration that only offers viralowner's plans, so
+ * A billing-portal configuration that only offers viralowner's plans (Basic and Pro, monthly and yearly), so
  * customers never see other products in the shared Stripe account. Created
  * once and reused; the account's default portal is never touched.
  */

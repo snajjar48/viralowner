@@ -4,6 +4,8 @@ import { Suspense } from "react";
 import { BackgroundGlow } from "@/components/auth-layout";
 import Link from "next/link";
 import { buttonClass } from "@/components/form";
+import { canStartVideo, formatResetDate, getMembership, type Membership } from "@/lib/membership";
+import { CHANGES_PER_VIDEO, TIER_NAMES, TRIAL_CHANGES } from "@/lib/plan-format";
 import { listProjects, resumeHref, type ProjectStatus } from "@/lib/projects";
 import { createClient } from "@/lib/supabase/server";
 import { formatDuration } from "@/lib/video-options";
@@ -55,20 +57,11 @@ async function Account() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login?next=/dashboard");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("first_name, plan, subscription_status, current_period_end, cancel_at_period_end")
-    .eq("id", user.id)
-    .maybeSingle();
-
-  const status = profile?.subscription_status as string | null | undefined;
-  const periodEnd = profile?.current_period_end
-    ? new Date(profile.current_period_end).toLocaleDateString("en-US", {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      })
-    : null;
+  const [{ data: profile }, membership] = await Promise.all([
+    supabase.from("profiles").select("first_name").eq("id", user.id).maybeSingle(),
+    getMembership(user.id),
+  ]);
+  const can = canStartVideo(membership);
 
   return (
     <>
@@ -77,34 +70,70 @@ async function Account() {
       </h1>
       <p className="text-muted">Signed in as {user.email}.</p>
 
-      <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-sm">
-        {status ? (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-left">
-            <dt className="text-muted">Plan</dt>
-            <dd className="capitalize">{profile?.plan ?? "viralowner"}</dd>
-            <dt className="text-muted">Status</dt>
-            <dd>{STATUS_LABELS[status] ?? status}</dd>
-            {periodEnd && (
-              <>
-                <dt className="text-muted">
-                  {profile?.cancel_at_period_end ? "Ends" : "Renews"}
-                </dt>
-                <dd>{periodEnd}</dd>
-              </>
-            )}
-          </dl>
-        ) : (
-          <p className="text-muted">No membership yet.</p>
-        )}
-      </div>
+      <MembershipCard m={membership} />
 
-      {status && <ManageBillingButton />}
-
-      <Link href="/new" className={`${buttonClass} flex max-w-sm items-center justify-center`}>
-        make a new video
-      </Link>
+      {"reason" in can ? (
+        <div className="flex w-full max-w-sm flex-col gap-3">
+          <p className="text-sm text-muted text-pretty">{can.message}</p>
+          {can.reason === "subscribe" ? (
+            <Link href="/plans" className={`${buttonClass} flex items-center justify-center`}>
+              choose a plan
+            </Link>
+          ) : (
+            membership.plan?.tier === "basic" && <ManageBillingButton label="upgrade to Pro" />
+          )}
+        </div>
+      ) : (
+        <Link href="/new" className={`${buttonClass} flex max-w-sm items-center justify-center`}>
+          {can.as === "trial" ? "make my free video" : "make a new video"}
+        </Link>
+      )}
+      {membership.hasCustomer && membership.plan && <ManageBillingButton />}
       <Projects userId={user.id} />
     </>
+  );
+}
+
+function MembershipCard({ m }: { m: Membership }) {
+  const rows: [string, string][] = [];
+  if (m.plan) {
+    rows.push(["Plan", `${TIER_NAMES[m.plan.tier]} · ${m.plan.interval}`]);
+    rows.push(["Status", STATUS_LABELS[m.plan.status] ?? m.plan.status]);
+    if (m.videos) {
+      rows.push(["This month", `${m.videos.used} of ${m.videos.limit} videos used`]);
+      rows.push(["Resets", formatResetDate(m.videos.resetsAt)]);
+    }
+    if (m.plan.periodEnd) {
+      rows.push([
+        m.plan.cancelAtPeriodEnd ? "Ends" : "Renews",
+        new Date(m.plan.periodEnd).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+      ]);
+    }
+    rows.push(["Changes", `${CHANGES_PER_VIDEO} per video`]);
+  } else if (m.trial !== "none") {
+    rows.push(["Plan", "Free trial"]);
+    rows.push(["Free video", m.trial === "available" ? "ready to use" : "used"]);
+    rows.push(["Changes", `${TRIAL_CHANGES} on your free video`]);
+    rows.push(["Charges", "none. you’re never charged unless you choose a plan"]);
+  } else if (m.lapsedStatus) {
+    rows.push(["Status", STATUS_LABELS[m.lapsedStatus] ?? m.lapsedStatus]);
+  }
+
+  return (
+    <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-sm">
+      {rows.length ? (
+        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-left">
+          {rows.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-muted">{k}</dt>
+              <dd>{v}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="text-muted">No membership yet.</p>
+      )}
+    </div>
   );
 }
 

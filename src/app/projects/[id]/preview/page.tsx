@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
+import { changesLeft, getMembership } from "@/lib/membership";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips, listRenders } from "@/lib/projects";
 import { syncUnfinished } from "@/lib/renders";
@@ -31,10 +32,11 @@ export default function PreviewPage({ params, searchParams }: PageProps<"/projec
 
 async function Preview({ id, version }: { id: string; version: number | null }) {
   const { userId, project } = await loadProject(id, `/projects/${id}/preview`);
-  const [renders, clips, inspo] = await Promise.all([
+  const [renders, clips, inspo, membership] = await Promise.all([
     listRenders(userId, id).then((list) => syncUnfinished(id, list)),
     listClips(userId, id),
     getInspiration(userId, id),
+    getMembership(userId),
   ]);
   const done = renders.filter((r) => r.status === "done" && r.storageKey);
   const latest = renders.at(-1);
@@ -75,6 +77,10 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         oneTake={!!current.plan?.jumpcut}
         uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
         clips={clipList}
+        changes={{
+          left: changesLeft(membership, project, renders.filter((r) => r.status !== "failed").length),
+          subscribed: !!membership.plan,
+        }}
       />
     </FlowShell>
   );

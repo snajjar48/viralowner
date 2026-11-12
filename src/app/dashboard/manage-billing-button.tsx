@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 /** Opens Stripe's billing page for this customer (viralowner plans only). */
-export function ManageBillingButton() {
+export function ManageBillingButton({ label = "Manage billing" }: { label?: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -32,7 +32,7 @@ export function ManageBillingButton() {
         disabled={loading}
         className="h-11 cursor-pointer rounded-full border border-white/15 bg-white/5 px-5 text-sm font-medium transition hover:border-white/30 hover:bg-white/10 disabled:cursor-wait disabled:opacity-70"
       >
-        {loading ? "Opening…" : "Manage billing"}
+        {loading ? "Opening…" : label}
       </button>
       {error && (
         <p role="alert" className="text-sm text-coral">

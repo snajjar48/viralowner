@@ -1,7 +1,7 @@
 "use client";
 
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
-import { loadStripe, type StripeElementsOptions } from "@stripe/stripe-js";
+import type { StripeElementsOptions } from "@stripe/stripe-js";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -9,61 +9,25 @@ import { buttonClass, Field, FormError, inputClass } from "@/components/form";
 import { ArrowRightIcon, CheckIcon, LockIcon } from "@/components/icons";
 import { PasswordInput, StrengthMeter } from "@/components/password-input";
 import { COUNTRIES } from "@/lib/countries";
-import { formatMoney, yearlySavingsPercent, type Plan, type PlanId } from "@/lib/plan-format";
+import { PlanPicker, type Choice } from "@/components/plan-picker";
+import { baseOptions, paymentElementOptions, stripePromise } from "@/components/stripe-config";
+import { chargeSummary, findPlan, formatPrice, TIER_NAMES, type Interval, type Plan } from "@/lib/plan-format";
 import { PASSWORD_MAX, PASSWORD_MIN, type BillingAddress } from "@/lib/signup-validation";
 
-const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
-const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
-
-const baseOptions = {
-  fonts: [{ cssSrc: "https://fonts.googleapis.com/css2?family=Lexend:wght@400;500&display=swap" }],
-  appearance: {
-    theme: "night",
-    variables: {
-      colorPrimary: "#8a4cf0",
-      colorBackground: "#18181d",
-      colorText: "#f5f5f7",
-      colorTextSecondary: "#a1a1aa",
-      colorTextPlaceholder: "#71717a",
-      colorDanger: "#f63165",
-      fontFamily: "Lexend, system-ui, sans-serif",
-      fontSizeBase: "16px",
-      borderRadius: "12px",
-    },
-    rules: {
-      ".Input": { border: "1px solid rgba(255, 255, 255, 0.15)", boxShadow: "none" },
-      ".Input:focus": { border: "1px solid rgba(255, 255, 255, 0.4)", boxShadow: "none" },
-      ".Label": { color: "#a1a1aa", fontSize: "14px" },
-    },
-  },
-} satisfies Partial<StripeElementsOptions>;
-
-// Name, email, phone and address come from our own fields.
-const paymentElementOptions = {
-  fields: {
-    billingDetails: { name: "never", email: "never", phone: "never", address: "never" },
-  },
-  wallets: { applePay: "never", googlePay: "never", link: "never" },
-} as const;
-
 export function SignupForm({ plans }: { plans: Plan[] | null }) {
-  const [planId, setPlanId] = useState<PlanId>("yearly");
-  const plan = plans?.find((p) => p.id === planId);
-  const options = useMemo<StripeElementsOptions | null>(
+  const [choice, setChoice] = useState<Choice>("trial");
+  const [interval, setInterval] = useState<Interval>("monthly");
+  const plan = plans && choice !== "trial" ? findPlan(plans, choice, interval) : undefined;
+  const currency = plans?.[0]?.currency ?? "usd";
+  const options = useMemo<StripeElementsOptions>(
     () =>
       plan
-        ? {
-            ...baseOptions,
-            mode: "subscription",
-            amount: plan.amount,
-            currency: plan.currency,
-            allowedPaymentMethodTypes: ["card"],
-          }
-        : null,
-    [plan],
+        ? { ...baseOptions, mode: "subscription", amount: plan.amount, currency: plan.currency, allowedPaymentMethodTypes: ["card"] }
+        : { ...baseOptions, mode: "setup", currency, allowedPaymentMethodTypes: ["card"] },
+    [plan, currency],
   );
 
-  if (!stripePromise || !plans || !plan || !options) {
+  if (!stripePromise || !plans || (choice !== "trial" && !plan)) {
     return (
       <p className="text-center text-sm text-coral">
         Sign-ups aren’t open yet: payments or plans aren’t set up.
@@ -71,8 +35,16 @@ export function SignupForm({ plans }: { plans: Plan[] | null }) {
     );
   }
   return (
-    <Elements stripe={stripePromise} options={options}>
-      <SignupFields plans={plans} plan={plan} onPlanChange={setPlanId} />
+    // Saving a card (trial) and paying (plan) need different card fields.
+    <Elements key={plan ? "payment" : "setup"} stripe={stripePromise} options={options}>
+      <SignupFields
+        plans={plans}
+        choice={choice}
+        interval={interval}
+        plan={plan ?? null}
+        onChoice={setChoice}
+        onInterval={setInterval}
+      />
     </Elements>
   );
 }
@@ -113,12 +85,19 @@ function readForm(form: HTMLFormElement) {
 
 function SignupFields({
   plans,
+  choice,
+  interval,
   plan,
-  onPlanChange,
+  onChoice,
+  onInterval,
 }: {
   plans: Plan[];
-  plan: Plan;
-  onPlanChange: (id: PlanId) => void;
+  choice: Choice;
+  interval: Interval;
+  /** The chosen paid plan, or null for the free trial. */
+  plan: Plan | null;
+  onChoice: (c: Choice) => void;
+  onInterval: (i: Interval) => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -127,10 +106,14 @@ function SignupFields({
   const router = useRouter();
   // Set to the address we emailed when confirmation is required.
   const [checkEmail, setCheckEmail] = useState("");
+  // The card already had a free trial on another account.
+  const [trialRefused, setTrialRefused] = useState<{ needsEmailConfirmation: boolean; email: string } | null>(null);
   // Once the account exists, only the card can be retried.
   const account = useRef<{
+    kind: "setup" | "payment";
     clientSecret: string;
-    subscriptionId: string;
+    /** The subscription (plan) or SetupIntent (trial) id. */
+    id: string;
     needsEmailConfirmation: boolean;
     details: Details;
   }>(null);
@@ -175,7 +158,8 @@ function SignupFields({
             password: values.password,
             confirmPassword: values.confirmPassword,
             acceptTerms: values.acceptTerms,
-            plan: plan.id,
+            choice,
+            interval,
             website: values.website,
           }),
         });
@@ -185,54 +169,68 @@ function SignupFields({
           return;
         }
         account.current = {
+          kind: result.kind === "setup" ? "setup" : "payment",
           clientSecret: result.clientSecret,
-          subscriptionId: result.subscriptionId,
+          id: result.kind === "setup" ? result.setupIntentId : result.subscriptionId,
           needsEmailConfirmation: Boolean(result.needsEmailConfirmation),
           details: values.details,
         };
         setAccountCreated(true);
       }
 
-      const { clientSecret, subscriptionId, needsEmailConfirmation, details } = account.current;
-      const { error: confirmError } = await stripe.confirmPayment({
-        elements,
-        clientSecret,
-        redirect: "if_required",
-        confirmParams: {
-          return_url: `${window.location.origin}/dashboard`,
-          payment_method_data: {
-            billing_details: {
-              name: `${details.firstName} ${details.lastName}`,
-              email: details.email,
-              phone: details.phone,
-              address: {
-                line1: details.address.line1,
-                line2: details.address.line2,
-                city: details.address.city,
-                state: details.address.state,
-                postal_code: details.address.postalCode,
-                country: details.address.country,
-              },
-            },
-          },
+      const { kind, clientSecret, id, needsEmailConfirmation, details } = account.current;
+      const billingDetails = {
+        name: `${details.firstName} ${details.lastName}`,
+        email: details.email,
+        phone: details.phone,
+        address: {
+          line1: details.address.line1,
+          line2: details.address.line2,
+          city: details.address.city,
+          state: details.address.state,
+          postal_code: details.address.postalCode,
+          country: details.address.country,
         },
-      });
+      };
+      const confirmParams = {
+        return_url: `${window.location.origin}/dashboard`,
+        payment_method_data: { billing_details: billingDetails },
+      };
+      const { error: confirmError } =
+        kind === "setup"
+          ? await stripe.confirmSetup({ elements, clientSecret, redirect: "if_required", confirmParams })
+          : await stripe.confirmPayment({ elements, clientSecret, redirect: "if_required", confirmParams });
 
       if (confirmError) {
         setError(
-          `Your account is set up, but the payment didn’t go through: ${
-            confirmError.message ?? "it was declined."
-          } Please try another card.`,
+          kind === "setup"
+            ? `Your account is set up, but your card couldn’t be saved: ${confirmError.message ?? "it was declined."} Please try another card.`
+            : `Your account is set up, but the payment didn’t go through: ${
+                confirmError.message ?? "it was declined."
+              } Please try another card.`,
         );
         return;
       }
 
       // Update the account right away (Stripe's webhook also does this).
-      await fetch("/api/billing/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subscriptionId }),
-      });
+      if (kind === "setup") {
+        const res = await fetch("/api/billing/trial", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ setupIntentId: id }),
+        });
+        const result = await res.json().catch(() => ({}));
+        if (result.trial === "card_used") {
+          setTrialRefused({ needsEmailConfirmation, email: details.email });
+          return;
+        }
+      } else {
+        await fetch("/api/billing/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ subscriptionId: id }),
+        });
+      }
 
       if (needsEmailConfirmation) {
         setCheckEmail(details.email);
@@ -245,6 +243,27 @@ function SignupFields({
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (trialRefused) {
+    return (
+      <div className="flex flex-col items-center gap-4 py-6 text-center">
+        <p className="text-xl font-semibold">Your account is ready.</p>
+        <p className="text-muted text-pretty">
+          This card has already been used for a free trial on another account, so there’s no free video this time.
+          Your card hasn’t been charged. You can choose a plan whenever you’re ready.
+        </p>
+        {trialRefused.needsEmailConfirmation ? (
+          <p className="text-muted text-pretty">
+            First, confirm your email: we sent a link to <span className="text-foreground">{trialRefused.email}</span>.
+          </p>
+        ) : (
+          <Link href="/plans" className={`${buttonClass} flex items-center justify-center`}>
+            See plans
+          </Link>
+        )}
+      </div>
+    );
   }
 
   if (checkEmail) {
@@ -274,8 +293,16 @@ function SignupFields({
         <input id="website" name="website" type="text" tabIndex={-1} autoComplete="off" />
       </div>
 
-      <Step n={1} title="Choose your plan" disabled={submitting || locked}>
-        <PlanPicker plans={plans} selected={plan.id} onChange={onPlanChange} />
+      <Step n={1} title="How do you want to start?">
+        <PlanPicker
+          plans={plans}
+          choice={choice}
+          interval={interval}
+          onChoice={onChoice}
+          onInterval={onInterval}
+          includeTrial
+          disabled={submitting || locked}
+        />
       </Step>
 
       <Step n={2} title="About you" disabled={submitting && !locked}>
@@ -347,7 +374,7 @@ function SignupFields({
         </div>
       </Step>
 
-      <Step n={5} title="Payment">
+      <Step n={5} title={plan ? "Payment" : "Card (not charged)"}>
         <PaymentElement
           options={paymentElementOptions}
           onLoadError={(event) => {
@@ -360,10 +387,17 @@ function SignupFields({
             Couldn’t load the card field: {cardLoadError} Please refresh the page.
           </p>
         )}
-        <p className="flex items-center gap-2 text-xs text-muted">
-          <LockIcon className="size-3.5 shrink-0" />
-          You’ll be charged {formatMoney(plan.amount, plan.currency)} today, then every{" "}
-          {plan.id === "monthly" ? "month" : "year"} until you cancel. Cancel anytime.
+        <p className="flex items-start gap-2 text-sm text-muted text-pretty">
+          <LockIcon className="mt-0.5 size-3.5 shrink-0" />
+          {plan ? (
+            <span>{chargeSummary(plan)}</span>
+          ) : (
+            <span>
+              we save your card but <span className="text-foreground">don’t charge it</span>. your free video is on
+              us. you’re only ever charged if you choose a plan and press subscribe later. we never sign you up
+              automatically.
+            </span>
+          )}
         </p>
       </Step>
 
@@ -390,10 +424,12 @@ function SignupFields({
             {submitting
               ? "Setting up your account…"
               : locked
-                ? "Try payment again"
-                : `Start my membership · ${formatMoney(plan.amount, plan.currency)}/${
-                    plan.id === "monthly" ? "mo" : "yr"
-                  }`}
+                ? plan
+                  ? "Try payment again"
+                  : "Try saving my card again"
+                : plan
+                  ? `Subscribe to ${TIER_NAMES[plan.tier]} · ${formatPrice(plan)}`
+                  : "Start my free video"}
             {!submitting && (
               <ArrowRightIcon className="size-4 transition-transform group-hover:translate-x-0.5" />
             )}
@@ -438,64 +474,5 @@ function Step({
       </legend>
       {children}
     </fieldset>
-  );
-}
-
-function PlanPicker({
-  plans,
-  selected,
-  onChange,
-}: {
-  plans: Plan[];
-  selected: PlanId;
-  onChange: (id: PlanId) => void;
-}) {
-  const monthly = plans.find((p) => p.id === "monthly");
-  const yearly = plans.find((p) => p.id === "yearly");
-  const savings = monthly && yearly ? yearlySavingsPercent(monthly, yearly) : 0;
-
-  return (
-    <div role="radiogroup" aria-label="Plan" className="grid gap-3 sm:grid-cols-2">
-      {plans.map((p) => {
-        const active = p.id === selected;
-        const isYearly = p.id === "yearly";
-        return (
-          <label
-            key={p.id}
-            className={`relative flex cursor-pointer flex-col gap-1 rounded-2xl border p-4 transition has-[:disabled]:cursor-default ${
-              active
-                ? "border-transparent bg-white/[0.06] ring-2 ring-violet"
-                : "border-white/15 bg-white/[0.03] hover:border-white/30"
-            }`}
-          >
-            <input
-              type="radio"
-              name="plan"
-              value={p.id}
-              checked={active}
-              onChange={() => onChange(p.id)}
-              className="sr-only"
-            />
-            <span className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">{isYearly ? "Yearly" : "Monthly"}</span>
-              {isYearly && savings > 0 && (
-                <span className="rounded-full bg-linear-to-r from-violet to-coral px-2 py-0.5 text-[11px] font-semibold text-white">
-                  Save {savings}%
-                </span>
-              )}
-            </span>
-            <span className="text-2xl font-semibold tracking-tight">
-              {formatMoney(p.amount, p.currency)}
-              <span className="text-sm font-normal text-muted">/{isYearly ? "year" : "month"}</span>
-            </span>
-            <span className="text-xs text-muted">
-              {isYearly
-                ? `Just ${formatMoney(Math.round(p.amount / 12), p.currency)}/month, billed yearly`
-                : "Billed monthly. Cancel anytime"}
-            </span>
-          </label>
-        );
-      })}
-    </div>
   );
 }
