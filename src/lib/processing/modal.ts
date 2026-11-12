@@ -125,6 +125,7 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     textScale: scale(p.textScale),
     captionScale: scale(p.captionScale),
     note: str(p.note) || null,
+    effects: p.effects && typeof p.effects === "object" && !Array.isArray(p.effects) ? p.effects : undefined,
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,
@@ -181,6 +182,7 @@ export const modalEngine: ProcessingEngine = {
         previous: input.previous ?? null,
         cuts: input.cuts ?? null,
         audio: input.audio ?? null,
+        effects: input.effects ?? null,
         // The worker calls this when the video is done, so we can email the user.
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },

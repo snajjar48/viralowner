@@ -22,6 +22,7 @@ import hmac
 import json
 import os
 import subprocess
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ CLAUDE_MODEL = "claude-opus-5-5"
 # USD per million tokens (Claude Opus 5.5), for the cost log.
 PRICES = {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20}
 WHISPER_MODEL = "small"
+CLAP_MODEL = "laion/larger_clap_general"  # recognizes sound effects
 MODELS_DIR = "/models"
 
 MIN_SHOT_S = 0.35  # shorter cuts get merged into a neighbor
@@ -47,6 +49,13 @@ def _download_whisper() -> None:
     from faster_whisper import WhisperModel
 
     WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
+
+
+def _download_clap() -> None:
+    from transformers import ClapModel, ClapProcessor
+
+    ClapModel.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR)
+    ClapProcessor.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR)
 
 
 app = modal.App(APP_NAME)
@@ -75,6 +84,10 @@ image = (
     )
     .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper", "pillow")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
+    # The sound-effect recognizer (CLAP), CPU-only.
+    .uv_pip_install("torch==2.7.1", index_url="https://download.pytorch.org/whl/cpu")
+    .uv_pip_install("transformers>=4.46,<5")
+    .run_function(_download_clap)
 )
 
 # viralowner-worker:      ANTHROPIC_API_KEY, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
@@ -138,12 +151,65 @@ def probe(path: Path) -> dict:
     return {"duration": duration, "has_audio": "audio" in streams}
 
 
+def transition_cuts(path: Path, duration: float) -> list[float]:
+    """Cuts hidden inside transitions (whips, zooms, blends, glitches), which spread the change over
+    several blurry frames and slip past a frame-to-frame detector: the picture 0.4s before and after
+    is a different scene. Each is placed at the sharpest change inside it."""
+    import cv2
+    import numpy as np
+
+    frames = read_frames(path, 0.0, duration + 1)
+    if len(frames) < 30:
+        return []
+
+    def hist(f):
+        hsv = cv2.cvtColor(f, cv2.COLOR_RGB2HSV)
+        h = cv2.calcHist([hsv], [0, 1], None, [16, 12], [0, 180, 0, 256])
+        return cv2.normalize(h, h).flatten()
+
+    hs = [hist(f) for f in frames]
+    small = [cv2.resize(cv2.cvtColor(f, cv2.COLOR_RGB2GRAY), (24, 42)).astype(np.float32) for f in frames]
+    gap = 6  # frames each side (0.2s)
+    far = np.zeros(len(frames))
+    for k in range(gap, len(frames) - gap):
+        color = cv2.compareHist(hs[k - gap], hs[k + gap], cv2.HISTCMP_BHATTACHARYYA)
+        a, b = small[k - gap].ravel(), small[k + gap].ravel()
+        layout = 1 - float(np.corrcoef(a, b)[0, 1]) if a.std() > 1 and b.std() > 1 else 0.0
+        far[k] = 0.6 * color + 0.4 * min(1.0, layout)
+    cuts, k = [], gap
+    while k < len(frames) - gap:
+        lo, hi = max(0, k - 12), min(len(frames), k + 13)
+        if far[k] > 0.33 and far[k] == far[lo:hi].max():
+            # Steady on both sides (not a camera move that keeps changing): compare each side with itself.
+            before = cv2.compareHist(hs[max(0, k - 14)], hs[k - gap], cv2.HISTCMP_BHATTACHARYYA)
+            after = cv2.compareHist(hs[k + gap], hs[min(len(frames) - 1, k + 14)], cv2.HISTCMP_BHATTACHARYYA)
+            if far[k] > 1.6 * max(before, after, 0.05):
+                # The middle of the stretch where the two sides differ most is the cut (for a
+                # whip or blend that's mid-transition, for a plain cut it's the cut itself).
+                top = [j for j in range(lo, hi) if far[j] >= 0.95 * far[k]]
+                cuts.append(round(sum(top) / len(top)) / SIG_FPS)
+                k += 12
+                continue
+        k += 1
+    return cuts
+
+
 def detect_shots(path: Path, duration: float) -> list[tuple[float, float]]:
     """Where the cuts are, as (start, end) seconds, tidied up so every shot is filmable."""
     from scenedetect import AdaptiveDetector, detect
 
     scenes = detect(str(path), AdaptiveDetector(), show_progress=False)
-    cuts = sorted({s.get_seconds() for s, _ in scenes if 0 < s.get_seconds() < duration})
+    found = sorted({s.get_seconds() for s, _ in scenes if 0 < s.get_seconds() < duration})
+    try:
+        extra = transition_cuts(path, duration)
+    except Exception as e:  # noqa: BLE001
+        print(f"transition cut detection failed: {type(e).__name__}: {e}")
+        extra = []
+    # A transition's own start can look like a hard cut: the transition detector's time wins nearby.
+    extra = [t for t in extra if 0.2 < t < duration - 0.2]
+    hard = [c for c in found if all(abs(c - t) > 0.4 for t in extra)]
+    cuts = sorted(hard + extra)
+    print(f"cuts: {len(found)} hard, {len(extra)} from transitions, {len(cuts)} total")
     bounds = [0.0, *cuts, duration]
     shots = [[a, b] for a, b in zip(bounds, bounds[1:]) if b > a]
 
@@ -459,7 +525,9 @@ def add_style(path: Path, breakdown: dict) -> dict:
         breakdown["style"] = style
         breakdown["meta"]["costUsd"] = round(breakdown["meta"]["costUsd"] + cost, 4)
     except Exception as e:  # noqa: BLE001
-        print(f"style analysis failed: {type(e).__name__}: {e}")
+        import traceback
+
+        print(f"style analysis failed: {type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}")
     return breakdown
 
 
@@ -469,10 +537,94 @@ def add_style(path: Path, breakdown: dict) -> dict:
 # shot, camera-style motion, color filter, and the overlaid text's font,
 # colors, size, alignment, animation and placement.
 
-TRANSITIONS = ["cut", "crossfade", "flash", "dip_to_black", "whip", "slide", "slide_up", "zoom", "glitch", "wipe"]
-MOTIONS = ["none", "slow_zoom_in", "slow_zoom_out", "punch_in", "shake"]
+# Everything ViralOwner can copy from an inspo (or add when someone asks for it),
+# with a plain description Claude uses to recognize it.
+TRANSITION_INFO = {
+    "cut": "a hard cut, nothing in between",
+    "crossfade": "the two shots blend smoothly into each other",
+    "dissolve": "a speckled, grainy blend between the shots",
+    "flash": "a quick flash of white between the shots",
+    "dip_to_black": "fades to black, then up into the next shot",
+    "whip_left": "whip pan: both shots streak sideways with heavy motion blur, moving left",
+    "whip_right": "whip pan: both shots streak sideways with heavy motion blur, moving right",
+    "whip_up": "whip pan: both shots streak vertically with heavy motion blur, moving up",
+    "whip_down": "whip pan: both shots streak vertically with heavy motion blur, moving down",
+    "slide_left": "the new shot slides in and pushes the old one out, moving left (sharp, no blur)",
+    "slide_right": "the new shot slides in and pushes the old one out, moving right",
+    "slide_up": "the new shot slides in from the bottom, pushing the old one up",
+    "slide_down": "the new shot slides in from the top, pushing the old one down",
+    "zoom_in": "zooms hard into the old shot with zoom blur, landing on the new one",
+    "zoom_out": "the new shot starts zoomed in and pulls back out, with zoom blur",
+    "spin": "the frame spins with motion blur into the next shot",
+    "glitch": "digital glitch: colors split into red/blue, the image jitters and breaks up around the cut",
+    "shake": "the camera shakes hard right around the cut",
+    "light_leak": "a warm burst of light / overexposure washes over the cut",
+    "blur": "defocuses into a blur and back into focus on the new shot",
+    "wipe_left": "a hard edge wipes across the frame, moving left",
+    "wipe_right": "a hard edge wipes across the frame, moving right",
+    "wipe_up": "a hard edge wipes up the frame",
+    "wipe_down": "a hard edge wipes down the frame",
+    "circle_open": "the new shot opens out from a circle in the middle",
+    "pixelate": "the picture breaks into big blocks and back",
+}
+TRANSITIONS = list(TRANSITION_INFO)
+# Names from analyses made before the list grew.
+OLD_TRANSITIONS = {"whip": "whip_left", "slide": "slide_left", "zoom": "zoom_in", "wipe": "wipe_left"}
+
+MOTION_INFO = {
+    "none": "no edit effect moving the frame (normal handheld or tripod footage)",
+    "slow_zoom_in": "the whole frame slowly zooms in over the shot (ken burns)",
+    "slow_zoom_out": "the whole frame slowly zooms out over the shot",
+    "punch_in": "a quick zoom-in at the start of the shot that then holds",
+    "shake": "the whole frame shakes for the whole shot (an edit effect, not handheld wobble)",
+    "pan_left": "the frame slowly slides left across the picture (an edit effect)",
+    "pan_right": "the frame slowly slides right across the picture (an edit effect)",
+}
+MOTIONS = list(MOTION_INFO)
+SPEED_INFO = {"normal": "normal speed", "slow_motion": "slow motion", "fast": "sped up / fast forward"}
+SPEEDS = list(SPEED_INFO)
+SPEED_RATES = {"normal": 1.0, "slow_motion": 0.5, "fast": 1.6}
+SHOT_EFFECT_INFO = {
+    "freeze_end": "the last moment of the shot freezes on a still frame",
+    "zoom_pulse": "a quick zoom pulse in and back out as the shot starts (often on a beat)",
+    "flash_in": "the shot starts with a bright white flash",
+    "rgb_split": "the colors are split into offset red/blue copies for the whole shot",
+    "focus_in": "the shot starts blurry and snaps into focus",
+    "black_and_white": "this shot alone is black and white",
+}
+SHOT_EFFECTS = list(SHOT_EFFECT_INFO)
+LOOK_INFO = {
+    "grain": "film grain over the whole video",
+    "vhs": "retro VHS / camcorder look (soft, noisy, color fringes)",
+    "vignette": "dark corners around the whole video",
+    "letterbox": "black bars at the top and bottom (cinematic)",
+    "soft_glow": "a dreamy glow / bloom on bright areas",
+}
+LOOKS = list(LOOK_INFO)
+SFX_INFO = {
+    "whoosh": "an airy whoosh (whip pans, slides, zooms)",
+    "swish": "a short, fast swish",
+    "pop": "a bubbly pop (text or an item popping up)",
+    "click": "a click",
+    "camera_shutter": "a camera shutter (photo moments, flashes)",
+    "ding": "a bright bell ding",
+    "cash_register": "a cha-ching cash register",
+    "boom": "a deep cinematic boom / bass hit",
+    "riser": "a rising build-up that ends on a moment",
+    "glitch": "a digital glitch stutter",
+    "record_scratch": "a record scratch (a sudden stop)",
+    "typing": "keyboard typing",
+}
+SFX = list(SFX_INFO)
 EDIT_TYPES = ["shots", "jump_cut"]
 COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
+STYLE_VERSION = 2  # analyses older than this get their style worked out again on their next render
+
+
+def catalog(info: dict[str, str]) -> str:
+    return "\n".join(f"  {k}: {v}" for k, v in info.items())
+
+
 # font key -> (family, bold, rough character width as a fraction of the font size)
 FONTS = {
     "clean_sans": ("Montserrat", True, 0.60),
@@ -494,17 +646,30 @@ DEFAULT_TEXT_STYLE = {
     "boxColor": "#FFFFFF", "shadow": False, "align": "center", "size": "large", "animation": "none",
 }
 
-STYLE_SYSTEM = """You study how a viral short-form video (TikTok, Reels, Shorts) is edited, so ViralOwner can rebuild the same look with someone else's footage.
+STYLE_SYSTEM = """You study how a viral short-form video (TikTok, Reels, Shorts) is edited, so ViralOwner can rebuild the same edit with someone else's footage. Getting the transitions between shots right matters most.
 
-You get, for every shot: a frame from the middle of the shot, and a strip of 8 frames 0.1s apart starting 0.25s before the cut into it (for shot 1: the first 0.8s), read left to right.
+You get, for every shot: a frame from the middle of the shot, and a filmstrip of the cut into it: 12 frames 1/30s apart, from 0.2s before the cut to 0.2s after it, in two rows of six (left to right, top row first). For shot 1 the strip is its first 0.4s. With each cut you also get measurements taken from every frame around it (how fast the picture changed, brightness, motion blur, which way and how fast the picture moved, zoom and spin, color splitting) and any sound effect heard there. Trust the measurements: a whip pan shows strong motion blur and fast sideways motion; a crossfade changes gradually over many frames; a flash spikes in brightness; a dip to black drops to dark; a zoom transition shows zoom motion with blur; a glitch shows color splitting and jitter; a hard cut changes completely in one frame with nothing else going on.
 
 First decide the edit_type:
 - 'jump_cut': the video is really one continuous take (usually one person talking to the camera in the same place) with the pauses, breaths and dead air cut out, so the speech carries straight across the cuts. it may jump between a normal and a zoomed-in framing (alternate_zoom).
 - 'shots': separate shots that each need their own footage (different places, angles, subjects or moments), even if someone talks over them.
 
-Then describe only what the frames clearly show:
-- transition_in: how the video gets into this shot. most short-form cuts are hard cuts ('cut'); only report another transition when the strip clearly shows it (frames blending = crossfade, a white frame = flash, a black frame = dip_to_black, motion blur sweeping sideways = whip, the new shot pushing in from a side = slide or slide_up, a zoom blur = zoom, digital distortion = glitch, a hard edge sweeping across = wipe). shot 1 is always 'cut'.
-- motion: an edit effect moving the whole frame (slow zoom, a quick punch-in, shake). 'none' for normal handheld or static footage.
+Then, per shot:
+- transition_in: how the video gets into this shot (shot 1 is always 'cut'):
+""" + catalog(TRANSITION_INFO) + """
+- motion: an edit effect moving the whole frame through the shot:
+""" + catalog(MOTION_INFO) + """
+- speed: """ + ", ".join(f"{k} ({v})" for k, v in SPEED_INFO.items()) + """.
+- effects: short effects inside the shot (usually none):
+""" + catalog(SHOT_EFFECT_INFO) + """
+- sound_in: the sound effect on the cut into this shot. Only when the measurements say a new sound starts right at the cut (strength around 6 or more; whooshes build up, so they read weaker than hits) and it isn't just the music or someone talking. The sound model is unreliable at naming sounds over music (it often hears whooshes as record scratches or pops), so: when its top guess is a distinctive sound (ding, cash register, camera shutter, glitch, typing, boom, riser) at 0.3 or more, go with it; otherwise choose with what you see: whips, slides and zooms usually have a whoosh or swish, an impact or big reveal a boom, a flash a camera shutter, something popping up a pop. A riser is a sound building up into the cut. 'none' when there's no clear new sound.
+- sounds_during: clear sound effects inside the shot (from the ones listed for it), like a pop when text appears or a ding. Usually none.
+Sound effects:
+""" + catalog(SFX_INFO) + """
+
+And for the whole video:
+- looks: overall looks applied to everything (usually none):
+""" + catalog(LOOK_INFO) + """
 - color_filter: an obvious grade on the whole video, otherwise 'none'.
 - text: the overlaid text (titles, labels, hooks), not burned-in speech captions. pick the closest font: clean_sans (geometric sans like tiktok's classic), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact/anton), tall_caps (thin tall capitals, like bebas), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful). colors as #RRGGBB. box = the text sits on a solid shape. size: small (a label), medium, large (a headline), xl (fills the width). animation: how text appears (pop = scales up, typewriter = letter by letter, word_by_word, fade, slide_up), 'none' if it's just there. if the video has no overlaid text, describe a clean default (clean_sans, white, thick black outline, centered, large, none).
 - text_x / text_y per shot: where that shot's overlaid text sits, as fractions of the frame (0 = left/top, 1 = right/bottom). text_x is the left edge for left-aligned text, the center for centered text, the right edge for right-aligned text; text_y is the vertical center of the whole text block. -1 for both when the shot has no overlaid text."""
@@ -523,6 +688,12 @@ STYLE_SCHEMA = {
                     "index": {"type": "integer", "description": "the shot number, starting at 1."},
                     "transition_in": {"type": "string", "enum": TRANSITIONS},
                     "motion": {"type": "string", "enum": MOTIONS},
+                    "speed": {"type": "string", "enum": SPEEDS},
+                    "effects": {"type": "array", "items": {"type": "string", "enum": SHOT_EFFECTS}},
+                    "sound_in": {"type": "string", "enum": ["none", *SFX],
+                                 "description": "the sound effect on the cut into this shot ('none' for shot 1)."},
+                    "sounds_during": {"type": "array", "items": {"type": "string", "enum": SFX},
+                                      "description": "sound effects inside the shot (only ones listed for it)."},
                     "text_x": {"type": "number"},
                     "text_y": {"type": "number"},
                     "text_lines": {
@@ -530,7 +701,8 @@ STYLE_SCHEMA = {
                         "description": "the overlaid text exactly as shown, with \\n where its lines break. empty if none.",
                     },
                 },
-                "required": ["index", "transition_in", "motion", "text_x", "text_y", "text_lines"],
+                "required": ["index", "transition_in", "motion", "speed", "effects", "sound_in", "sounds_during",
+                             "text_x", "text_y", "text_lines"],
                 "additionalProperties": False,
             },
         },
@@ -540,6 +712,7 @@ STYLE_SCHEMA = {
             "description": "jump_cut only: the framing jumps between normal and zoomed in at the cuts.",
         },
         "color_filter": {"type": "string", "enum": COLOR_FILTERS},
+        "looks": {"type": "array", "items": {"type": "string", "enum": LOOKS}},
         "text": {
             "type": "object",
             "properties": {
@@ -563,21 +736,270 @@ STYLE_SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["shots", "edit_type", "alternate_zoom", "color_filter", "text"],
+    "required": ["shots", "edit_type", "alternate_zoom", "color_filter", "looks", "text"],
     "additionalProperties": False,
 }
 
 
 def cut_strip(path: Path, t: float, dest: Path) -> Path | None:
+    """12 frames 1/30s apart from `t` (0.4s), as a 6x2 grid."""
     subprocess.run(
-        ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-t", "0.8", "-i", str(path),
-         "-vf", "fps=10,scale=144:-2,tile=8x1", "-frames:v", "1", "-q:v", "5", str(dest)],
+        ["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, t):.3f}", "-t", "0.4", "-i", str(path),
+         "-vf", "fps=30,scale=168:-2,tile=6x2", "-frames:v", "1", "-q:v", "4", str(dest)],
         capture_output=True,
     )
     return dest if dest.exists() and dest.stat().st_size > 0 else None
 
 
-def clean_style(data: dict, n: int) -> dict:
+# ---- measuring each cut (so a 0.2s whip or flash isn't missed between still frames)
+
+SIG_W, SIG_H, SIG_FPS = 240, 426, 30
+
+
+def read_frames(path: Path, start: float, dur: float):
+    """RGB frames at 30fps, 240x426 (squashed if the video isn't 9:16, which is fine for measuring)."""
+    import numpy as np
+
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, start):.3f}", "-t", f"{dur:.3f}", "-i", str(path),
+         "-vf", f"fps={SIG_FPS},scale={SIG_W}:{SIG_H}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True,
+    ).stdout
+    n = len(raw) // (SIG_W * SIG_H * 3)
+    return np.frombuffer(raw[: n * SIG_W * SIG_H * 3], np.uint8).reshape(n, SIG_H, SIG_W, 3)
+
+
+def cut_signals(path: Path, t: float) -> dict | None:
+    """Frame-by-frame measurements around a cut at `t`."""
+    import cv2
+    import numpy as np
+
+    frames = read_frames(path, t - 0.4, 0.8)
+    if len(frames) < 8:
+        return None
+    gray = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in frames]
+    diff = np.array([np.mean(cv2.absdiff(gray[k + 1], gray[k])) for k in range(len(gray) - 1)])
+    luma = np.array([g.mean() for g in gray])
+    sharp = np.array([cv2.Laplacian(g, cv2.CV_64F).var() for g in gray])
+    peak = int(np.argmax(diff))
+    spread = int(np.sum(diff[max(0, peak - 6): peak + 7] > 0.4 * diff[peak]))
+    near = range(max(0, peak - 4), min(len(gray), peak + 6))
+
+    ys, xs = np.mgrid[0:SIG_H, 0:SIG_W].astype(np.float32)
+    xs -= SIG_W / 2
+    ys -= SIG_H / 2
+    rad = np.sqrt(xs ** 2 + ys ** 2) + 1e-3
+    moves = []
+    for k in range(max(0, peak - 4), min(len(gray) - 1, peak + 5)):
+        if spread <= 2 and diff[k] > 0.5 * diff[peak]:
+            continue  # the cut itself: no motion to measure across it
+        flow = cv2.calcOpticalFlowFarneback(gray[k], gray[k + 1], None, 0.5, 3, 21, 3, 5, 1.2, 0)
+        fx, fy = flow[..., 0], flow[..., 1]
+        moves.append((
+            float(fx.mean()) / SIG_W * 100, float(fy.mean()) / SIG_W * 100,  # % of the width per frame
+            float(np.mean((fx * xs + fy * ys) / rad)) / SIG_W * 100,  # outward = zooming in
+            float(np.mean((-fx * ys + fy * xs) / rad)) / SIG_W * 100,  # spin
+        ))
+    dx, dy, zoom, spin = (float(np.median([m[j] for m in moves])) if moves else 0.0 for j in range(4))
+    # Back-and-forth motion (a shake): the direction keeps flipping.
+    flips = sum(1 for j in (0, 1) for a, b in zip(moves, moves[1:]) if a[j] * b[j] < 0 and min(abs(a[j]), abs(b[j])) > 0.6)
+    warmth = [float(f[..., 0].mean() - f[..., 2].mean()) for f in frames]
+
+    def split(f) -> float:
+        r = f[..., 0].astype(np.float32)
+        b = f[..., 2].astype(np.float32)
+        (sx, sy), _ = cv2.phaseCorrelate(r, b)
+        return float(np.hypot(sx, sy))
+
+    splits = [split(frames[k]) for k in near]
+    outside = [sharp[k] for k in range(len(sharp)) if abs(k - peak) > 5] or list(sharp)
+    return {
+        "change_frames": spread,
+        "bright": float(max(luma[k] for k in near) - np.median(luma)),
+        "max_luma": float(max(luma[k] for k in near)),
+        "dark": float(np.median(luma) - min(luma[k] for k in near)),
+        "min_luma": float(min(luma[k] for k in near)),
+        "blur": float(min(sharp[k] for k in near) / (np.median(outside) + 1e-6)),
+        "dx": dx, "dy": dy, "zoom": zoom, "spin": spin,
+        "split": float(max(splits)) if splits else 0.0,
+        "flips": flips,
+        "warm": float(max(warmth[k] for k in near) - np.median(warmth)),
+    }
+
+
+def describe_signals(sig: dict | None) -> str:
+    """The measurements in words, for Claude."""
+    if not sig:
+        return "no measurements"
+    parts = [("changes all at once (1 frame)" if sig["change_frames"] <= 1
+              else f"changes over {sig['change_frames']} frames ({sig['change_frames'] / SIG_FPS:.2f}s)")]
+    if sig["bright"] > 35 and sig["max_luma"] > 170:
+        parts.append("flashes bright/white")
+    if sig["dark"] > 35 and sig["min_luma"] < 35:
+        parts.append("dips to black")
+    parts.append("strong motion blur" if sig["blur"] < 0.3 else "some blur" if sig["blur"] < 0.6 else "stays sharp")
+    speed = (sig["dx"] ** 2 + sig["dy"] ** 2) ** 0.5
+    if speed > 1.5:
+        way = ("left" if sig["dx"] < 0 else "right") if abs(sig["dx"]) >= abs(sig["dy"]) else ("up" if sig["dy"] < 0 else "down")
+        parts.append(f"{'fast ' if speed > 4 else ''}motion {way} ({speed:.0f}% of the width per frame)")
+    else:
+        parts.append("no sideways motion")
+    if abs(sig["zoom"]) > 0.8:
+        parts.append("zooming in" if sig["zoom"] > 0 else "zooming out")
+    if abs(sig["spin"]) > 0.8:
+        parts.append("spinning")
+    if sig["split"] > 1.5:
+        parts.append("color channels split apart")
+    if sig.get("flips", 0) >= 3:
+        parts.append("shaky back-and-forth motion")
+    if sig.get("warm", 0) > 12:
+        parts.append("a warm orange wash of light")
+    return "; ".join(parts)
+
+
+# ---- hearing sound effects (CLAP: an open model that matches sounds to descriptions)
+
+SFX_PROMPTS = {
+    "whoosh": "a whoosh sound effect, air rushing past",
+    "swish": "a quick swish sound effect",
+    "pop": "a pop sound effect",
+    "click": "a click sound",
+    "camera_shutter": "a camera shutter clicking",
+    "ding": "a bell ding",
+    "cash_register": "a cash register cha-ching",
+    "boom": "a cinematic boom, a deep bass impact hit",
+    "riser": "a rising riser sound effect building up",
+    "glitch": "a digital glitch sound effect",
+    "record_scratch": "a record scratch",
+    "typing": "keyboard typing",
+}
+OTHER_SOUNDS = ["people talking", "a person speaking", "music playing", "a song with vocals", "silence",
+                "background noise", "laughing", "footsteps"]
+_clap = None
+
+
+def clap_probs(windows: list) -> "list[list[float]]":
+    """For each audio window (48 kHz mono), the probability of each SFX_PROMPTS / OTHER_SOUNDS label."""
+    global _clap
+    import torch
+
+    if _clap is None:
+        from transformers import ClapModel, ClapProcessor
+
+        model = ClapModel.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR).eval()
+        proc = ClapProcessor.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR)
+        with torch.no_grad():
+            t = proc(text=list(SFX_PROMPTS.values()) + OTHER_SOUNDS, return_tensors="pt", padding=True)
+            temb = model.get_text_features(**t)
+        _clap = (model, proc, temb / temb.norm(dim=-1, keepdim=True))
+    model, proc, temb = _clap
+    out = []
+    with torch.no_grad():
+        for k in range(0, len(windows), 16):
+            batch = windows[k:k + 16]
+            try:
+                a = proc(audio=batch, sampling_rate=48000, return_tensors="pt")
+            except TypeError:
+                a = proc(audios=batch, sampling_rate=48000, return_tensors="pt")
+            aemb = model.get_audio_features(**a)
+            aemb = aemb / aemb.norm(dim=-1, keepdim=True)
+            logits = aemb @ temb.T * model.logit_scale_a.exp()
+            out += torch.softmax(logits, dim=-1).tolist()
+    return out
+
+
+def load_audio(path: Path, sr: int = 48000):
+    import numpy as np
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"],
+                         capture_output=True).stdout
+    return np.frombuffer(raw, np.float32).copy()
+
+
+def onsets(audio, sr: int = 48000, limit: int = 30) -> list[tuple[float, float]]:
+    """Sudden new sounds (spectral flux peaks) as (time, strength), strongest first."""
+    import numpy as np
+
+    hop, nfft = sr // 100, 2048
+    if len(audio) < nfft * 2:
+        return []
+    frames = np.lib.stride_tricks.sliding_window_view(audio, nfft)[::hop] * np.hanning(nfft)
+    mag = np.log1p(np.abs(np.fft.rfft(frames, axis=1)) * 10)
+    flux = np.maximum(0, np.diff(mag, axis=0)).sum(axis=1)
+    med = np.median(flux)
+    mad = np.median(np.abs(flux - med)) + 1e-6
+    peaks = []
+    for i in range(1, len(flux) - 1):
+        lo, hi = max(0, i - 15), min(len(flux), i + 16)
+        if flux[i] == flux[lo:hi].max() and flux[i] > med + 6 * mad:
+            peaks.append(((i + 1) * hop / sr + nfft / 2 / sr, float((flux[i] - med) / mad)))
+    return sorted(peaks, key=lambda p: -p[1])[:limit]
+
+
+def listen(path: Path, cuts: list[float], shots: list[dict]) -> dict:
+    """What the sound model hears at each cut, and strong sounds inside shots, as hints for the style
+    analysis. The model is good at noticing a new sound but unreliable at naming it over music, so
+    Claude makes the final call with what it sees (a whip usually comes with a whoosh, a flash with
+    a shutter...)."""
+    sr = 48000
+    audio = load_audio(path, sr)
+    out: dict = {"cuts": [None] * len(cuts), "during": []}
+    if len(audio) < sr // 2:
+        return out
+    total = len(audio) / sr
+    clip = lambda a, b: audio[int(max(0.0, a) * sr): int(min(total, max(a + 0.1, b)) * sr)]  # noqa: E731
+    hits = onsets(audio, sr, limit=40)
+    names = list(SFX_PROMPTS)
+    others = [(t, st) for t, st in hits if all(abs(t - c) > 0.35 for c in cuts)][:12]
+    windows = [clip(c - 0.3, c + 0.5) for c in cuts] + [clip(t - 0.15, t + 0.65) for t, _ in others]
+    windows += [clip(c - 1.3, c + 0.05) for c in cuts]  # risers lead into the cut
+    probs = clap_probs(windows) if windows else []
+    top = lambda p: sorted(((names[i], p[i]) for i in range(len(names))), key=lambda x: -x[1])[:3]  # noqa: E731
+    for i, c in enumerate(cuts):
+        near = [(t, st) for t, st in hits if -0.35 <= t - c <= 0.3]
+        hit = max(near, key=lambda x: x[1]) if near else None
+        riser = probs[len(cuts) + len(others) + i][names.index("riser")]
+        out["cuts"][i] = {"strength": round(hit[1], 1) if hit else 0.0, "offset": round(hit[0] - c, 2) if hit else 0.0,
+                          "heard": top(probs[i]), "riser": round(riser, 2)}
+    starts = [s["startS"] for s in shots]
+    for j, (t, st) in enumerate(others):
+        guesses = top(probs[len(cuts) + j])
+        if guesses[0][1] >= 0.5:
+            i = max(0, sum(1 for s0 in starts if s0 <= t) - 1)
+            out["during"].append({"shot": i, "t": t, "frac": r2(min(0.99, (t - starts[i]) / max(0.1, shots[i]["durationS"]))),
+                                  "strength": round(st, 1), "heard": guesses})
+    return out
+
+
+def describe_heard(h: dict | None) -> str:
+    if not h:
+        return "nothing measured"
+    guesses = ", ".join(f"{n.replace('_', ' ')} {p:.2f}" for n, p in h["heard"])
+    hit = (f"a new sound starts {abs(h['offset']):.2f}s {'before' if h['offset'] < 0 else 'after'} the cut "
+           f"(strength {h['strength']:.0f})" if h["strength"] else "no new sound starts there")
+    riser = f"; something builds up into the cut (riser {h['riser']:.2f})" if h["riser"] >= 0.4 else ""
+    return f"{hit}; the sound model's guesses: {guesses}{riser}"
+
+
+def sfx_from_answers(data: dict, n: int, heard: dict) -> list[dict]:
+    """The style analysis' sound choices as sound effects anchored to cuts and shots."""
+    by = {s["index"]: s for s in data.get("shots", [])}
+    out = []
+    for i in range(1, n):
+        name = (by.get(i + 1) or {}).get("sound_in")
+        if name in SFX:
+            h = heard["cuts"][i - 1] if i - 1 < len(heard["cuts"]) else None
+            offset = -1.2 if name == "riser" else max(-0.3, min(0.2, (h or {}).get("offset") or -0.05))
+            out.append({"anchor": "cut", "index": i - 1, "offset": r2(offset), "name": name, "volume": 0.85, "source": "inspo"})
+    for i in range(n):
+        spots = [d for d in heard["during"] if d["shot"] == i]
+        for k, name in enumerate(x for x in (by.get(i + 1) or {}).get("sounds_during") or [] if x in SFX):
+            frac = spots[k]["frac"] if k < len(spots) else 0.5
+            out.append({"anchor": "shot", "index": i, "frac": frac, "name": name, "volume": 0.85, "source": "inspo"})
+    return out
+
+
+def clean_style(data: dict, n: int, heard: dict | None = None) -> dict:
     """Claude's answer as the breakdown's `style` (camelCase, every value checked)."""
     import re
 
@@ -590,9 +1012,15 @@ def clean_style(data: dict, n: int) -> dict:
         x, y = (by_index.get(i + 1) or {}).get("text_x", -1), (by_index.get(i + 1) or {}).get("text_y", -1)
         ok = isinstance(x, (int, float)) and isinstance(y, (int, float)) and 0 <= x <= 1 and 0 <= y <= 1
         spots.append([r2(x), r2(y)] if ok else None)
+    shot = lambda i: by_index.get(i + 1) or {}  # noqa: E731
     return {
-        "transitions": [pick((by_index.get(i + 2) or {}).get("transition_in"), TRANSITIONS, "cut") for i in range(n - 1)],
-        "motions": [pick((by_index.get(i + 1) or {}).get("motion"), MOTIONS, "none") for i in range(n)],
+        "version": STYLE_VERSION,
+        "transitions": [pick(shot(i + 1).get("transition_in"), TRANSITIONS, "cut") for i in range(n - 1)],
+        "motions": [pick(shot(i).get("motion"), MOTIONS, "none") for i in range(n)],
+        "speeds": [pick(shot(i).get("speed"), SPEEDS, "normal") for i in range(n)],
+        "shotEffects": [[e for e in dict.fromkeys(shot(i).get("effects") or []) if e in SHOT_EFFECTS] for i in range(n)],
+        "looks": [x for x in dict.fromkeys(data.get("looks") or []) if x in LOOKS],
+        "sfx": sfx_from_answers(data, n, heard or {"cuts": [], "during": []}),
         "colorFilter": pick(data.get("color_filter"), COLOR_FILTERS, "none"),
         # One take with the pauses cut out (n > 2: two shots can't tell us that).
         "editType": pick(data.get("edit_type"), EDIT_TYPES, "shots") if n > 2 else "shots",
@@ -617,7 +1045,14 @@ def clean_style(data: dict, n: int) -> dict:
 
 
 def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict | None = None) -> tuple[dict, float]:
-    """The inspo's look (see STYLE_SYSTEM). `shots` are breakdown shots. Returns (style, cost)."""
+    """The inspo's edit (see STYLE_SYSTEM). `shots` are breakdown shots. Returns (style, cost)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    cuts = [s["startS"] for s in shots[1:]]
+    with ThreadPoolExecutor(4) as pool:
+        signals = list(pool.map(lambda t: _safe(cut_signals, path, t), cuts))
+    heard = _safe(listen, path, cuts, shots) or {"cuts": [None] * len(cuts), "during": []}
+
     said = [f"[{x['startS']:.1f}s–{x['endS']:.1f}s] {x['text']}" for x in (transcript or {}).get("segments", [])]
     content: list[dict] = [{"type": "text", "text": (
         f"the video has {len(shots)} shots.\nwhat's said:\n" + ("\n".join(said) if said else "(no speech)")
@@ -625,18 +1060,36 @@ def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict
     for i, s in enumerate(shots):
         a, d = s["startS"], s["durationS"]
         text = s.get("onScreenText")
-        content.append({"type": "text", "text": (
-            f"shot {i + 1}: {a:.1f}s–{a + d:.1f}s. overlaid text: {json.dumps(text, ensure_ascii=False) if text else 'none'}"
-        )})
+        lines = [f"shot {i + 1}: {a:.1f}s–{a + d:.1f}s. overlaid text: {json.dumps(text, ensure_ascii=False) if text else 'none'}"]
+        if i:
+            lines.append(f"  the cut into it, measured: {describe_signals(signals[i - 1])}")
+            lines.append(f"  sound at the cut: {describe_heard(heard['cuts'][i - 1])}")
+        for snd in heard["during"]:
+            if snd["shot"] == i:
+                lines.append(f"  a sound {snd['frac']:.0%} of the way into the shot (strength {snd['strength']:.0f}); "
+                             f"guesses: {', '.join(f'{n} {p:.2f}' for n, p in snd['heard'])}")
+        content.append({"type": "text", "text": "\n".join(lines)})
         mid = grab_frame(path, a + d / 2, workdir / f"style_mid{i:02d}.jpg", FRAME_WIDTH)
-        strip = cut_strip(path, a - 0.25 if i else 0.0, workdir / f"style_cut{i:02d}.jpg")
+        strip = cut_strip(path, a - 0.2 if i else 0.0, workdir / f"style_cut{i:02d}.jpg")
         for p in (mid, strip):
             if p:
                 content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
     content.append({"type": "text", "text": f"describe all {len(shots)} shots and the text style."})
     result = ask_claude(STYLE_SYSTEM, content, STYLE_SCHEMA, "we couldn’t read that video’s style.")
     print(f"style: ${result['cost_usd']}, usage={result['usage']}")
-    return clean_style(result["data"], len(shots)), result["cost_usd"]
+    style = clean_style(result["data"], len(shots), heard)
+    print(f"style: transitions={style['transitions']} motions={style['motions']} speeds={style['speeds']} "
+          f"effects={style['shotEffects']} looks={style['looks']} sfx={[(e['name'], e['anchor'], e['index']) for e in style['sfx']]}")
+    return style, result["cost_usd"]
+
+
+def _safe(fn, *args):
+    """Runs a measuring step; a failure just means less to go on, never a failed analysis."""
+    try:
+        return fn(*args)
+    except Exception as e:  # noqa: BLE001
+        print(f"{fn.__name__} failed: {type(e).__name__}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------- rendering
@@ -867,6 +1320,10 @@ COLOR_FILTER_VF = {
 }
 
 
+def even(x: float) -> int:
+    return int(round(x / 2)) * 2
+
+
 def motion_filter(motion: str, frames: int) -> str | None:
     """Camera-style motion over the whole shot (`frames` long)."""
     zoom = lambda z: (  # noqa: E731
@@ -889,76 +1346,223 @@ def motion_filter(motion: str, frames: int) -> str | None:
     if motion == "shake":
         w, h = round(OUT_W * 1.08), round(OUT_H * 1.08)
         return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{(w - OUT_W) // 2}+18*sin(n*1.9)':y='{(h - OUT_H) // 2}+14*cos(n*2.7)'"
+    if motion in ("pan_left", "pan_right"):
+        w, h = even(OUT_W * 1.15), even(OUT_H * 1.15)
+        x = f"(iw-ow)*n/{n}" if motion == "pan_left" else f"(iw-ow)*(1-n/{n})"
+        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{x}':y='(ih-oh)/2'"
     return None
 
 
+# ---- transitions
+#
+# name -> (ffmpeg xfade transition, or None for a hard cut; seconds; effect drawn on the shots, or None).
+# Effects are drawn onto the end of the outgoing shot and the start of the incoming one
+# (fx_filter), building toward the cut, so the cut itself stays exactly on time.
+TRANSITION_SPECS = {
+    "crossfade": ("fade", 0.35, None), "dissolve": ("dissolve", 0.4, None), "flash": ("fadewhite", 0.22, None),
+    "dip_to_black": ("fadeblack", 0.4, None),
+    **{f"whip_{d}": (None, 0.34, f"whip_{d}") for d in ("left", "right", "up", "down")},
+    **{f"slide_{d}": (f"slide{d}", 0.3, None) for d in ("left", "right", "up", "down")},
+    "zoom_in": (None, 0.3, "zoom_in"), "zoom_out": (None, 0.3, "zoom_out"), "spin": (None, 0.34, "spin"),
+    "glitch": (None, 0.26, "glitch"), "shake": (None, 0.32, "shake"),
+    "light_leak": ("fade", 0.45, "light_leak"), "blur": ("fade", 0.35, "blur"),
+    **{f"wipe_{d}": (f"wipe{d}", 0.3, None) for d in ("left", "right", "up", "down")},
+    "circle_open": ("circleopen", 0.4, None), "pixelate": ("pixelize", 0.3, None),
+}
+
+
+def fx_filter(fx: str, side: str, length: float) -> str:
+    """Filters drawing a transition effect on one shot over a window `length` seconds long, in the
+    window's own time (t and n start at 0). Strength P builds from 0 to 1 at the cut: toward the
+    end of the outgoing shot ('out'), away from the start of the incoming one ('in')."""
+    P = f"(t/{length:.4f})" if side == "out" else f"(1-t/{length:.4f})"
+    frames = max(1, round(length * OUT_FPS) - 1)
+    Pn = f"(on/{frames})" if side == "out" else f"(1-on/{frames})"
+    big = lambda k: f"scale={even(OUT_W * k)}:{even(OUT_H * k)}"  # noqa: E731
+    if fx.startswith("whip_"):
+        way = fx[5:]
+        across = way in ("left", "right")
+        # The picture sweeps `way` across most of the frame: pad it with mirrored copies of itself
+        # so there's picture to sweep into, and streak it with directional blur.
+        sign = (1 if way in ("left", "up") else -1) * (1 if side == "out" else -1)
+        e = even((OUT_W if across else OUT_H) * 0.7)
+        pad = (f"pad=w=iw+{2 * e}:h=ih:x={e}:y=0,fillborders=left={e}:right={e}:mode=mirror" if across else
+               f"pad=w=iw:h=ih+{2 * e}:x=0:y={e},fillborders=top={e}:bottom={e}:mode=mirror")
+        x = f"{e}+{sign}*{e}*pow({P},1.6)" if across else "0"
+        y = "0" if across else f"{e}+{sign}*{e}*pow({P},1.6)"
+        return f"{pad},crop={OUT_W}:{OUT_H}:x='{x}':y='{y}',dblur=angle={0 if across else 90}:radius=90"
+    if fx in ("zoom_in", "zoom_out"):
+        strong = (fx == "zoom_in") == (side == "out")
+        z = f"1+{0.8 if strong else 0.2}*pow({Pn},2)"
+        return (f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS},"
+                f"gblur=sigma={8 if strong else 4}")
+    if fx == "spin":
+        # Pad to a square as wide as the frame's diagonal (mirrored edges), so no corners show.
+        side_px = even((OUT_W ** 2 + OUT_H ** 2) ** 0.5 + 4)
+        ex, ey = (side_px - OUT_W) // 2, (side_px - OUT_H) // 2
+        angle = f"{'' if side == 'out' else '-'}PI*0.9*pow({P},2)"
+        return (f"pad=w={side_px}:h={side_px}:x={ex}:y={ey},"
+                f"fillborders=left={ex}:right={ex}:top={ey}:bottom={ey}:mode=mirror,"
+                f"rotate=a='{angle}',crop={OUT_W}:{OUT_H},gblur=sigma=6")
+    if fx == "glitch":
+        return (f"{big(1.08)},crop={OUT_W}:{OUT_H}:x='(iw-ow)/2+35*sin(n*7.3)':y='(ih-oh)/2+30*sin(n*13.1)',"
+                "rgbashift=rh=-24:bh=24:gv=8,noise=alls=40:allf=t")
+    if fx == "shake":
+        return (f"{big(1.22)},crop={OUT_W}:{OUT_H}:x='(iw-ow)/2+100*{P}*sin(n*2.1)':y='(ih-oh)/2+170*{P}*cos(n*2.9)',"
+                "dblur=angle=60:radius=18")
+    if fx == "light_leak":
+        return "colorbalance=rs=0.3:gs=0.1:bs=-0.25:rm=0.25:gm=0.08:bm=-0.2,eq=brightness=0.16:saturation=1.2,gblur=sigma=2"
+    if fx == "blur":
+        return "gblur=sigma=16"
+    return "null"
+
+
+SOFT_EDGE = {"light_leak": "colorbalance=rs=0.12:bs=-0.1,eq=brightness=0.06", "blur": "gblur=sigma=5"}
+
+
+def transition_windows(t: dict, side: str, cut_at: float) -> list[tuple[float, float, str]]:
+    """Where a transition's effect goes on one shot, as (start, end, filters) in the shot's own time.
+    `cut_at` is the end of the shot ('out') or 0 ('in')."""
+    d, fx = t["d"], t["fx"]
+    if t["xfade"]:  # blended: both shots are on screen from the cut to the end of the blend
+        main = (cut_at, cut_at + d) if side == "out" else (0.0, d)
+    else:  # hard cut in the middle of the effect
+        main = (cut_at - d / 2, cut_at) if side == "out" else (0.0, d / 2)
+    wins = [(main[0], main[1], fx_filter(fx, side, main[1] - main[0]))]
+    if fx in SOFT_EDGE:
+        wins.insert(0, (main[0] - 0.15, main[0], SOFT_EDGE[fx])) if side == "out" else wins.append(
+            (main[1], main[1] + 0.15, SOFT_EDGE[fx]))
+    return wins
+
+
+def effect_windows(effect: str, duration: float) -> list[tuple[float, float, str]]:
+    """A short in-shot effect, as windows in the shot's own time."""
+    if effect == "flash_in":
+        return [(0.0, 0.1, "eq=brightness=0.55:contrast=0.7"), (0.1, 0.2, "eq=brightness=0.22")]
+    if effect == "focus_in":
+        return [(0.0, 0.14, "gblur=sigma=18"), (0.14, 0.28, "gblur=sigma=8"), (0.28, 0.4, "gblur=sigma=3")]
+    if effect == "zoom_pulse":
+        f = round(0.3 * OUT_FPS) - 1
+        return [(0.0, 0.3, f"zoompan=z='1+0.12*sin(PI*on/{f})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                           f":d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS}")]
+    if effect == "freeze_end" and duration > 1.2:
+        hold = min(0.6, duration * 0.3)
+        return [(duration - hold, duration,
+                 f"trim=end_frame=1,tpad=stop_mode=clone:stop_duration={hold:.3f}")]
+    return []
+
+
+WHOLE_SHOT_EFFECTS = {"rgb_split": "rgbashift=rh=-10:bh=10", "black_and_white": "hue=s=0"}
+
+
+def windowed(base: str, windows: list[tuple[float, float, str]], total: float) -> str:
+    """A filter graph: `base` on the whole shot, plus each window's filters on just that stretch."""
+    snap = lambda x: round(max(0.0, min(total, x)) * OUT_FPS) / OUT_FPS  # noqa: E731
+    kept: list[tuple[float, float, str]] = []
+    for a, b, f in windows:  # earlier windows (transitions) win over later ones
+        a, b = snap(a), snap(b)
+        if b - a >= 1 / OUT_FPS and all(b <= x or a >= y for x, y, _ in kept):
+            kept.append((a, b, f))
+    if not kept:
+        return f"[0:v]{base}[v]"
+    pieces, t = [], 0.0
+    for a, b, f in sorted(kept):
+        if a > t:
+            pieces.append((t, a, None))
+        pieces.append((a, b, f))
+        t = b
+    if t < snap(total):
+        pieces.append((t, snap(total), None))
+    graph = [f"[0:v]{base},split={len(pieces)}" + "".join(f"[s{k}]" for k in range(len(pieces)))]
+    for k, (a, b, f) in enumerate(pieces):
+        graph.append(f"[s{k}]trim=start={a:.4f}:end={b:.4f},setpts=PTS-STARTPTS"
+                     + (f",{f},scale={OUT_W}:{OUT_H},setsar=1" if f else "") + f",format=yuv420p[p{k}]")
+    graph.append("".join(f"[p{k}]" for k in range(len(pieces))) + f"concat=n={len(pieces)}:v=1:a=0[v]")
+    return ";".join(graph)
+
+
 def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
-             tail: float = 0.0, motion: str = "none", color: str = "none") -> None:
+             tail: float = 0.0, motion: str = "none", color: str = "none",
+             t_in: dict | None = None, t_out: dict | None = None, speed: float = 1.0,
+             effects: list[str] | tuple = ()) -> None:
     """One shot: the clip from `start`, filling exactly `duration` seconds at 1080x1920, plus `tail`
-    extra seconds of picture for a transition into the next shot (its audio is trimmed off later)."""
-    slow = min(MAX_SLOWDOWN, duration / take) if take < duration - 0.02 else 1.0
+    extra seconds of picture for a blend into the next shot (its audio is trimmed off later).
+    `t_in` / `t_out`: the transitions into and out of it; `speed`: 0.5 = slow motion, 1.6 = sped up."""
+    if speed > 1:
+        take = max(take, min(clip["duration"] - start, duration * speed))
+    elif speed < 1:
+        take = min(take, duration * speed)
+    stretch = duration / take if abs(take - duration) > 0.02 else 1.0
+    stretch = min(MAX_SLOWDOWN, max(0.55, stretch))
     total = duration + tail
     # Use real footage for the tail when the clip has it; otherwise the last frame holds.
-    extra = max(0.0, min(tail / slow, clip["duration"] - start - take))
+    extra = max(0.0, min(tail / stretch, clip["duration"] - start - take))
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
         f"crop={OUT_W}:{OUT_H}", "setsar=1", f"fps={OUT_FPS}",
-        *([f"setpts={slow:.4f}*PTS"] if slow > 1 else []),
+        *([f"setpts={stretch:.4f}*PTS"] if stretch != 1 else []),
         f"tpad=stop_mode=clone:stop_duration={total:.3f}",
         *([m] if (m := motion_filter(motion, round(total * OUT_FPS))) else []),
         *([COLOR_FILTER_VF[color]] if color in COLOR_FILTER_VF else []),
+        *[WHOLE_SHOT_EFFECTS[e] for e in effects if e in WHOLE_SHOT_EFFECTS],
         "format=yuv420p",
     ]
+    windows = [
+        *(transition_windows(t_in, "in", 0.0) if t_in and t_in.get("fx") else []),
+        *(transition_windows(t_out, "out", duration) if t_out and t_out.get("fx") else []),
+        *[w for e in effects for w in effect_windows(e, duration)],
+    ]
+    graph = windowed(",".join(vf), windows, total)
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{take + extra:.3f}", "-i", str(clip["path"])]
     if clip["has_audio"]:
-        af = f"aresample=48000,{f'atempo={1 / slow:.4f},' if slow > 1 else ''}apad"
-        audio = ["-map", "0:v:0", "-map", "0:a:0", "-af", af]
+        af = f"aresample=48000,{f'atempo={1 / stretch:.4f},' if stretch != 1 else ''}apad"
+        audio = ["-map", "0:a:0", "-af", af]
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        audio = ["-map", "0:v:0", "-map", "1:a:0"]
+        audio = ["-map", "1:a:0"]
     cmd += [
-        *audio, "-vf", ",".join(vf), "-t", f"{total:.3f}",
+        "-filter_complex", graph, "-map", "[v]", *audio, "-t", f"{total:.3f}",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-r", str(OUT_FPS),
         # PCM audio, so joining the shots doesn't add clicks or drift at the cuts.
         "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(dest),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0 and clip["hdr"]:
+    if result.returncode == 0:
+        return
+    args = (clip, start, take, duration, dest, tail)
+    if clip["hdr"]:
         # Tone mapping can fail on unusual files; plain conversion still gives a usable shot.
-        cut_shot({**clip, "hdr": False}, start, take, duration, dest, tail, motion, color)
-    elif result.returncode != 0 and motion != "none":
+        cut_shot({**clip, "hdr": False}, *args[1:], motion, color, t_in, t_out, speed, effects)
+    elif windows or effects or speed != 1:
+        print(f"shot effects failed, cutting without them: {result.stderr[-400:]}")
+        cut_shot(*args, motion, color)
+    elif motion != "none":
         print(f"motion '{motion}' failed, cutting without it: {result.stderr[-300:]}")
-        cut_shot(clip, start, take, duration, dest, tail, "none", color)
-    elif result.returncode != 0:
+        cut_shot(*args, "none", color)
+    else:
         raise RuntimeError(f"cutting shot failed: {result.stderr[-500:]}")
 
 
-# transition -> (ffmpeg xfade transition, seconds)
-XFADES = {
-    "crossfade": ("fade", 0.4), "flash": ("fadewhite", 0.2), "dip_to_black": ("fadeblack", 0.4),
-    "whip": ("smoothleft", 0.25), "slide": ("slideleft", 0.3), "slide_up": ("slideup", 0.3),
-    "zoom": ("zoomin", 0.3), "glitch": ("pixelize", 0.25), "wipe": ("wipeleft", 0.3),
-}
-
-
-def transition_plan(durations: list[float], transitions: list[str]) -> list[tuple[str, float] | None]:
-    """For each cut: (xfade name, seconds), or None for a hard cut. Never more than 40% of either shot."""
-    out = []
+def transition_plan(durations: list[float], transitions: list[str]) -> list[dict | None]:
+    """For each cut: {"xfade", "d", "fx"}, or None for a hard cut. Never more than 40% of either shot."""
+    out: list[dict | None] = []
     for i in range(len(durations) - 1):
-        t = transitions[i] if i < len(transitions) else "cut"
-        if t not in XFADES:
+        name = transitions[i] if i < len(transitions) else "cut"
+        name = OLD_TRANSITIONS.get(name, name)
+        if name not in TRANSITION_SPECS:
             out.append(None)
             continue
-        name, d = XFADES[t]
-        d = min(d, 0.4 * durations[i], 0.4 * durations[i + 1])
-        out.append((name, round(d, 3)) if d >= 0.08 else None)
+        xfade, d, fx = TRANSITION_SPECS[name]
+        d = round(min(d, 0.4 * durations[i], 0.4 * durations[i + 1]), 3)
+        out.append({"name": name, "xfade": xfade, "d": d, "fx": fx} if d >= 0.08 else None)
     return out
 
 
-def join_shots(seg_paths: list[Path], durations: list[float], cuts: list[tuple[str, float] | None],
+def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | None],
                workdir: Path, dest: Path) -> None:
-    """Joins the shots, with the transitions in `cuts`, keeping every cut at its exact time."""
+    """Joins the shots, with the blends in `plan`, keeping every cut at its exact time."""
+    cuts = [(c["xfade"], c["d"]) if c and c["xfade"] else None for c in plan]
     if not any(cuts):
         list_file = workdir / "shots.txt"
         list_file.write_text("".join(f"file '{p.name}'\n" for p in seg_paths))
@@ -1007,6 +1611,171 @@ def join_shots(seg_paths: list[Path], durations: list[float], cuts: list[tuple[s
                         "-filter_complex", ";".join(parts), "-map", "[vout]", "-map", "[aout]",
                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-c:a", "pcm_s16le", dest.name],
                        cwd=workdir, check=True, capture_output=True)
+
+
+# ---- looks over the whole video (applied with the text, at the end)
+
+def look_graph(looks: list[str], src: str, dest: str) -> list[str]:
+    """Filter-graph lines taking video `src` through each look to `dest` (labels without brackets)."""
+    simple = {
+        "grain": "noise=alls=9:allf=t+u",
+        "vhs": "rgbashift=rh=3:bh=-3,noise=alls=10:allf=t,eq=saturation=0.82:contrast=1.06:gamma=1.04,gblur=sigma=0.7",
+        "vignette": "vignette=angle=PI/4.5",
+        "letterbox": (f"drawbox=x=0:y=0:w=iw:h={round(OUT_H * 0.09)}:color=black:t=fill,"
+                      f"drawbox=x=0:y={OUT_H - round(OUT_H * 0.09)}:w=iw:h={round(OUT_H * 0.09)}:color=black:t=fill"),
+    }
+    lines, cur = [], src
+    for k, look in enumerate(x for x in looks if x in LOOKS):
+        nxt = f"look{k}"
+        if look == "soft_glow":
+            lines += [f"[{cur}]format=gbrp,split[gl{k}a][gl{k}b]", f"[gl{k}b]gblur=sigma=18[gl{k}c]",
+                      f"[gl{k}a][gl{k}c]blend=all_mode=screen:all_opacity=0.3,format=yuv420p[{nxt}]"]
+        else:
+            lines.append(f"[{cur}]{simple[look]}[{nxt}]")
+        cur = nxt
+    lines.append(f"[{cur}]null[{dest}]")
+    return lines
+
+
+# ---- sound effects, made from scratch (no licensing), 48 kHz stereo
+
+SFX_GAIN = 0.7
+
+
+def synth_sfx(name: str, sr: int = 48000):
+    """A sound effect as an (n, 2) float array."""
+    import numpy as np
+
+    rng = np.random.default_rng(sum(map(ord, name)))
+    tt = lambda d: np.arange(int(d * sr)) / sr  # noqa: E731
+    noise = lambda d: rng.standard_normal(int(d * sr))  # noqa: E731
+
+    def lowpass(x, fc):
+        fc = np.broadcast_to(np.asarray(fc, dtype=float), x.shape)
+        a = np.exp(-2 * np.pi * np.clip(fc, 20, sr / 2.2) / sr)
+        y = np.empty_like(x)
+        acc = 0.0
+        for i in range(len(x)):
+            acc = (1 - a[i]) * x[i] + a[i] * acc
+            y[i] = acc
+        return y
+
+    def band(x, fc):
+        return lowpass(x, np.asarray(fc) * 1.6) - lowpass(x, np.asarray(fc) * 0.45)
+
+    def tone(freq, t):
+        return np.sin(2 * np.pi * np.cumsum(np.broadcast_to(freq, t.shape)) / sr)
+
+    def mono(x):
+        return np.stack([x, x], axis=1)
+
+    def sweep(d, lo, hi, peak):
+        t = tt(d)
+        u = t / d
+        fc = np.where(u < peak, lo + (hi - lo) * (u / peak) ** 2, hi - (hi - lo) * 0.7 * ((u - peak) / (1 - peak)))
+        env = np.where(u < peak, np.sin(np.pi / 2 * u / peak) ** 2, (1 - (u - peak) / (1 - peak)) ** 2)
+        x = band(noise(d), fc) * env
+        pan = np.clip(u, 0, 1)
+        return np.stack([x * np.cos(pan * np.pi / 2), x * np.sin(pan * np.pi / 2)], axis=1)
+
+    def bell(d, f, ratios=(1, 2.76, 5.4), amps=(1, 0.5, 0.25), taus=(0.6, 0.25, 0.12)):
+        t = tt(d)
+        x = sum(a * np.sin(2 * np.pi * f * r * t) * np.exp(-t / tau) for r, a, tau in zip(ratios, amps, taus))
+        return x * np.minimum(1, t / 0.003)
+
+    def click(d=0.04, f=2500):
+        t = tt(d)
+        return np.diff(noise(d), prepend=0) * np.exp(-t / 0.003) * 0.6 + np.sin(2 * np.pi * f * t) * np.exp(-t / 0.01) * 0.5
+
+    def place(total, parts):
+        out = np.zeros(int(total * sr))
+        for at, x in parts:
+            i = int(at * sr)
+            out[i:i + len(x)] += x[: len(out) - i]
+        return out
+
+    if name == "whoosh":
+        y = sweep(0.6, 300, 3200, 0.55)
+    elif name == "swish":
+        y = sweep(0.25, 900, 6500, 0.4)
+    elif name == "pop":
+        t = tt(0.14)
+        y = mono(tone(300 + 900 * np.exp(-t / 0.015), t) * np.exp(-t / 0.035) + click(0.14) * 0.2)
+    elif name == "click":
+        y = mono(click(0.05))
+    elif name == "camera_shutter":
+        burst = lambda: lowpass(noise(0.05), 4500) * np.exp(-tt(0.05) / 0.012) + click(0.05) * 0.5  # noqa: E731
+        y = mono(place(0.25, [(0, burst()), (0.085, burst() * 0.8)]))
+    elif name == "ding":
+        y = mono(bell(1.4, 1760))
+    elif name == "cash_register":
+        rattle = lowpass(noise(0.5), 7000) * (rng.random(int(0.5 * sr)) > 0.97) * 3
+        rattle = lowpass(rattle, 5000) * np.exp(-tt(0.5) / 0.25)
+        y = mono(place(1.2, [(0, bell(1.0, 2093) * 0.7), (0.09, bell(1.1, 2637)), (0.15, rattle * 0.6)]))
+    elif name == "boom":
+        t = tt(1.4)
+        x = tone(40 + 70 * np.exp(-t / 0.08), t) * np.exp(-t / 0.45) + lowpass(noise(1.4), 200) * np.exp(-t / 0.05) * 3
+        y = mono(np.tanh(1.8 * x))
+    elif name == "riser":
+        d = 1.25
+        t = tt(d)
+        u = t / d
+        x = band(noise(d), 400 * 15 ** u) * 0.8 + tone(200 * 8 ** u, t) * 0.25
+        y = mono(x * u ** 2 * np.minimum(1, (d - t) / 0.02))
+    elif name == "glitch":
+        parts = []
+        for k in range(10):
+            seg = int(0.03 * sr)
+            if rng.random() < 0.5:
+                x = np.sign(np.sin(2 * np.pi * rng.uniform(200, 2000) * np.arange(seg) / sr))
+            else:
+                x = noise(0.03)
+            parts.append((k * 0.035, x * (0.4 + 0.6 * rng.random())))
+        y = mono(place(0.36, parts))
+    elif name == "record_scratch":
+        d = 0.5
+        t = tt(d)
+        curve = np.abs(np.sin(2 * np.pi * 3 * t))
+        y = mono(band(noise(d), 500 + 2800 * curve) * np.minimum(1, (d - t) / 0.05) + tone(150 + 600 * curve, t) * 0.15)
+    elif name == "typing":
+        key = lambda: lowpass(noise(0.03), 3000) * np.exp(-tt(0.03) / 0.008) + click(0.03, 3500) * 0.3  # noqa: E731
+        times = np.cumsum(rng.uniform(0.07, 0.16, 9))
+        y = mono(place(float(times[-1]) + 0.05, [(float(a), key() * rng.uniform(0.6, 1)) for a in times]))
+    else:
+        raise ValueError(name)
+    return (y / (np.abs(y).max() + 1e-9) * 0.9).astype(np.float32)
+
+
+def sfx_file(name: str, workdir: Path) -> Path:
+    import wave
+
+    import numpy as np
+
+    dest = workdir / f"sfx-{name}.wav"
+    if not dest.exists():
+        y = (synth_sfx(name) * 32767).astype(np.int16)
+        with wave.open(str(dest), "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(48000)
+            w.writeframes(y.tobytes())
+    return dest
+
+
+def sfx_times(events: list[dict], starts: list[float], durations: list[float], total: float) -> list[tuple[float, str, float]]:
+    """Each sound effect's time in the finished video."""
+    out = []
+    for e in events:
+        i = e.get("index", -1)
+        if e.get("anchor") == "cut" and 0 <= i < len(starts) - 1:
+            t = starts[i + 1] + float(e.get("offset") or 0)
+        elif e.get("anchor") == "shot" and 0 <= i < len(starts):
+            t = starts[i] + float(e.get("frac") or 0) * durations[i]
+        else:
+            continue
+        if e.get("name") in SFX and -0.5 < t < total - 0.05:
+            out.append((max(0.0, t), e["name"], float(e.get("volume") or 0.85)))
+    return out
 
 
 # ---- text and captions (ASS subtitles, burned in by libass)
@@ -1733,7 +2502,8 @@ You get the user's request, frames from every shot of the current version exactl
 Make the change the user asks for and keep everything else exactly as it is. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
 You can change: which clip and moment fills a shot; the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the post caption and hashtags.
-You can't change: shot timing or the number of shots, transitions, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add new effects, filters, zooms or stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+You can't change: shot timing or the number of shots, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+Transitions, sound effects, speed (slow motion, sped up), zooms, shakes, filters, looks and other video effects are handled by a separate step: never call them impossible and leave them out of your summary. If the request is only about those, change nothing and return an empty summary.
 
 Positions are fractions of the frame: x from 0 (left edge) to 1 (right edge), y from 0 (top) to 1 (bottom). text_x is the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text; text_y and caption_y are the vertical center. """ + SAFE_ZONE_RULE + """ Use -1 to leave a position as it is, and "keep" to leave a setting as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
 
@@ -1832,6 +2602,173 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
     return ask_claude(REVISE_SYSTEM, content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.")
 
 
+# ---------------------------------------------------------------- the edit's effects
+#
+# Per video: the transition at each cut, each shot's motion, speed and short
+# effects, looks over the whole video, the color filter and sound effects.
+# They start as the inspo's (its style analysis), and change when the user
+# asks in "additional requests" or "request a change".
+
+EFFECT_WORDS = re.compile(
+    r"transition|whoosh|swoosh|swish|sound|sfx|effect|zoom|whip|spin|glitch|shake|flash|fade|slow|speed|fast|"
+    r"freeze|blur|grain|vhs|retro|vintage|filter|vignette|letterbox|glow|\bcuts?\b|swipe|slide|wipe|\bpop|ding|"
+    r"boom|riser|click|shutter|scratch|typing|cha.?ching|\bpan|pulse|black and white|b&w|rgb|chromatic|bass|beat",
+    re.I,
+)
+
+
+def effects_from(style: dict, n: int, jump: bool) -> dict:
+    """The inspo's effects, sized for `n` shots."""
+    fit = lambda xs, k, d: (list(xs or []) + [d] * k)[:k]  # noqa: E731
+    if jump:
+        # One take: the cuts are the user's pauses, not the inspo's shots.
+        return {"transitions": ["cut"] * max(0, n - 1),
+                "motions": ["zoomed" if style.get("alternateZoom") and j % 2 else "none" for j in range(n)],
+                "speeds": ["normal"] * n, "shotEffects": [[] for _ in range(n)],
+                "looks": list(style.get("looks") or []), "colorFilter": style.get("colorFilter") or "none", "sfx": []}
+    return {
+        "transitions": [OLD_TRANSITIONS.get(t, t) for t in fit(style.get("transitions"), n - 1, "cut")],
+        "motions": fit(style.get("motions"), n, "none"),
+        "speeds": fit(style.get("speeds"), n, "normal"),
+        "shotEffects": fit(style.get("shotEffects"), n, []),
+        "looks": list(style.get("looks") or []),
+        "colorFilter": style.get("colorFilter") or "none",
+        "sfx": list(style.get("sfx") or []),
+    }
+
+
+def clean_effects(e, n: int) -> dict | None:
+    """Effects saved with an earlier version, if they're valid for `n` shots."""
+    if not isinstance(e, dict) or len(e.get("transitions") or []) != n - 1 or len(e.get("motions") or []) != n:
+        return None
+    ok = lambda v, opts, d: v if v in opts else d  # noqa: E731
+    return {
+        "transitions": [ok(OLD_TRANSITIONS.get(t, t), TRANSITIONS, "cut") for t in e["transitions"]],
+        "motions": [ok(m, MOTIONS + ["zoomed"], "none") for m in e["motions"]],
+        "speeds": [ok(x, SPEEDS, "normal") for x in (list(e.get("speeds") or []) + ["normal"] * n)[:n]],
+        "shotEffects": [[x for x in (fx or []) if x in SHOT_EFFECTS]
+                        for fx in (list(e.get("shotEffects") or []) + [[]] * n)[:n]],
+        "looks": [x for x in e.get("looks") or [] if x in LOOKS],
+        "colorFilter": ok(e.get("colorFilter"), COLOR_FILTERS, "none"),
+        "sfx": [x for x in e.get("sfx") or [] if isinstance(x, dict) and x.get("name") in SFX],
+    }
+
+
+EFFECTS_SYSTEM = """You set the edit of a short-form video ViralOwner is making: the transition at each cut, each shot's motion, speed and short effects, looks over the whole video, the color filter and sound effects. They start out copied from the viral video the user is remaking.
+
+Change only what the user's words ask for, and keep everything else exactly as it is. If the words don't ask about any of these, return everything unchanged with an empty summary. A request about "the transitions" or "every cut" in general applies to all cuts. When the user asks for a sound with a transition (e.g. "add a whoosh to the whips"), put the sound at each of those cuts. A riser starts about 1.2s before the cut it builds to (offset -1.2); most other sounds sit right on the cut (offset 0, or about -0.1 for a whoosh).
+
+Transitions:
+""" + catalog(TRANSITION_INFO) + """
+Motions:
+""" + catalog(MOTION_INFO) + """
+Speeds: """ + ", ".join(SPEEDS) + """
+Shot effects:
+""" + catalog(SHOT_EFFECT_INFO) + """
+Looks:
+""" + catalog(LOOK_INFO) + """
+Color filters: """ + ", ".join(COLOR_FILTERS) + """
+Sound effects:
+""" + catalog(SFX_INFO)
+
+EFFECTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "transitions": {"type": "array", "description": "one per cut, in order (cut 1 is between shot 1 and shot 2).",
+                        "items": {"type": "string", "enum": TRANSITIONS}},
+        "shots": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "the shot number, starting at 1."},
+                    "motion": {"type": "string", "enum": MOTIONS},
+                    "speed": {"type": "string", "enum": SPEEDS},
+                    "effects": {"type": "array", "items": {"type": "string", "enum": SHOT_EFFECTS}},
+                },
+                "required": ["index", "motion", "speed", "effects"],
+                "additionalProperties": False,
+            },
+        },
+        "looks": {"type": "array", "items": {"type": "string", "enum": LOOKS}},
+        "color_filter": {"type": "string", "enum": COLOR_FILTERS},
+        "sfx": {
+            "type": "array",
+            "description": "every sound effect in the video (the ones to keep and any new ones).",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "at": {"type": "string", "enum": ["cut", "shot"]},
+                    "index": {"type": "integer", "description": "the cut or shot number, starting at 1."},
+                    "name": {"type": "string", "enum": SFX},
+                    "offset": {"type": "number", "description": "at a cut: seconds from the cut. in a shot: how far through it, 0 to 1."},
+                },
+                "required": ["at", "index", "name", "offset"],
+                "additionalProperties": False,
+            },
+        },
+        "summary": {"type": "string", "description": (
+            "what you changed, for the user, in one short lowercase sentence speaking as 'we', in plain words "
+            "(e.g. 'we added a whoosh to every transition.'). empty if nothing changed.")},
+    },
+    "required": ["transitions", "shots", "looks", "color_filter", "sfx", "summary"],
+    "additionalProperties": False,
+}
+
+
+def describe_effects(e: dict, shots: list[dict]) -> str:
+    lines = []
+    for i, s in enumerate(shots):
+        fx = ", ".join(e["shotEffects"][i]) or "no effects"
+        lines.append(f"shot {i + 1} ({s.get('role', 'shot')}, {s['durationS']:.1f}s): motion {e['motions'][i]}, "
+                     f"speed {e['speeds'][i]}, {fx}")
+        if i < len(shots) - 1:
+            lines.append(f"  cut {i + 1}: {e['transitions'][i]}")
+    lines.append(f"looks: {', '.join(e['looks']) or 'none'}; color filter: {e['colorFilter']}")
+    sounds = [f"{x['name']} at {x['anchor']} {x['index'] + 1} ({x.get('offset', x.get('frac', 0))})" for x in e["sfx"]]
+    lines.append(f"sound effects: {'; '.join(sounds) or 'none'}")
+    return "\n".join(lines)
+
+
+def plan_effects(words: str, effects: dict, shots: list[dict]) -> tuple[dict, str, float]:
+    """Applies what the user asked for to the effects. Returns (effects, summary, cost)."""
+    n = len(shots)
+    content = [{"type": "text", "text": (
+        f"what the user asked for: {json.dumps(words, ensure_ascii=False)}\n\n"
+        f"the video now ({n} shots, {n - 1} cuts):\n{describe_effects(effects, shots)}\n\n"
+        "return the whole updated edit."
+    )}]
+    result = ask_claude(EFFECTS_SYSTEM, content, EFFECTS_SCHEMA, "we couldn’t work out those effects.")
+    d = result["data"]
+    by = {x["index"]: x for x in d["shots"]}
+    new = {
+        "transitions": ([t if t in TRANSITIONS else "cut" for t in d["transitions"]] + effects["transitions"])[: n - 1],
+        "motions": [(by.get(i + 1) or {}).get("motion", effects["motions"][i]) for i in range(n)],
+        "speeds": [(by.get(i + 1) or {}).get("speed", effects["speeds"][i]) for i in range(n)],
+        "shotEffects": [[x for x in (by.get(i + 1) or {}).get("effects", effects["shotEffects"][i]) if x in SHOT_EFFECTS]
+                        for i in range(n)],
+        "looks": [x for x in dict.fromkeys(d["looks"]) if x in LOOKS],
+        "colorFilter": d["color_filter"] if d["color_filter"] in COLOR_FILTERS else effects["colorFilter"],
+        "sfx": [],
+    }
+    # Keep "zoomed" (jump-cut framing) where it was; Claude only sees the named motions.
+    new["motions"] = [m if m in MOTIONS else "none" for m in new["motions"]]
+    new["motions"] = [effects["motions"][i] if effects["motions"][i] == "zoomed" and new["motions"][i] == "none" else m
+                      for i, m in enumerate(new["motions"])]
+    old = {(x["anchor"], x["index"], x["name"]): x for x in effects["sfx"]}
+    for x in d["sfx"]:
+        anchor, i = x["at"], x["index"] - 1
+        if x["name"] not in SFX or not (0 <= i < (n - 1 if anchor == "cut" else n)):
+            continue
+        prev = old.get((anchor, i, x["name"]))
+        pos = {"offset": r2(max(-1.5, min(1.5, float(x["offset"]))))} if anchor == "cut" else {
+            "frac": r2(max(0.0, min(0.99, float(x["offset"]))))}
+        new["sfx"].append({"anchor": anchor, "index": i, "name": x["name"], **pos,
+                           "volume": (prev or {}).get("volume", 0.85), "source": (prev or {}).get("source", "request")})
+    print(f"effects: ${result['cost_usd']}, summary={d['summary']!r}")
+    return new, d["summary"].strip(), result["cost_usd"]
+
+
 def r2_fetch(key: str, dest: Path) -> None:
     r2_client().download_file(os.environ["R2_BUCKET"], key, str(dest))
 
@@ -1928,10 +2865,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         raise JobError("we couldn’t read your clips. try uploading them again.")
     index_of = {c["id"]: i for i, c in enumerate(clips)}
 
-    # The inspo's look. Inspos analyzed before it was part of the analysis get it now.
+    # The inspo's look. Inspos analyzed before it (or before its latest version) get it now.
     new_style = None
     inspo_style = breakdown.get("style")
-    if not isinstance(inspo_style, dict):
+    if not isinstance(inspo_style, dict) or int(inspo_style.get("version") or 1) < STYLE_VERSION:
+        report("analyzing", 5)
         try:
             inspo_style, style_cost = analyze_style(inspo_path, shots, workdir, breakdown.get("transcript"))
             cost += style_cost
@@ -1957,7 +2895,6 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     jump_ranges: list[dict] = []
     jump_texts: list[str] | None = None
     jump_post = None
-    inspo_motions, inspo_transitions = inspo_style["motions"], inspo_style["transitions"]
     if jump:
         earlier = req.get("cuts") or (keep or {}).get("jumpcut") or []
         jump_ranges = [
@@ -2002,10 +2939,22 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         if jump_texts is not None:
             jump_texts = [jump_texts[k] for k in src]
         shots, n = pseudo, len(pseudo)
-        inspo_motions = ["zoomed" if inspo_style.get("alternateZoom") and j % 2 else "none" for j in range(n)]
-        inspo_transitions = ["cut"] * max(0, n - 1)
         req_shots = [{"shotIndex": j, "clipId": clips[r["clip"]]["id"], "trimStartS": r["start"], "trimEndS": r["end"]}
                      for j, r in enumerate(jump_ranges)]
+
+    # The edit's effects: kept from the version being edited, or the inspo's. Then whatever the
+    # user asked for (their additional requests on a fresh video, or a change request).
+    given = clean_effects(req.get("effects") or ((previous or {}).get("plan") or {}).get("effects"), n)
+    effects = given or effects_from(inspo_style, n, jump)
+    effects_note = ""
+    words = request or ("" if given else notes)
+    if words and EFFECT_WORDS.search(words):
+        report("analyzing", 6)
+        try:
+            effects, effects_note, effects_cost = plan_effects(words, effects, shots)
+            cost += effects_cost
+        except Exception as e:  # noqa: BLE001
+            print(f"effects planning failed: {type(e).__name__}: {e}")
 
     # What the user chose in step 2 or the editor, per shot.
     edits = {e["shotIndex"]: e for e in req_shots}
@@ -2144,9 +3093,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     plan = resolve_plan(shots, clips, fixed, picked)
     durations = [p["duration"] for p in plan]
-    cuts = transition_plan(durations, inspo_transitions)
-    motions = (list(inspo_motions) + ["none"] * n)[:n]
-    color = inspo_style["colorFilter"]
+    cuts = transition_plan(durations, effects["transitions"])
+    motions = effects["motions"]
+    color = effects["colorFilter"]
 
     # ---- editing: cut every shot (with the inspo's motion and color), join them with its transitions
     report("editing", 45)
@@ -2156,8 +3105,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     def cut(i: int) -> None:
         nonlocal done
         p = plan[i]
-        tail = cuts[i][1] if i < len(cuts) and cuts[i] else 0.0
-        cut_shot(clips[p["clip"]], p["start"], p["take"], p["duration"], seg_paths[i], tail, motions[i], color)
+        t_in = cuts[i - 1] if i > 0 else None
+        t_out = cuts[i] if i < len(cuts) else None
+        tail = t_out["d"] if t_out and t_out["xfade"] else 0.0
+        cut_shot(clips[p["clip"]], p["start"], p["take"], p["duration"], seg_paths[i], tail, motions[i], color,
+                 t_in, t_out, SPEED_RATES.get(effects["speeds"][i], 1.0), effects["shotEffects"][i])
         done += 1
         report("editing", 45 + int(28 * done / len(plan)))
 
@@ -2201,26 +3153,39 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     report("editing", 85)
     ass = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions, caption_y_at)
     out = workdir / "final.mp4"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-i", joined.name]
+    inputs = ["-i", joined.name]
     if music == "none":
-        cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-map", "0:v:0", "-map", "1:a:0"]
+        inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        main = "[1:a]anull[m]"
     elif use_inspo_audio:
         # Same timing as the inspo, so its audio lines up from the first frame.
-        cmd += ["-i", inspo_path.name, "-map", "0:v:0", "-map", "1:a:0", "-af", "apad"]
+        inputs += ["-i", inspo_path.name]
+        main = "[1:a]aresample=48000,apad[m]"
     elif use_own_audio:
         # Plays from the start; cut at the video's end, or silence after it if it's shorter.
-        cmd += ["-i", own_audio.name, "-map", "0:v:0", "-map", "1:a:0", "-af", "aresample=48000,apad"]
+        inputs += ["-i", own_audio.name]
+        main = "[1:a]aresample=48000,apad[m]"
     else:
         # "track" has no licensed library behind it yet, so it keeps the clips' audio for now.
-        cmd += ["-map", "0:v:0", "-map", "0:a:0"]
-    cmd += ["-c:a", "aac", "-b:a", "192k"]
+        main = "[0:a]anull[m]"
+    # Sound effects: the inspo's are already in its own audio, so only add the ones asked for then.
+    sounds = sfx_times([e for e in effects["sfx"] if not (use_inspo_audio and e.get("source") == "inspo")],
+                       starts, durations, total)
+    graph = [main]
+    first_sfx = 1 if main.startswith("[0:a]") else 2  # input number of the first sound effect
+    for k, (t, name, vol) in enumerate(sounds):
+        inputs += ["-i", sfx_file(name, workdir).name]
+        ms = round(t * 1000)
+        graph.append(f"[{first_sfx + k}:a]aresample=48000,volume={vol * SFX_GAIN:.2f},adelay={ms}|{ms}[x{k}]")
+    graph.append("[m]" + "".join(f"[x{k}]" for k in range(len(sounds)))
+                 + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
+    graph += look_graph(effects["looks"], "0:v", "looked")
     if ass:
         (workdir / "text.ass").write_text(ass, encoding="utf-8")
-        cmd += ["-vf", "ass=text.ass", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", "-profile:v", "high"]
-    else:
-        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p"]
-    cmd += ["-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
+    graph.append("[looked]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
+    cmd = ["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
+           "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", "-profile:v", "high",
+           "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
@@ -2233,7 +3198,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     seconds = round(time.time() - started, 1)
     print(f"render done: {len(plan)} shots, {total:.1f}s, claude={needs_claude}, ${round(cost, 4)}, {seconds}s, "
           f"faces={sum(map(len, faces))}, transitions={sum(1 for c in cuts if c)}, motions={sum(m != 'none' for m in motions)}, "
-          f"color={color}, font={style['font']}, animation={style['animation']}")
+          f"color={color}, font={style['font']}, animation={style['animation']}, "
+          f"cuts={[c['name'] if c else 'cut' for c in cuts]}, speeds={effects['speeds']}, effects={effects['shotEffects']}, "
+          f"looks={effects['looks']}, sfx={[(t, nm) for t, nm, _ in sounds]}")
     out = {
         "storageKey": req["outputKey"],
         "width": OUT_W,
@@ -2257,7 +3224,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "captionYs": layout["captionYs"],
             "textScale": layout["textScale"],
             "captionScale": layout["captionScale"],
-            "note": note,
+            "note": " ".join(x for x in (note, effects_note if request else "") if x) or None,
+            "effects": effects,
             **({"jumpcut": [{"clipId": clips[p["clip"]]["id"], "startS": r2(p["start"]), "endS": r2(p["start"] + p["take"])}
                             for p in plan]} if jump else {}),
         },
@@ -2410,11 +3378,40 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
 
 @app.local_entrypoint()
 def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = "",
-               notes: str = "", music: str = "original", request: str = "", audio: str = ""):
+               notes: str = "", music: str = "original", request: str = "", audio: str = "", transitions: str = "",
+               sfx: str = "", speeds: str = "", effects: str = "", looks: str = "", breakdown_json: str = ""):
     """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
-    With --request, also makes a second version with that change (saved as <dest>-changed.mp4)."""
+    With --request, also makes a second version with that change (saved as <dest>-changed.mp4).
+    To test the edit, override the inspo's: --transitions whip_left,zoom_in (cycled over the cuts),
+    --sfx whoosh@1,pop@s2 (at cut 1, in shot 2), --speeds normal,slow_motion, --effects ,freeze_end, --looks grain.
+    --breakdown-json reuses a saved analysis instead of analyzing the inspo again."""
     files = {"u/test/p/test/inspo": Path(inspo).read_bytes()}
-    breakdown = analyze_upload.remote(files["u/test/p/test/inspo"])
+    if breakdown_json and Path(breakdown_json).exists():
+        breakdown = json.loads(Path(breakdown_json).read_text())
+    else:
+        breakdown = analyze_upload.remote(files["u/test/p/test/inspo"])
+        if breakdown_json:
+            Path(breakdown_json).write_text(json.dumps(breakdown))
+    n = len(breakdown["shots"])
+    st = breakdown.setdefault("style", default_inspo_style(n))
+    st["version"] = STYLE_VERSION
+    cyc = lambda v, k: [v.split(",")[i % len(v.split(","))] for i in range(k)]  # noqa: E731
+    if transitions:
+        st["transitions"] = cyc(transitions, n - 1)
+    if speeds:
+        st["speeds"] = cyc(speeds, n)
+    if effects:
+        st["shotEffects"] = [[x] if x else [] for x in cyc(effects, n)]
+    if looks:
+        st["looks"] = looks.split(",")
+    if sfx:
+        st["sfx"] = []
+        for item in sfx.split(","):
+            name, at = item.split("@")
+            shot = at.startswith("s")
+            st["sfx"].append({"anchor": "shot" if shot else "cut", "index": int(at.lstrip("s")) - 1, "name": name,
+                              **({"frac": 0.1} if shot else {"offset": -1.2 if name == "riser" else -0.05}),
+                              "volume": 0.9, "source": "request"})
     clip_list = []
     for i, c in enumerate(clips.split(",")):
         files[f"u/test/p/test/clip{i}"] = Path(c).read_bytes()
@@ -2441,6 +3438,28 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
         out2, video2 = render_upload.remote(req2, files)
         Path(dest.removesuffix(".mp4") + "-changed.mp4").write_bytes(video2)
         print(json.dumps(out2, indent=2, ensure_ascii=False))
+
+
+@app.function(**job_resources, timeout=600)
+def detect_debug(video: bytes) -> dict:
+    """For tuning: the cuts found, and what the sound model hears."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v.mp4"
+        path.write_bytes(video)
+        duration = probe(path)["duration"]
+        shots = [{"startS": a, "durationS": b - a} for a, b in detect_shots(path, duration)]
+        cuts = [x["startS"] for x in shots[1:]]
+        heard = listen(path, cuts, shots)
+        rows = [f"cut {c:6.2f}: {describe_heard(h)}" for c, h in zip(cuts, heard["cuts"])]
+        rows += [f"during shot {d['shot'] + 1} at {d['t']:.2f}: {d['heard']} (strength {d['strength']})" for d in heard["during"]]
+        return {"cuts": [round(c, 2) for c in cuts], "rows": rows}
+
+
+@app.local_entrypoint()
+def try_detect(path: str):
+    out = detect_debug.remote(Path(path).read_bytes())
+    print("cuts:", out["cuts"])
+    print("\n".join(out["rows"]))
 
 
 @app.function(image=image, secrets=secrets, timeout=300)

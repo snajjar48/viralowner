@@ -65,7 +65,7 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
-type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts" | "audio">;
+type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts" | "audio" | "effects">;
 
 /** The user's own audio file, when this version uses it. */
 function audioFor(project: Project, settings: RenderSettings): Extras {

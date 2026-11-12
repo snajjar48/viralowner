@@ -143,3 +143,11 @@ modal run worker/app.py::try_analyze --path inspo.mp4
 modal run worker/app.py::try_render --inspo inspo.mp4 --clips a.mp4,b.mp4 --dest out.mp4 --captions karaoke
 modal run worker/app.py::download --key u/…/renders/v1-….mp4 --dest out.mp4
 ```
+
+### Transitions, effects and sound effects
+
+- **Recognizing them (analysis):** cuts are found two ways: hard cuts (scene detection) and cuts hidden inside transitions (`transition_cuts`: the picture 0.4s before and after is a different scene). Each cut is measured frame by frame (`cut_signals`: how fast it changes, flashes, dips, motion blur, which way and how fast the picture moves, zoom, spin, shake, color split, warm light), and `listen` uses CLAP (an open sound model baked into the image) to hear new sounds at each cut and inside shots. Claude sees a dense filmstrip of every cut plus those measurements and picks from the catalog: `TRANSITION_INFO`, `MOTION_INFO`, `SPEED_INFO`, `SHOT_EFFECT_INFO`, `LOOK_INFO`, `SFX_INFO`. The sound model notices sounds well but names them poorly over music, so Claude makes the final call with what it sees.
+- **Making them (render):** blends use ffmpeg's xfade; whips, zooms, spins, glitches, shakes, light leaks and blurs are drawn onto the end of the outgoing shot and the start of the incoming one (`fx_filter`, `windowed`), so the cut stays on time. Speeds, freeze frames, zoom pulses, flashes and looks are applied per shot or over the whole video. Sound effects are generated from scratch (`synth_sfx`, no licensing) and mixed in at their cuts. The inspo's own sound effects aren't added again when the video uses the inspo's audio.
+- **Asking for them:** "additional requests" (first video) and "request a change" go through `plan_effects` when they mention anything effect-like (`EFFECT_WORDS`). Each version saves its effects in `plan.effects`; edits keep them.
+- **Testing:** `modal run worker/app.py::try_render ... --transitions whip_left,zoom_in --sfx whoosh@1,pop@s2` renders with chosen effects; `try_detect --path video.mp4` prints the cuts found and what the sound model hears.
+- Older analyses (style `version` < `STYLE_VERSION`) get their style worked out again on their next render.

@@ -62,6 +62,16 @@ export interface InspoStyle {
   editType?: "shots" | "jump_cut";
   /** Jump cuts that alternate between normal and zoomed-in framing. */
   alternateZoom?: boolean;
+  /** Per shot: "normal", "slow_motion" or "fast". */
+  speeds?: string[];
+  /** Per shot: short effects ("freeze_end", "zoom_pulse", "flash_in"...). */
+  shotEffects?: string[][];
+  /** Looks over the whole video ("grain", "vhs", "vignette"...). */
+  looks?: string[];
+  /** Sound effects heard in the inspo, anchored to a cut or a shot. */
+  sfx?: { anchor: "cut" | "shot"; index: number; name: string }[];
+  /** Analysis version (older ones are redone on their next render). */
+  version?: number;
 }
 
 /** One cut of a one-take (jump-cut) video: a range of one clip. */
@@ -165,6 +175,8 @@ export interface RenderInput {
   cuts?: TakeCut[];
   /** The user's own audio file, when the music option is "upload". */
   audio?: { storageKey: string };
+  /** Keep this earlier version's transitions and effects (an edit of it). */
+  effects?: Record<string, unknown>;
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";
@@ -194,6 +206,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   note?: string | null;
   /** One-take videos: where the take was cut. */
   jumpcut?: TakeCut[];
+  /** The edit's transitions, motion, speed, effects, looks and sound effects (worker-defined shape). */
+  effects?: Record<string, unknown>;
 }
 
 export interface JobStatus {

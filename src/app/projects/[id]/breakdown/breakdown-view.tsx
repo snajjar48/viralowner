@@ -9,20 +9,69 @@ import { formatDuration } from "@/lib/video-options";
 
 const TRANSITION_NAMES: Record<string, string> = {
   crossfade: "crossfade",
+  dissolve: "dissolve",
   flash: "flash",
   dip_to_black: "fade to black",
-  whip: "whip",
+  whip: "whip pan",
+  whip_left: "whip pan",
+  whip_right: "whip pan",
+  whip_up: "whip pan",
+  whip_down: "whip pan",
   slide: "slide",
-  slide_up: "slide up",
+  slide_left: "slide",
+  slide_right: "slide",
+  slide_up: "slide",
+  slide_down: "slide",
   zoom: "zoom",
+  zoom_in: "zoom",
+  zoom_out: "zoom out",
+  spin: "spin",
   glitch: "glitch",
+  shake: "shake",
+  light_leak: "light leak",
+  blur: "blur",
   wipe: "wipe",
+  wipe_left: "wipe",
+  wipe_right: "wipe",
+  wipe_up: "wipe",
+  wipe_down: "wipe",
+  circle_open: "circle reveal",
+  pixelate: "pixelate",
 };
-const MOTION_NAMES: Record<string, string> = {
+const EFFECT_NAMES: Record<string, string> = {
   slow_zoom_in: "slow zoom in",
   slow_zoom_out: "slow zoom out",
   punch_in: "punch-in",
   shake: "shake",
+  pan_left: "pan",
+  pan_right: "pan",
+  slow_motion: "slow motion",
+  fast: "speed-up",
+  freeze_end: "freeze frame",
+  zoom_pulse: "zoom pulse",
+  flash_in: "flash",
+  rgb_split: "rgb split",
+  focus_in: "focus pull",
+  black_and_white: "black and white",
+  grain: "film grain",
+  vhs: "vhs look",
+  vignette: "vignette",
+  letterbox: "letterbox",
+  soft_glow: "glow",
+};
+const SOUND_NAMES: Record<string, string> = {
+  whoosh: "whoosh",
+  swish: "swish",
+  pop: "pop",
+  click: "click",
+  camera_shutter: "camera shutter",
+  ding: "ding",
+  cash_register: "cha-ching",
+  boom: "boom",
+  riser: "riser",
+  glitch: "glitch sound",
+  record_scratch: "record scratch",
+  typing: "typing",
 };
 const FONT_NAMES: Record<string, string> = {
   clean_sans: "clean sans",
@@ -39,7 +88,8 @@ const FONT_NAMES: Record<string, string> = {
 function countList(values: string[], names: Record<string, string>) {
   const counts = new Map<string, number>();
   for (const v of values) if (names[v]) counts.set(names[v], (counts.get(names[v]) ?? 0) + 1);
-  return [...counts].map(([name, n]) => (n > 1 ? `${n} ${name}s` : name)).join(", ");
+  const plural = (name: string) => (/(s|sh|ch|x)$/.test(name) ? `${name}es` : `${name}s`);
+  return [...counts].map(([name, n]) => (n > 1 ? `${n} ${plural(name)}` : name)).join(", ");
 }
 
 /** What the render will copy from the inspo, in plain words. */
@@ -47,7 +97,15 @@ function styleStats(st: InspoStyle) {
   const t = st.text;
   return [
     { label: "transitions", value: countList(st.transitions, TRANSITION_NAMES) || "hard cuts" },
-    { label: "effects", value: countList(st.motions, MOTION_NAMES) || "none" },
+    {
+      label: "effects",
+      value:
+        countList(
+          [...st.motions, ...(st.speeds ?? []), ...(st.shotEffects ?? []).flat(), ...(st.looks ?? [])],
+          EFFECT_NAMES,
+        ) || "none",
+    },
+    { label: "sound effects", value: countList((st.sfx ?? []).map((x) => x.name), SOUND_NAMES) || "none" },
     { label: "color", value: st.colorFilter === "none" ? "natural" : st.colorFilter.replaceAll("_", " ") },
     {
       label: "text look",
