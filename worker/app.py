@@ -3054,8 +3054,13 @@ JUMPCUT_SCHEMA = {
             "description": "the post caption in the user's voice: a hook first line, then one short line. up to 2 emoji. max 40 words.",
         },
         "hashtags": {"type": "array", "items": {"type": "string"}, "description": "5 to 8 hashtags (with #)."},
+        "take_cut": {"type": "string", "enum": ["cut_pauses", "keep_pauses", "whole_take"],
+                 "description": ("how the take is cut. cut_pauses: every pause cut out (the usual). keep_pauses: the "
+                                 "pauses, ums and everything between the first and last word stay in; only the "
+                                 "silence before the first word and after the last is trimmed. whole_take: the take "
+                                 "plays from its very start to its very end, nothing cut. use what the user asks for.")},
     },
-    "required": ["keep", "texts", "caption", "hashtags"],
+    "required": ["keep", "texts", "caption", "hashtags", "take_cut"],
     "additionalProperties": False,
 }
 
@@ -3275,6 +3280,25 @@ def line_ranges(chosen: list[dict], clips: list[dict]) -> list[dict]:
     return ranges
 
 
+def join_take(ranges: list[dict], clips: list[dict], mode: str) -> list[dict]:
+    """A one-take video's cuts, joined up the way the user wants. keep_pauses: the gaps between the
+    cuts (pauses, ums) go back in. whole_take: also everything before the first and after the last word.
+    The number of cuts stays the same (cuts that meet play straight on), so per-cut text and layout keep."""
+    out = [dict(r) for r in ranges]
+    if mode not in ("keep_pauses", "whole_take") or not out:
+        return out
+    for a, b in zip(out, out[1:]):
+        if a["clip"] == b["clip"] and b["start"] > a["end"]:
+            a["end"] = b["start"]
+    if mode == "whole_take":
+        for k, r in enumerate(out):
+            if k == 0 or out[k - 1]["clip"] != r["clip"]:
+                r["start"] = 0.0  # each take from its very first frame
+            if k == len(out) - 1 or out[k + 1]["clip"] != r["clip"]:
+                r["end"] = clips[r["clip"]]["duration"]  # ...to its very last
+    return out
+
+
 def jumpcut_shots(ranges: list[dict], inspo_shots: list[dict], inspo_duration: float) -> list[dict]:
     """One "shot" per cut range. Each borrows the inspo shot at the same point in the video
     (for its on-screen text and where that text sits)."""
@@ -3340,6 +3364,10 @@ REVISE_SCHEMA = {
         "caption": {"type": "string", "description": "the post caption (keep it unless asked)."},
         "hashtags": {"type": "array", "items": {"type": "string"}},
         "caption_fixes": CAPTION_FIXES_FIELD,
+        "take_cut": {"type": "string", "enum": ["keep", "keep_pauses", "whole_take"],
+                     "description": ("one-take videos only (otherwise 'keep'). keep_pauses: put the cut-out pauses and "
+                                     "ums back between the cuts. whole_take: play the take from its very start to its "
+                                     "very end, nothing cut (e.g. 'don't cut anything', 'run it all the way to the end').")},
         "caption_style": {"type": "string", "enum": ["keep", *CAPTION_LOOKS, "off"],
                           "description": "the caption style: " + "; ".join(f"{k}: {v}" for k, v in CAPTION_STYLE_INFO.items()) + ". 'keep' unless the user asks for a different look."},
         "summary": {
@@ -3353,7 +3381,7 @@ REVISE_SCHEMA = {
         },
     },
     "required": ["shots", "text_scale", "caption_scale", "font", "text_color", "text_look", "text_align",
-                 "text_animation", "caption", "hashtags", "caption_fixes", "caption_style", "summary"],
+                 "text_animation", "caption", "hashtags", "caption_fixes", "take_cut", "caption_style", "summary"],
     "additionalProperties": False,
 }
 
@@ -3402,8 +3430,10 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
     ask = ["make the requested change and return the whole updated plan."]
     if one_take:
-        ask.append("this video is the user's one take with the pauses cut out, so its footage can't be swapped: "
-                   "return every shot's clip, start and length exactly as given.")
+        ask.append("this video is the user's one take with the pauses cut out: each shot is one cut of the take. keep "
+                   "every shot's clip as given. to make the video longer or shorter, change a shot's start_s and length_s "
+                   "(more or less of the take), or use take_cut to put the pauses back or play the whole take to its end. "
+                   "never say the timing is locked.")
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
     content.append({"type": "text", "text": "\n".join(ask)})
@@ -4378,7 +4408,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 data = result["data"]
                 keep_ids = [k for k in data["keep"] if isinstance(k, int)] or [ln["id"] for ln in lines]
                 chosen = final_lines(lines, groups, keep_ids)
-                jump_ranges = line_ranges(chosen, clips)
+                jump_ranges = join_take(line_ranges(chosen, clips), clips, data.get("take_cut") or "cut_pauses")
                 by_shot = {x["index"]: (x.get("text") or "").strip() for x in data["texts"]}
                 jump_texts = [by_shot.get(i + 1, "") for i in range(n)]
                 jump_post = clean_post(data["caption"], data["hashtags"])
@@ -4512,6 +4542,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
                     fixed[i] = {"clip": ci, "start": max(0.0, float(r["start_s"])), "end": None}
             length = r.get("length_s")
+            if jump and isinstance(r.get("start_s"), (int, float)) and isinstance(length, (int, float)):
+                # One take: more or less of the same take.
+                ci = current[i]["clip"]
+                a = min(max(0.0, float(r["start_s"])), clips[ci]["duration"] - MIN_SHOT_S)
+                b = min(clips[ci]["duration"], a + max(MIN_SHOT_S, float(length)))
+                if abs(a - jump_ranges[i]["start"]) > 0.05 or abs(b - jump_ranges[i]["end"]) > 0.05:
+                    jump_ranges[i] = {"clip": ci, "start": a, "end": b}
+                continue
             if not jump and isinstance(length, (int, float)) and abs(length - shots[i]["durationS"]) > 0.05:
                 # The user asked for a longer or shorter shot: more (or less) of the same moment.
                 new_lengths[i] = min(MAX_SHOT_S, max(MIN_SHOT_S, float(length)))
@@ -4522,6 +4560,15 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 if start + new_lengths[i] > d:
                     start = max(0.0, d - new_lengths[i])  # start earlier rather than run out of clip
                 fixed[i] = {"clip": ci, "start": start, "end": None}
+        if jump:
+            joined = join_take(jump_ranges, clips, data.get("take_cut") or "keep")
+            if [(r["start"], r["end"]) for r in joined] != [(f["start"], f["end"]) for f in fixed]:
+                print(f"revise: take cuts {[(r2(f['start']), r2(f['end'])) for f in fixed]} -> "
+                      f"{[(r2(r['start']), r2(r['end'])) for r in joined]}")
+                jump_ranges = joined
+                fixed = [{"clip": r["clip"], "start": r["start"], "end": r["end"]} for r in joined]
+                shots = with_lengths(shots, [r["end"] - r["start"] for r in joined])
+            new_lengths = [s["durationS"] for s in shots]
         if new_lengths != [s["durationS"] for s in shots]:
             print(f"revise: shot lengths {[r2(s['durationS']) for s in shots]} -> {[r2(x) for x in new_lengths]}")
             shots = with_lengths(shots, new_lengths)
