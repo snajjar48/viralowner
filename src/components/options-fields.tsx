@@ -3,6 +3,7 @@
 import { useId, type ReactNode } from "react";
 import {
   INSPO_AUDIO_CONFIRM_ERROR,
+  MUSIC_LIBRARY_READY,
   NO_AUDIO_FILE_ERROR,
   NOTES_MAX,
   TEXT_MAX,
@@ -247,7 +248,7 @@ export function OptionsFields({
                   },
                 ]
               : []),
-            ...MUSIC_CHOICES,
+            ...MUSIC_CHOICES.filter((c) => c.mode !== "track" || MUSIC_LIBRARY_READY),
           ].map((c) => (
             <Choice
               key={c.mode}

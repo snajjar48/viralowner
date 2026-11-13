@@ -7,6 +7,8 @@ export type TextMode = "match" | "adapt" | "custom";
 export type TextAlign = "inspo" | "left" | "center" | "right";
 /** upload: the user's own audio file (added on the clips step). */
 export type MusicMode = "track" | "original" | "inspo" | "upload" | "none";
+/** Off until real licensed music is in: the "pick a track" option stays hidden. */
+export const MUSIC_LIBRARY_READY = false;
 export type CaptionStyleId = "bold-pop" | "clean" | "boxed" | "karaoke";
 
 export interface VideoOptions {
@@ -111,6 +113,8 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
     ? (music.mode as MusicMode)
     : DEFAULT_OPTIONS.music.mode;
   const trackId = typeof music.trackId === "string" && TRACK_IDS.has(music.trackId) ? music.trackId : null;
+  // No licensed library yet: a saved "track" choice falls back to the clips' own audio.
+  if (musicMode === "track" && !MUSIC_LIBRARY_READY) musicMode = "original";
   if (musicMode === "track" && !trackId) {
     if (music.mode === "track") return { error: "pick a track, or choose another music option." };
     musicMode = DEFAULT_OPTIONS.music.mode;
