@@ -2698,19 +2698,29 @@ def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[li
     if keep_lines:
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()] or [text.strip()]
     else:
-        lines = []
-        for para in text.split("\n"):
-            cur = ""
-            for word in para.split():
-                trial = f"{cur} {word}".strip()
-                if cur and line_width(trial, look, size) > avail:
-                    lines.append(cur)
-                    cur = word
-                else:
-                    cur = trial
-            if cur:
-                lines.append(cur)
-        lines = lines or [text.strip()]
+        def wrap(sz: int) -> list[str]:
+            out = []
+            for para in text.split("\n"):
+                cur = ""
+                for word in para.split():
+                    trial = f"{cur} {word}".strip()
+                    if cur and line_width(trial, look, sz) > avail:
+                        out.append(cur)
+                        cur = word
+                    else:
+                        cur = trial
+                if cur:
+                    out.append(cur)
+            return out or [text.strip()]
+
+        # A hook wrapped into a tall tower covers the video: shrink a little (to ~60%) to keep it to
+        # the lines it was written with, or 3 at most.
+        most = max(3, len([p for p in text.split("\n") if p.strip()]))
+        lines = wrap(size)
+        floor = round(size * 0.6)
+        while len(lines) > most and size > floor:
+            size = max(floor, round(size * 0.93))
+            lines = wrap(size)
     widest = max(line_width(ln, look, size) for ln in lines)
     if widest > avail:
         size = max(round(size * 0.5), int(size * avail / widest))
