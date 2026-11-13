@@ -19,6 +19,12 @@ function Sample({ id }: { id: CaptionStyleId }) {
           this changed everything
         </span>
       );
+    case "bold-outline":
+      return (
+        <span className="text-base leading-tight font-extrabold text-white [-webkit-text-stroke:5px_#000] [paint-order:stroke_fill]">
+          this changed everything
+        </span>
+      );
     case "boxed":
       return <span className="rounded bg-white px-1.5 py-0.5 text-xs font-semibold text-black">this changed everything</span>;
     case "karaoke":

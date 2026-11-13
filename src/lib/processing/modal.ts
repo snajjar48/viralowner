@@ -1,6 +1,7 @@
 import "server-only";
 import { WorkerError, workerFetch } from "../worker";
 import { siteUrl } from "../site-url";
+import { CAPTION_STYLES } from "../video-options";
 import {
   JOB_STAGES,
   type AnalysisStatus,
@@ -142,6 +143,8 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
           .map((f) => ({ wrong: f.wrong, right: f.right }))
       : undefined,
     captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
+    captionStyle:
+      p.captionStyle === "off" || CAPTION_STYLES.some((c) => c.id === p.captionStyle) ? p.captionStyle : undefined,
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,

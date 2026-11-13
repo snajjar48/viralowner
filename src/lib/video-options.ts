@@ -8,7 +8,7 @@ export type TextMode = "match" | "adapt" | "custom" | "none";
 export type TextAlign = "inspo" | "left" | "center" | "right";
 /** upload: the user's own audio file (added on the clips step). */
 export type MusicMode = "original" | "inspo" | "upload" | "none";
-export type CaptionStyleId = "bold-pop" | "clean" | "outline" | "boxed" | "karaoke";
+export type CaptionStyleId = "bold-pop" | "clean" | "outline" | "bold-outline" | "boxed" | "karaoke";
 
 export interface VideoOptions {
   text: { mode: TextMode; custom: string; align: TextAlign };
@@ -42,6 +42,7 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
   { id: "bold-pop", name: "bold pop", description: "big, bold, one or two words at a time" },
   { id: "clean", name: "clean", description: "simple white text, full sentences" },
   { id: "outline", name: "outline", description: "white text with a black outline, the classic look" },
+  { id: "bold-outline", name: "bold outline", description: "bolder white text with a thicker outline" },
   { id: "boxed", name: "boxed", description: "text on a solid background" },
   { id: "karaoke", name: "highlight", description: "each word lights up as it's spoken" },
 ];

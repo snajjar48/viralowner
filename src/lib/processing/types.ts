@@ -2,7 +2,7 @@
 // The pages only ever use these types and the functions in ./index.ts, so the
 // engine (the Modal worker, see ./modal.ts) can change without touching any page.
 
-import type { VideoOptions } from "../video-options";
+import type { CaptionStyleId, VideoOptions } from "../video-options";
 
 export type ShotRole = "hook" | "setup" | "build" | "reveal" | "payoff" | "b-roll" | "cta";
 
@@ -229,6 +229,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   shotLengths?: number[];
   captionFixes?: CaptionFix[];
   captionText?: string;
+  /** The caption style this version used, when a request changed it from the one in the options. */
+  captionStyle?: CaptionStyleId | "off";
   /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */
   scratch?: { roles: ShotRole[]; descriptions: string[] };
 }

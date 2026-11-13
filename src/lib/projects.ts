@@ -122,6 +122,15 @@ function toClip(r: Row): Clip {
   };
 }
 
+/** A request can change a version's caption style: its options show the style it really used. */
+function withCaptionStyle(options: VideoOptions, used: RenderPlan["captionStyle"]): VideoOptions {
+  if (!used) return options;
+  return {
+    ...options,
+    captions: used === "off" ? { ...options.captions, enabled: false } : { enabled: true, style: used },
+  };
+}
+
 function toRender(r: Row): Render {
   const result = r.result_json as { postCopy?: PostCopy; plan?: RenderPlan } | null;
   return {
@@ -133,7 +142,7 @@ function toRender(r: Row): Render {
     stage: (r.stage as JobStage | null) ?? null,
     progress: Number(r.progress),
     // Older versions were saved before some options existed: fill in the defaults.
-    settings: { ...(r.settings as RenderSettings), options: optionsFromJson((r.settings as RenderSettings)?.options) },
+    settings: { ...(r.settings as RenderSettings), options: withCaptionStyle(optionsFromJson((r.settings as RenderSettings)?.options), result?.plan?.captionStyle) },
     postCopy: result?.postCopy ?? null,
     plan: result?.plan ?? null,
     error: (r.error as string | null) ?? null,
