@@ -1258,7 +1258,7 @@ MATCH_SYSTEM = """You edit short-form videos for ViralOwner, an app that helps c
 
 You get the inspo's shot list with one frame from each shot, then frames sampled from each of the user's clips (with timestamps) and what's said in them.
 
-Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Use different clips, or at least different moments, for different shots. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
+Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Never show the same footage twice: give each shot its own clip whenever there are enough clips; when a clip has to fill more than one shot, use parts of it that don't overlap. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
 
 Writing: everything is about the user's business or topic, as their clips show it. The video will be posted on TikTok and Instagram, whose buttons and captions cover the top, bottom and right edge of the screen; the app places the text in the safe area, so keep on-screen text short enough to fit there. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
 
@@ -1313,7 +1313,7 @@ def probe_clip(path: Path) -> dict:
     """Duration, size, audio, and whether it's HDR (iPhones film HDR by default)."""
     info = json.loads(run([
         "ffprobe", "-v", "error", "-show_entries",
-        "format=duration:stream=codec_type,width,height,color_transfer", "-of", "json", str(path),
+        "format=duration:stream=codec_type,width,height,color_transfer,avg_frame_rate", "-of", "json", str(path),
     ]))
     streams = info.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
@@ -1324,7 +1324,28 @@ def probe_clip(path: Path) -> dict:
         "duration": duration,
         "has_audio": any(s.get("codec_type") == "audio" for s in streams),
         "hdr": video.get("color_transfer") in ("arib-std-b67", "smpte2084"),
+        "fps": frame_rate(video.get("avg_frame_rate")),
     }
+
+
+def frame_rate(value) -> float:
+    """"30000/1001" -> 29.97. Phones often record at a variable rate (an average like 27.3)."""
+    try:
+        num, _, den = str(value).partition("/")
+        fps = float(num) / float(den or 1)
+        return fps if 1 <= fps <= 480 else 30.0
+    except (ValueError, ZeroDivisionError):
+        return 30.0
+
+
+def to_output_rate(fps: float, stretch: float = 1.0) -> str:
+    """The filter putting a shot at OUT_FPS. With at least that many real frames a second (after any
+    slow-down), frames are just picked. With fewer (a phone's variable frame rate, around 27; slow
+    motion), simply repeating frames makes the picture stutter like it's catching, so the missing
+    frames are made by blending their neighbors instead."""
+    if fps / max(stretch, 1e-3) >= OUT_FPS - 0.5:
+        return f"fps={OUT_FPS}"
+    return f"framerate=fps={OUT_FPS}"
 
 
 def grab_frame(path: Path, t: float, dest: Path, width: int) -> Path | None:
@@ -1417,6 +1438,28 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
     return ask_claude(MATCH_SYSTEM, content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.")
 
 
+def unused_start(used: list[tuple[float, float]], clip_len: float, length: float, want: float) -> float | None:
+    """Where `length` seconds of a clip can start without overlapping any `used` span, as close to
+    `want` as possible (None if there's no room). Nobody wants to see the same footage twice."""
+    gaps, t = [], 0.0
+    for a, b in sorted(used):
+        if a - t >= length:
+            gaps.append((t, a))
+        t = max(t, b)
+    if clip_len - t >= length:
+        gaps.append((t, clip_len))
+    best = None
+    for a, b in gaps:
+        start = min(max(want, a), b - length)
+        if best is None or abs(start - want) < abs(best - want):
+            best = start
+    return best
+
+
+def overlaps(span: tuple[float, float], used: list[tuple[float, float]], slack: float = 0.05) -> bool:
+    return any(span[0] < b - slack and span[1] > a + slack for a, b in used)
+
+
 def resolve_plan(shots: list[dict], clips: list[dict], fixed: list[dict], picked: dict[int, dict]) -> list[dict]:
     """Final clip, start and length for each shot. User choices win; then Claude's; then a simple fallback."""
     plan = []
@@ -1443,6 +1486,34 @@ def resolve_plan(shots: list[dict], clips: list[dict], fixed: list[dict], picked
         if take >= need - 0.15 and start + need <= d:
             take = need
         plan.append({"clip": ci, "start": start, "take": take, "duration": need})
+    return avoid_reused_footage(plan, clips, [f["clip"] is not None and f["start"] is not None for f in fixed])
+
+
+def avoid_reused_footage(plan: list[dict], clips: list[dict], pinned: list[bool]) -> list[dict]:
+    """Moves shots that would show footage another shot already shows to an unused part of their
+    clip, or to another clip with room. The user's own exact choices are never moved. Only when
+    there's no unused footage left anywhere does a shot repeat some."""
+    used: dict[int, list[tuple[float, float]]] = {i: [] for i in range(len(clips))}
+    for p, pin in zip(plan, pinned):
+        if pin:
+            used[p["clip"]].append((p["start"], p["start"] + p["take"]))
+    for p, pin in zip(plan, pinned):
+        if pin:
+            continue
+        span = (p["start"], p["start"] + p["take"])
+        if overlaps(span, used[p["clip"]]):
+            start = unused_start(used[p["clip"]], clips[p["clip"]]["duration"], p["take"], p["start"])
+            if start is not None:
+                p["start"] = start
+            else:
+                # Another clip with room, the least used first.
+                for ci in sorted(range(len(clips)), key=lambda c: sum(b - a for a, b in used[c])):
+                    start = unused_start(used[ci], clips[ci]["duration"], p["take"], 0.3)
+                    if start is not None:
+                        p["clip"], p["start"] = ci, start
+                        break
+            span = (p["start"], p["start"] + p["take"])
+        used[p["clip"]].append(span)
     return plan
 
 
@@ -1648,7 +1719,7 @@ def boomerang(clip: dict, start: float, need: float, dest: Path) -> dict:
     vf = ",".join([
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={OUT_W}:{OUT_H}", "setsar=1", f"fps={OUT_FPS}", "format=yuv420p",
+        f"crop={OUT_W}:{OUT_H}", "setsar=1", to_output_rate(clip.get("fps") or OUT_FPS), "format=yuv420p",
     ])
     frames = max(1, round(2 * seg * OUT_FPS))
     graph = (f"[0:v]{vf},split=2[f][r];[r]reverse[b];[f][b]concat=n=2:v=1:a=0,"
@@ -1664,7 +1735,7 @@ def boomerang(clip: dict, start: float, need: float, dest: Path) -> dict:
             "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(dest)]
     subprocess.run(cmd, check=True, capture_output=True, text=True)
     print(f"boomerang: {seg:.2f}s of footage played back and forth to fill {need:.2f}s")
-    return {**clip, "path": dest, "duration": need + 0.1, "hdr": False, "has_audio": True}
+    return {**clip, "path": dest, "duration": need + 0.1, "hdr": False, "has_audio": True, "fps": float(OUT_FPS)}
 
 
 def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
@@ -1698,8 +1769,9 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={OUT_W}:{OUT_H}", "setsar=1", f"fps={OUT_FPS}",
+        f"crop={OUT_W}:{OUT_H}", "setsar=1",
         *([f"setpts={stretch:.4f}*PTS"] if stretch != 1 else []),
+        to_output_rate(clip.get("fps") or OUT_FPS, stretch),
         f"tpad=stop_mode=clone:stop_duration={total:.3f}",
         *([m] if (m := motion_filter(motion, round(total * OUT_FPS))) else []),
         *([COLOR_FILTER_VF[color]] if color in COLOR_FILTER_VF else []),
@@ -3074,7 +3146,7 @@ How the video is built: a list of shots, played in the order you give them. Each
 
 Editing craft:
 - The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
-- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Don't reuse the same moment unless that's the point.
+- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Never show the same thing twice: use each clip once, as one shot or a run of shots in a row (cutting within one action is fine), and never come back to a clip after cutting away from it (no teaser of the ending at the start that then plays again later). No two shots may use overlapping parts of a clip. The one exception is someone talking to the camera: the edit can cut away from their clip and back to it. If the footage runs out before the length the user asked for, make the video shorter and say so.
 - Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
 - Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
@@ -3246,7 +3318,7 @@ def plan_from_render(plan: dict, clip_index: dict[str, int]) -> dict | None:
 
 def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | None, text_mode: str,
                 custom_text: str, previous: dict | None, prev_frames: list[Path | None], request: str,
-                fresh: bool, captions: bool) -> dict:
+                fresh: bool, captions: bool, fix: tuple[dict, list[str]] | None = None) -> dict:
     """Claude's plan for the whole video (DIRECTOR_SCHEMA), with usage and cost."""
     total_words = sum(len(s.get("words") or []) for c in clips for s in c.get("speech") or [])
     if audio_info:
@@ -3297,12 +3369,16 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     elif fresh:
         ask.append("this is a fresh take: make a different edit from the obvious one, still following the prompt exactly.")
     ask.append("plan the whole video.")
+    if fix:
+        ask += ["you already planned it like this:\n" + json.dumps(fix[0], ensure_ascii=False),
+                "but it shows the same thing twice: " + "; ".join(fix[1]) + ". fix only that (use other clips or "
+                "moments, or drop shots) and keep everything else as it is."]
     content.append({"type": "text", "text": "\n" + "\n".join(ask)})
     return ask_claude(DIRECTOR_SYSTEM, content, DIRECTOR_SCHEMA,
                       "we couldn’t make a video from that. try different clips or a different prompt.", effort="xhigh")
 
 
-def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str) -> dict:
+def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, talking: set[int] | None = None) -> dict:
     """Checks Claude's plan against the real clips: every shot inside its clip and long enough, the
     video within its length limit. Returns the plan, cleaned."""
     shots = []
@@ -3344,6 +3420,35 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str) 
         })
         if len(shots) >= SCRATCH_MAX_SHOTS or total >= max_s - 0.05:
             break
+    # Never the same footage twice: a shot overlapping an earlier one moves to an unused part of its
+    # clip, or is shortened to fit one, or is left out.
+    used: dict[int, list[tuple[float, float]]] = {}
+    kept_shots = []
+    for sh in shots:
+        if (talking is not None and sh["clip"] in used and sh["clip"] not in talking and kept_shots
+                and kept_shots[-1]["clip"] != sh["clip"]):
+            print(f"scratch: left out a shot going back to clip {sh['clip'] + 1}")
+            continue
+        spans = used.setdefault(sh["clip"], [])
+        length = sh["end"] - sh["start"]
+        if overlaps((sh["start"], sh["end"]), spans):
+            start = unused_start(spans, clips[sh["clip"]]["duration"], length, sh["start"])
+            if start is None:
+                # The longest unused stretch, if it's long enough for a shot.
+                gaps, t = [], 0.0
+                for a, b in sorted(spans):
+                    gaps.append((t, a))
+                    t = max(t, b)
+                gaps.append((t, clips[sh["clip"]]["duration"]))
+                a, b = max(gaps, key=lambda g: g[1] - g[0])
+                if b - a < SCRATCH_MIN_SHOT_S:
+                    print(f"scratch: left out a shot that repeated footage (clip {sh['clip'] + 1})")
+                    continue
+                start, length = a, b - a
+            sh["start"], sh["end"] = r2(start), r2(start + length)
+        spans.append((sh["start"], sh["end"]))
+        kept_shots.append(sh)
+    shots = kept_shots
     if not shots:
         raise JobError("we couldn’t plan a video from these clips. try adding clips or describing the video differently.")
     shots[0]["transition_in"] = "cut"
@@ -3383,6 +3488,21 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str) 
         "caption": (data.get("caption") or "").strip(),
         "hashtags": [h.strip() for h in data.get("hashtags") or [] if isinstance(h, str) and h.strip()],
     }
+
+
+def reuse_problems(shots: list[dict], talking: set[int]) -> list[str]:
+    """Where a plan shows the same thing twice: overlapping parts of a clip, or going back to a clip
+    after cutting away (fine only for a clip of someone talking)."""
+    problems, last, spans = [], {}, {}
+    for i, sh in enumerate(shots):
+        c = sh["clip"]
+        if overlaps((sh["start"], sh["end"]), spans.get(c, [])):
+            problems.append(f"shot {i + 1} repeats part of clip {c + 1} that's already used")
+        elif c in last and last[c] != i - 1 and c not in talking:
+            problems.append(f"shot {i + 1} goes back to clip {c + 1}, already shown in shot {last[c] + 1}")
+        spans.setdefault(c, []).append((sh["start"], sh["end"]))
+        last[c] = i
+    return problems
 
 
 def custom_lines_kept(shots: list[dict], custom: str) -> bool:
@@ -3533,7 +3653,20 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                              prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")))
         cost += result["cost_usd"]
-        cleaned = clean_director(result["data"], clips, max_s, text_mode)
+        # Checked before clean_director's own fix-up, which can only move or drop shots.
+        talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
+        raw = [{"clip": s.get("clip", 0) - 1, "start": float(s.get("start_s") or 0), "end": float(s.get("end_s") or 0)}
+               for s in result["data"].get("shots") or [] if isinstance(s.get("clip"), int)]
+        problems = reuse_problems(raw, talking)
+        if problems:
+            print(f"scratch director repeated footage, asking again: {problems}")
+            report("matching", 32)
+            again = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
+                                prev_frames, request, bool(req.get("fresh")),
+                                bool((options.get("captions") or {}).get("enabled")), fix=(result["data"], problems))
+            cost += again["cost_usd"]
+            result = {**again, "usage": again["usage"]}
+        cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
         if text_mode == "custom" and custom_text.strip() and not custom_lines_kept(cleaned["shots"], custom_text):
             # The user's own words go in exactly as typed, whatever Claude did with them.
             placed = spread_lines(custom_text, [{"onScreenText": s["text"] or None,

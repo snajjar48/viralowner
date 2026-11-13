@@ -37,7 +37,10 @@ async function Status({ id, renderId }: { id: string; renderId: string | null })
 
   return (
     <FlowShell projectId={id}>
+      {/* Keyed by version: the router keeps a page's state when you come back to it, and a new
+          version (regenerate, a change) must start fresh rather than show the last one's progress. */}
       <StatusTracker
+        key={render.id}
         projectId={id}
         renderId={render.id}
         scratch={project.kind === "scratch"}
