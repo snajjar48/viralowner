@@ -176,6 +176,7 @@ def _make_fire_assets() -> None:
 # Sound effects: real recordings (worker/assets/sfx, trimmed and leveled), with the moment each one
 # "hits" (its loudest point: a riser's top, a whoosh's middle, a hit's attack), in seconds from its start.
 SFX_DIR = "/opt/viralowner/sfx"
+PLAYBOOK_DIR = "/opt/viralowner/playbook"
 SFX_HITS = {"whoosh": 0.55, "swish": 0.06, "pop": 0.03, "click": 0.03, "camera_shutter": 0.08, "flash": 0.07,
             "ding": 0.06, "cash_register": 0.56, "boom": 0.11, "vine_boom": 0.04, "riser": 2.0, "glitch": 0.23,
             "record_scratch": 0.04, "typing": 0.0, "fire": 0.21}
@@ -213,7 +214,38 @@ image = (
     .run_function(_download_clap)
     .run_function(_make_fire_assets)
     .add_local_dir(Path(__file__).parent / "assets" / "sfx", SFX_DIR)
+    .add_local_dir(Path(__file__).parent / "assets" / "playbook", PLAYBOOK_DIR)
 )
+
+
+def _read_playbook() -> str:
+    """What makes short videos go viral, learned from studying real viral skits
+    (worker/assets/playbook/viral-playbook.md; see its README for how it's made)."""
+    for path in (Path(PLAYBOOK_DIR) / "viral-playbook.md",
+                 Path(__file__).parent / "assets" / "playbook" / "viral-playbook.md"):
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+    return ""
+
+
+VIRAL_PLAYBOOK = _read_playbook()
+
+
+def with_playbook(system: str, inspo: bool) -> str:
+    """A system prompt, plus the viral playbook. Remakes follow their inspo first; the playbook
+    fills in everything the inspo leaves open (and how the user's own footage is cut and timed)."""
+    if not VIRAL_PLAYBOOK:
+        return system
+    how = ("The inspo's structure, timing and style come first. Use this playbook for every choice the inspo "
+           "leaves open: which moments of the user's footage to use, how their lines are timed and trimmed, the "
+           "words you write, and where things go." if inspo else
+           "Apply it to every choice, unless the user asks for something different.")
+    how += (" These are defaults, never limits: anything the user asks for (transitions, sound effects, a caption "
+            "style, speed changes) is still done exactly as asked.")
+    return (system + "\n\n## What makes short videos go viral\nLearned from studying real viral skits. " + how
+            + "\n\n" + VIRAL_PLAYBOOK)
 
 # viralowner-worker:      ANTHROPIC_API_KEY, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
 # viralowner-worker-auth: WORKER_TOKEN (the same value the website has)
@@ -1745,7 +1777,7 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
         *(["this is a fresh take: make different choices from the most obvious ones where it still works."] if fresh else []),
     ]
     content.append({"type": "text", "text": "\n".join(ask)})
-    return ask_claude(MATCH_SYSTEM, content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.")
+    return ask_claude(with_playbook(MATCH_SYSTEM, True), content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.")
 
 
 def unused_start(used: list[tuple[float, float]], clip_len: float, length: float, want: float) -> float | None:
@@ -3192,7 +3224,7 @@ def select_lines(inspo: dict, lines: list[dict], groups: list[list[int]], text_m
         "choose the lines to keep.",
         TEXT_RULES["adapt"] if text_mode == "adapt" else "on-screen text: set already. return an empty string for every inspo shot.",
     ])
-    return ask_claude(JUMPCUT_SYSTEM, [{"type": "text", "text": text}], JUMPCUT_SCHEMA,
+    return ask_claude(with_playbook(JUMPCUT_SYSTEM, True), [{"type": "text", "text": text}], JUMPCUT_SCHEMA,
                       "we couldn’t edit that take. try filming it again.")
 
 
@@ -3375,7 +3407,7 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
     content.append({"type": "text", "text": "\n".join(ask)})
-    return ask_claude(REVISE_SYSTEM, content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.",
+    return ask_claude(with_playbook(REVISE_SYSTEM, True), content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.",
                       effort="xhigh")
 
 
@@ -3508,7 +3540,7 @@ def plan_effects(words: str, effects: dict, shots: list[dict]) -> tuple[dict, st
         f"the video now ({n} shots, {n - 1} cuts):\n{describe_effects(effects, shots)}\n\n"
         "return the whole updated edit."
     )}]
-    result = ask_claude(EFFECTS_SYSTEM, content, EFFECTS_SCHEMA, "we couldn’t work out those effects.", effort="xhigh")
+    result = ask_claude(with_playbook(EFFECTS_SYSTEM, True), content, EFFECTS_SCHEMA, "we couldn’t work out those effects.", effort="xhigh")
     d = result["data"]
     by = {x["index"]: x for x in d["shots"]}
     new = {
@@ -3856,7 +3888,7 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
                 "but it shows the same thing twice: " + "; ".join(fix[1]) + ". fix only that (use other clips or "
                 "moments, or drop shots) and keep everything else as it is."]
     content.append({"type": "text", "text": "\n" + "\n".join(ask)})
-    return ask_claude(DIRECTOR_SYSTEM, content, DIRECTOR_SCHEMA,
+    return ask_claude(with_playbook(DIRECTOR_SYSTEM, False), content, DIRECTOR_SCHEMA,
                       "we couldn’t make a video from that. try different clips or a different prompt.", effort="xhigh")
 
 

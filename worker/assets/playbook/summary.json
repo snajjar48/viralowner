@@ -1,0 +1,80 @@
+{
+ "videos": 37,
+ "duration_s": {
+  "median": 9.5,
+  "p25": 6.4,
+  "p75": 14.6,
+  "min": 5.27,
+  "max": 47.8
+ },
+ "shots": {
+  "median": 3,
+  "p25": 2,
+  "p75": 6,
+  "min": 1,
+  "max": 19
+ },
+ "cuts_per_10s": {
+  "median": 2.93,
+  "p25": 1.23,
+  "p75": 4.11,
+  "min": 0.0,
+  "max": 6.56
+ },
+ "median_shot_s": {
+  "median": 2.13,
+  "p25": 1.73,
+  "p75": 4.05,
+  "min": 0.73,
+  "max": 8.0
+ },
+ "words_per_s": {
+  "median": 2.14,
+  "p25": 0,
+  "p75": 2.75,
+  "min": 0,
+  "max": 7.69
+ },
+ "first_word_s": {
+  "median": 0.0,
+  "p25": 0.0,
+  "p75": 0.62,
+  "min": 0.0,
+  "max": 9.14
+ },
+ "speech_share": {
+  "median": 0.43,
+  "p25": 0,
+  "p75": 0.94,
+  "min": 0,
+  "max": 0.99
+ },
+ "pauses_over_0_35s": {
+  "median": 0,
+  "p25": 0,
+  "p75": 2,
+  "min": 0,
+  "max": 10
+ },
+ "longest_pause_s": {
+  "median": 1.22,
+  "p25": 0.32,
+  "p75": 3.08,
+  "min": 0.0,
+  "max": 11.08
+ },
+ "median_gap_s": {
+  "median": 0.0,
+  "p25": 0.0,
+  "p75": 0.0,
+  "min": 0.0,
+  "max": 0.15
+ },
+ "after_last_word_s": {
+  "median": 0.85,
+  "p25": 0.54,
+  "p75": 2.52,
+  "min": 0.05,
+  "max": 10.07
+ }
+}
