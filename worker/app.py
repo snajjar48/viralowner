@@ -1258,7 +1258,7 @@ MATCH_SYSTEM = """You edit short-form videos for ViralOwner, an app that helps c
 
 You get the inspo's shot list with one frame from each shot, then frames sampled from each of the user's clips (with timestamps) and what's said in them.
 
-Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Never show the same footage twice: give each shot its own clip whenever there are enough clips; when a clip has to fill more than one shot, use parts of it that don't overlap. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
+Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Never show the same footage twice: give each shot its own clip whenever there are enough clips; when a clip has to fill more than one shot, use clearly different portions of it, at least 1 second apart. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
 
 Writing: everything is about the user's business or topic, as their clips show it. The video will be posted on TikTok and Instagram, whose buttons and captions cover the top, bottom and right edge of the screen; the app places the text in the safe area, so keep on-screen text short enough to fit there. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
 
@@ -1443,6 +1443,7 @@ def unused_start(used: list[tuple[float, float]], clip_len: float, length: float
     `want` as possible (None if there's no room). Nobody wants to see the same footage twice."""
     gaps, t = [], 0.0
     for a, b in sorted(used):
+        a, b = a - SAME_CLIP_GAP_S, b + SAME_CLIP_GAP_S  # keep clear of what's used
         if a - t >= length:
             gaps.append((t, a))
         t = max(t, b)
@@ -1456,8 +1457,12 @@ def unused_start(used: list[tuple[float, float]], clip_len: float, length: float
     return best
 
 
-def overlaps(span: tuple[float, float], used: list[tuple[float, float]], slack: float = 0.05) -> bool:
-    return any(span[0] < b - slack and span[1] > a + slack for a, b in used)
+SAME_CLIP_GAP_S = 1.0  # two shots from one clip are at least this far apart in it: clearly different portions
+
+
+def overlaps(span: tuple[float, float], used: list[tuple[float, float]], gap: float = SAME_CLIP_GAP_S) -> bool:
+    """`span` is the same section as (or too close to) one already `used`."""
+    return any(span[0] < b + gap and span[1] > a - gap for a, b in used)
 
 
 def resolve_plan(shots: list[dict], clips: list[dict], fixed: list[dict], picked: dict[int, dict]) -> list[dict]:
@@ -3152,7 +3157,7 @@ How the video is built: a list of shots, played in the order you give them. Each
 
 Editing craft:
 - The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
-- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Use each clip for exactly one shot: never two shots from the same clip, whether in a row or later on (no teaser of the ending at the start that plays again later), because viewers see it as the same footage twice. Pick the single best stretch of each clip; a shot can run longer to hold a moment. The one exception is a clip of someone talking to the camera: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
+- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Give every shot its own clip. Use a second part of a clip only when it's necessary: there aren't enough other clips for the video, or the clip holds a different moment the video needs (like the finished result at the end of a long take). Then the parts must be clearly different portions of the clip: never overlapping, and at least 1 second apart, so nobody sees the same section twice (and no teaser of the ending at the start that plays again later). A clip of someone talking to the camera is the exception: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
 - Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
 - Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
@@ -3431,10 +3436,15 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
     used: dict[int, list[tuple[float, float]]] = {}
     kept_shots = []
     for sh in shots:
-        if talking is not None and sh["clip"] in used and sh["clip"] not in talking:
-            print(f"scratch: left out a second shot from clip {sh['clip'] + 1}")
-            continue
         spans = used.setdefault(sh["clip"], [])
+        if talking is not None and sh["clip"] in talking:
+            # Cuts of someone talking follow their sentences: only never overlap.
+            if any(sh["start"] < b - 0.05 and sh["end"] > a + 0.05 for a, b in spans):
+                print(f"scratch: left out a shot repeating part of talking clip {sh['clip'] + 1}")
+                continue
+            spans.append((sh["start"], sh["end"]))
+            kept_shots.append(sh)
+            continue
         length = sh["end"] - sh["start"]
         if overlaps((sh["start"], sh["end"]), spans):
             start = unused_start(spans, clips[sh["clip"]]["duration"], length, sh["start"])
@@ -3442,8 +3452,8 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
                 # The longest unused stretch, if it's long enough for a shot.
                 gaps, t = [], 0.0
                 for a, b in sorted(spans):
-                    gaps.append((t, a))
-                    t = max(t, b)
+                    gaps.append((t, a - SAME_CLIP_GAP_S))
+                    t = max(t, b + SAME_CLIP_GAP_S)
                 gaps.append((t, clips[sh["clip"]]["duration"]))
                 a, b = max(gaps, key=lambda g: g[1] - g[0])
                 if b - a < SCRATCH_MIN_SHOT_S:
@@ -3495,16 +3505,20 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
     }
 
 
-def reuse_problems(shots: list[dict], talking: set[int]) -> list[str]:
-    """Where a plan shows the same thing twice: overlapping parts of a clip, or a clip used for more
-    than one shot (fine only for a clip of someone talking)."""
+def reuse_problems(shots: list[dict], talking: set[int], clip_count: int) -> list[str]:
+    """Where a plan shows the same thing twice, or reuses a clip it doesn't need to: the same section
+    of a clip twice (or too close), or a second shot from a clip while other clips go unused.
+    A clip of someone talking can be cut up freely."""
     problems, last, spans = [], {}, {}
+    unused = set(range(clip_count)) - {sh["clip"] for sh in shots}
     for i, sh in enumerate(shots):
         c = sh["clip"]
-        if overlaps((sh["start"], sh["end"]), spans.get(c, [])):
-            problems.append(f"shot {i + 1} repeats part of clip {c + 1} that's already used")
-        elif c in last and c not in talking:
-            problems.append(f"shot {i + 1} uses clip {c + 1} again (already shot {last[c] + 1}); each clip gets one shot")
+        if c in last and c not in talking and overlaps((sh["start"], sh["end"]), spans.get(c, [])):
+            problems.append(f"shot {i + 1} shows the same section of clip {c + 1} as shot {last[c] + 1} (or within "
+                            f"{SAME_CLIP_GAP_S:.0f}s of it)")
+        elif c in last and c not in talking and unused:
+            problems.append(f"shot {i + 1} uses clip {c + 1} again (already shot {last[c] + 1}) while clips "
+                            f"{', '.join(str(u + 1) for u in sorted(unused))} aren't used; reuse a clip only if it's necessary")
         spans.setdefault(c, []).append((sh["start"], sh["end"]))
         last[c] = i
     return problems
@@ -3662,7 +3676,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
         raw = [{"clip": s.get("clip", 0) - 1, "start": float(s.get("start_s") or 0), "end": float(s.get("end_s") or 0)}
                for s in result["data"].get("shots") or [] if isinstance(s.get("clip"), int)]
-        problems = reuse_problems(raw, talking)
+        problems = reuse_problems(raw, talking, len(clips))
         if problems:
             print(f"scratch director repeated footage, asking again: {problems}")
             report("matching", 32)
