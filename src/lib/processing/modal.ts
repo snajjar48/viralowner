@@ -95,6 +95,7 @@ export function parseRenderOutput(raw: unknown): RenderOutput | null {
     postCopy: {
       caption: str(copy?.caption),
       hashtags: Array.isArray(copy?.hashtags) ? copy.hashtags.map(str).filter(Boolean).slice(0, 10) : [],
+      alternates: Array.isArray(copy?.alternates) ? copy.alternates.map(str).filter(Boolean).slice(0, 3) : [],
     },
     plan: parsePlan(o.plan),
     inspoStyle: isStyle((o as { inspoStyle?: unknown }).inspoStyle) ? (o as { inspoStyle: InspoStyle }).inspoStyle : undefined,

@@ -733,6 +733,65 @@ def apply_text_rules(texts: list[str], instructions: str) -> list[str]:
     return lines
 
 
+POST_SYSTEM = """You write the post caption and hashtags for a short-form video (TikTok, Instagram Reels, YouTube Shorts) that a creator or small business owner is about to post. You see the finished video: frames from start to end, its on-screen text, exactly what's said, and what kind of video it is.
+
+How captions work now:
+- People read the caption after the video has hooked them, often while it loops. Its job is to add something the video doesn't say: the thought behind the face, the other side of the story, a dry understated punchline, a specific detail that makes it real, or a question people actually want to answer in the comments. Never explain the joke, never restate the on-screen text or the dialogue, never describe what happens in the video.
+- The first line is all most people see before "more": make it land in under about 80 characters. Most great captions are one line; two at most.
+- Sound like a real person with taste: observant, specific, dry. The wit comes from specificity and understatement, not slang. No forced internet slang ("bestie", "slay", "no cap", "it's giving", "lowkey", "the way i...") unless the user writes like that, no "pov:" when the video already says it, no clickbait ("wait for it", "you won't believe"), no hard sell. Name the product, dish or place only where it's natural; a call to action only if the user asked for one or it's a genuine question.
+- TikTok and Instagram treat captions as search text: work in, naturally, the words someone would search to find this (the product, the type of shop or job, the situation).
+- Emoji: none or one, and only if it adds tone.
+- Hashtags: 3 to 5 (Instagram allows at most 5). Specific beats generic: the niche, the product, the situation, the city if it's known. No filler like #fyp, #foryou, #viral, #relatable, #funny, #trending.
+- Match the video's tone: a deadpan skit gets a deadpan caption, an aesthetic video a calm sensory line, a tips video the promise of the payoff.
+- Never invent prices, names, places, results or claims. Use names and words exactly as the video spells them.
+
+Follow anything the user asked about their captions or how they write (their instructions win over these rules)."""
+
+POST_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "caption": {"type": "string", "description": "the best caption."},
+        "alternates": {"type": "array", "items": {"type": "string"},
+                       "description": "two more captions, each a clearly different angle (e.g. a question for the comments, a dry one-liner, the other character's side)."},
+        "hashtags": {"type": "array", "items": {"type": "string"}, "description": "3 to 5 hashtags, with #."},
+    },
+    "required": ["caption", "alternates", "hashtags"],
+    "additionalProperties": False,
+}
+
+
+def write_post(video: Path, workdir: Path, texts: list[str], words: list[dict], about: str,
+               instructions: str) -> tuple[dict | None, float]:
+    """The post caption, two alternates and hashtags, written from the finished video. (None, 0) if it fails."""
+    duration = probe(video)["duration"]
+    content: list[dict] = [{"type": "text", "text": (
+        f"the video ({duration:.1f}s). what kind of video it is: {about or 'unknown'}\n"
+        "on-screen text: " + (json.dumps([t for t in dict.fromkeys(t.strip() for t in texts) if t], ensure_ascii=False)
+                              if any(t.strip() for t in texts) else "none") + "\n"
+        "what's said: " + (json.dumps(" ".join(w["w"] for w in words), ensure_ascii=False) if words else "nothing (or no captions)")
+        + (f"\n\nthe user's instructions:\n{instructions}" if instructions else "")
+    )}]
+    for k in range(6):
+        t = duration * (k + 0.5) / 6
+        f = grab_frame(video, t, workdir / f"post{k}.jpg", MATCH_FRAME_WIDTH)
+        if f:
+            content.append({"type": "text", "text": f"at {t:.1f}s"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(f)}})
+    content.append({"type": "text", "text": "write the post."})
+    try:
+        result = ask_claude(POST_SYSTEM, content, POST_SCHEMA, "post", effort="high")
+    except Exception as e:  # noqa: BLE001
+        print(f"post copy failed: {type(e).__name__}: {e}")
+        return None, 0.0
+    d = result["data"]
+    tags = [h.strip() if h.strip().startswith("#") else f"#{h.strip()}" for h in d.get("hashtags") or [] if h.strip()]
+    post = {"caption": (d.get("caption") or "").strip(),
+            "alternates": [a.strip() for a in d.get("alternates") or [] if isinstance(a, str) and a.strip()][:2],
+            "hashtags": [h.replace(" ", "") for h in tags][:5]}
+    print(f"post copy (${result['cost_usd']}): {post}")
+    return (post if post["caption"] else None), result["cost_usd"]
+
+
 def transcribe_take(path: Path) -> dict:
     """Like transcribe(), for takes where the same line may be said several times. Whisper, given
     the whole recording, tends to drop a sentence that repeats the one before it, so each stretch
@@ -4316,6 +4375,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         # The prompt (and any change request) can say how the captions should look and read.
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
         "preferences": prefs,
+        "writePost": not (base and request),
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -4806,6 +4866,20 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
+    # The post caption, written from the finished video (a change request keeps the one it has,
+    # unless it was asked to change it).
+    write_new_post = req["writePost"] if "writePost" in req else (not previous and not (keep or {}).get("postCopy"))
+    if write_new_post:
+        report("finishing", 93)
+        ins = breakdown.get("insights") or {}
+        why = ins.get("whyItWorks")
+        about = (req.get("captionInstructions") or "").strip()[:600] or "; ".join(
+            x for x in (ins.get("hook"), ins.get("structure"), *(why if isinstance(why, list) else [why]))
+            if isinstance(x, str) and x)
+        new_post, post_cost = write_post(out, workdir, plan_texts, words, about, guide)
+        cost += post_cost
+        if new_post:
+            post = new_post
     # Watch for frozen picture (there should never be any): logged so it can be fixed at the source.
     frozen = subprocess.run(["ffmpeg", "-v", "info", "-i", out.name, "-map", "0:v", "-vf",
                              "freezedetect=n=0.0005:d=0.4", "-f", "null", "-"], cwd=workdir, capture_output=True, text=True)

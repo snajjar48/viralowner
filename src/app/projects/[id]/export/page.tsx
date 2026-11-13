@@ -78,6 +78,17 @@ async function Export({ id, version }: { id: string; version: number | null }) {
                 {hashtags && <CopyButton text={copy.caption} label="copy caption only" />}
               </div>
             )}
+            {(copy.alternates ?? []).length > 0 && (
+              <div className="flex flex-col gap-2 border-t border-white/10 pt-3">
+                <p className="text-xs text-muted">or try one of these</p>
+                {(copy.alternates ?? []).map((a) => (
+                  <div key={a} className="flex items-start justify-between gap-3">
+                    <p className="text-sm text-foreground/80">{a}</p>
+                    <CopyButton text={hashtags ? `${a}\n\n${hashtags}` : a} label="copy this caption with the hashtags" />
+                  </div>
+                ))}
+              </div>
+            )}
             {copy.hashtags.length > 0 && (
               <div className="flex items-start justify-between gap-3">
                 <ul className="flex flex-wrap gap-2" aria-label="hashtags">

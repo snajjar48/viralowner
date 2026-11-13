@@ -206,6 +206,8 @@ export const JOB_STAGES: JobStage[] = ["analyzing", "matching", "editing", "fini
 export interface PostCopy {
   caption: string;
   hashtags: string[];
+  /** Other captions to choose from, each a different angle. */
+  alternates?: string[];
 }
 
 export interface RenderOutput {
