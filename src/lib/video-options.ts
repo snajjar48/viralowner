@@ -9,9 +9,11 @@ export type TextAlign = "inspo" | "left" | "center" | "right";
 /** upload: the user's own audio file (added on the clips step). */
 export type MusicMode = "original" | "inspo" | "upload" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "outline" | "bold-outline" | "boxed" | "karaoke";
+/** auto: the inspo's text style (remakes), or ours (start from scratch). Otherwise a fixed look. */
+export type TextStyleId = "auto" | "classic" | "bold-pop" | "boxed" | "dark-box" | "headline" | "handwritten" | "neon";
 
 export interface VideoOptions {
-  text: { mode: TextMode; custom: string; align: TextAlign };
+  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
   captions: { enabled: boolean; style: CaptionStyleId };
@@ -27,7 +29,7 @@ export const REQUEST_MAX = 500;
 export const PROMPT_MAX = 2000;
 
 export const DEFAULT_OPTIONS: VideoOptions = {
-  text: { mode: "match", custom: "", align: "inspo" },
+  text: { mode: "match", custom: "", align: "inspo", style: "auto" },
   music: { mode: "original", inspoAudioConfirmed: false },
   captions: { enabled: true, style: "bold-pop" },
   notes: "",
@@ -40,8 +42,8 @@ export const INSPO_AUDIO_CONFIRM_ERROR =
 
 export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: string }[] = [
   { id: "bold-pop", name: "bold pop", description: "big, bold, one or two words at a time" },
-  { id: "clean", name: "clean", description: "simple white text, full sentences" },
-  { id: "outline", name: "outline", description: "white text with a black outline, the classic look" },
+  { id: "clean", name: "clean", description: "white semi-bold sentences, soft shadow" },
+  { id: "outline", name: "outline", description: "white semi-bold text with a black outline, the classic look" },
   { id: "bold-outline", name: "bold outline", description: "bolder white text with a thicker outline" },
   { id: "boxed", name: "boxed", description: "text on a solid background" },
   { id: "karaoke", name: "highlight", description: "each word lights up as it's spoken" },
@@ -52,6 +54,18 @@ const TEXT_ALIGNS: TextAlign[] = ["inspo", "left", "center", "right"];
 // Old projects may have "track" saved (a music library that was never launched): it reads as "original".
 const MUSIC_MODES: MusicMode[] = ["original", "inspo", "upload", "none"];
 const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
+
+/** On-screen text looks (the worker has the same ids in TEXT_PRESETS). */
+export const TEXT_STYLES: { id: Exclude<TextStyleId, "auto">; name: string; description: string }[] = [
+  { id: "classic", name: "classic", description: "white with a black stroke" },
+  { id: "bold-pop", name: "bold pop", description: "heavy yellow with a black stroke" },
+  { id: "boxed", name: "boxed", description: "black text on a white box" },
+  { id: "dark-box", name: "dark box", description: "white text on a black box" },
+  { id: "headline", name: "headline", description: "tall condensed letters" },
+  { id: "handwritten", name: "handwritten", description: "marker capitals" },
+  { id: "neon", name: "neon", description: "pink with a white stroke" },
+];
+const TEXT_STYLE_IDS: TextStyleId[] = ["auto", ...TEXT_STYLES.map((s) => s.id)];
 
 function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -100,6 +114,7 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
       mode: textMode === "custom" && !custom ? "match" : textMode,
       custom,
       align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
+      style: TEXT_STYLE_IDS.includes(text.style as TextStyleId) ? (text.style as TextStyleId) : "auto",
     },
     music: {
       mode: musicMode,

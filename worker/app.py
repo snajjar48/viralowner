@@ -699,6 +699,40 @@ def with_preferences(instructions: str, prefs: str) -> str:
         "say otherwise):\n" + prefs)
 
 
+TEXT_RULES_SCHEMA = {
+    "type": "object",
+    "properties": {"lines": {"type": "array", "items": {"type": "string"},
+                             "description": "every text, in the same order and the same number, with the instructions applied."}},
+    "required": ["lines"],
+    "additionalProperties": False,
+}
+
+
+def apply_text_rules(texts: list[str], instructions: str) -> list[str]:
+    """The inspo's own on-screen words, with what the user asked about how they're written (lowercase,
+    no period, no emoji, no hyphens...) applied. The words themselves stay. Best effort."""
+    if not instructions.strip() or not any(t.strip() for t in texts):
+        return texts
+    try:
+        result = ask_claude(
+            "You apply a user's instructions about how on-screen text is written to the lines of a short video: "
+            "letter case, punctuation, emoji, hyphens, spelling they asked for. Keep every word and line break "
+            "otherwise exactly as given (empty lines stay empty). If no instruction is about how the on-screen text "
+            "is written, return the lines unchanged.",
+            [{"type": "text", "text": "the user's instructions:\n" + instructions + "\n\nthe lines (JSON):\n"
+                                      + json.dumps(texts, ensure_ascii=False)}],
+            TEXT_RULES_SCHEMA, "text", effort="low")
+    except Exception as e:  # noqa: BLE001
+        print(f"text rules failed: {type(e).__name__}: {e}")
+        return texts
+    lines = result["data"].get("lines") or []
+    if len(lines) != len(texts) or not all(isinstance(x, str) for x in lines):
+        return texts
+    if lines != texts:
+        print(f"text rules applied: {texts} -> {lines}")
+    return lines
+
+
 def transcribe_take(path: Path) -> dict:
     """Like transcribe(), for takes where the same line may be said several times. Whisper, given
     the whole recording, tends to drop a sentence that repeats the one before it, so each stretch
@@ -1117,6 +1151,16 @@ TEXT_ALIGNS = ["left", "center", "right"]
 # Height of a capital letter, as a fraction of the frame height, for each size name.
 TEXT_SIZES = {"small": 0.028, "medium": 0.038, "large": 0.052, "xl": 0.075}
 TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"]
+# The on-screen text looks the user can pick (the website's TEXT_STYLES). "auto" (or none) keeps the inspo's / ours.
+TEXT_PRESETS = {
+    "classic": {"font": "clean_sans", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
+    "bold-pop": {"font": "heavy_sans", "color": "#FFD84D", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
+    "boxed": {"font": "clean_sans", "color": "#000000", "outline": "none", "box": True, "boxColor": "#FFFFFF", "shadow": False},
+    "dark-box": {"font": "clean_sans", "color": "#FFFFFF", "outline": "none", "box": True, "boxColor": "#000000", "shadow": False},
+    "headline": {"font": "condensed", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
+    "handwritten": {"font": "marker", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
+    "neon": {"font": "rounded", "color": "#FF5FD2", "outline": "thick", "outlineColor": "#FFFFFF", "box": False, "shadow": False},
+}
 DEFAULT_TEXT_STYLE = {
     "font": "clean_sans", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False,
     "boxColor": "#FFFFFF", "shadow": False, "align": "center", "size": "large", "animation": "none",
@@ -2558,10 +2602,10 @@ CAPTION_LOOKS = {
     "bold-pop": dict(font="Montserrat Black", bold=0, size=118, primary=WHITE, outline_c=BLACK, border=1, outline=8,
                      shadow=0, words=2, chars=14, upper=True, active=POP_YELLOW),
     # clean: plain white sentences with a soft shadow.
-    "clean": dict(font="Montserrat Medium", bold=0, size=70, primary=WHITE, outline_c=BLACK, border=1, outline=0,
+    "clean": dict(font="Montserrat SemiBold", bold=0, size=72, primary=WHITE, outline_c=BLACK, border=1, outline=0,
                   shadow=3, words=6, chars=30, upper=False, active=None),
     # outline: the clean font and sentences, white with a solid black stroke (tiktok's classic text).
-    "outline": dict(font="Montserrat Medium", bold=0, size=76, primary=WHITE, outline_c=BLACK, border=1, outline=6,
+    "outline": dict(font="Montserrat SemiBold", bold=0, size=76, primary=WHITE, outline_c=BLACK, border=1, outline=6,
                     shadow=0, words=5, chars=26, upper=False, active=None),
     # bold outline: heavier and bigger than outline, with a thicker black stroke.
     "bold-outline": dict(font="Montserrat ExtraBold", bold=0, size=84, primary=WHITE, outline_c=BLACK, border=1,
@@ -2578,8 +2622,8 @@ CAPTION_LOOKS = {
 # What each caption style looks like, for Claude (when a user asks for a look in words).
 CAPTION_STYLE_INFO = {
     "bold-pop": "big heavy capitals, white with a black edge, one or two words at a time, the word being said in yellow",
-    "clean": "simple white sentences with a soft shadow, no stroke",
-    "outline": "white sentences with a solid black stroke (tiktok's classic look)",
+    "clean": "simple white semi-bold sentences with a soft shadow, no stroke",
+    "outline": "white semi-bold sentences with a solid black stroke (tiktok's classic look)",
     "bold-outline": "bolder, bigger white words with a thicker black stroke",
     "boxed": "black text on a white box",
     "karaoke": "every word dimmed, the word being said lit up white",
@@ -4259,7 +4303,10 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         **req,
         "inspo": {"storageKey": None, "breakdown": built["breakdown"]},
         "shots": built["shots"],
-        "reuse": built["reuse"],
+        # The text look picked in the options carries over like it does for remakes.
+        "reuse": {**built["reuse"], **({"textPreset": base["plan"].get("textPreset")}
+                                         if base and isinstance(base.get("plan"), dict) and base["plan"].get("textPreset")
+                                         else {})},
         "effects": built["effects"],
         "options": {**options, "notes": "", "music": {**options["music"], "mode": sound},
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
@@ -4478,6 +4525,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     style = clean_text_style((keep or {}).get("textStyle") or inspo_text)
     if align_choice:
         style["align"] = align_choice
+    # A text look picked in the options. Applied when it's newly picked, so changes asked for after
+    # it (e.g. "make the text red") stay on later versions.
+    preset = text_opts.get("style") if text_opts.get("style") in TEXT_PRESETS else None
+    if preset and (keep or {}).get("textPreset") != preset:
+        style = clean_text_style({**style, **TEXT_PRESETS[preset]})
     position = (keep or {}).get("textPosition") or "top"
     post = (keep or {}).get("postCopy") or {"caption": "", "hashtags": []}
     keep_lines = bool(keep.get("keepLines")) if keep and keep.get("texts") else text_choice == "custom"
@@ -4497,6 +4549,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     note = None
     if jump_post and not keep:
         post = jump_post
+    if text_mode == "exact" and guide:
+        # The inspo's words, written the way the user asked (e.g. "all lowercase", "no period").
+        plan_texts = apply_text_rules(plan_texts, guide)
 
     # In jump-cut mode the take-editing call already wrote the post copy (and any words).
     needs_claude = bool(previous) or (not jump_post and (text_mode != "keep" or any(f["start"] is None for f in fixed)))
@@ -4547,6 +4602,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             r = by_index.get(i + 1)
             if not r:
                 continue
+            # The words and where they sit (every shot, whatever else changes).
+            plan_texts[i] = (r.get("text") or "").strip()
+            for key, field in (("text_x", "textXs"), ("text_y", "textYs"), ("caption_y", "captionYs")):
+                v = r.get(key)
+                if isinstance(v, (int, float)) and 0 <= v <= 1:
+                    layout[field][i] = float(v)
             if not jump and isinstance(r.get("clip"), int) and 0 < r["clip"] <= len(clips):
                 ci = r["clip"] - 1
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
@@ -4582,11 +4643,6 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         if new_lengths != [s["durationS"] for s in shots]:
             print(f"revise: shot lengths {[r2(s['durationS']) for s in shots]} -> {[r2(x) for x in new_lengths]}")
             shots = with_lengths(shots, new_lengths)
-            plan_texts[i] = (r.get("text") or "").strip()
-            for key, field in (("text_x", "textXs"), ("text_y", "textYs"), ("caption_y", "captionYs")):
-                v = r.get(key)
-                if isinstance(v, (int, float)) and 0 <= v <= 1:
-                    layout[field][i] = float(v)
         layout["textScale"] = min(1.6, max(0.5, float(data["text_scale"])))
         layout["captionScale"] = min(1.6, max(0.5, float(data["caption_scale"])))
         if data["font"] in FONTS:
@@ -4783,6 +4839,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "textPosition": position,
             "textLook": look_name(style),
             "textStyle": style,
+            **({"textPreset": preset} if preset else {}),
             "keepLines": keep_lines,
             # Only positions someone asked for; automatic ones are worked out again for each version.
             "textXs": layout["textXs"],

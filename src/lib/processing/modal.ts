@@ -122,6 +122,7 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     textYs: ys(p.textYs),
     textStyle: p.textStyle && typeof p.textStyle === "object" ? (p.textStyle as TextStyle) : undefined,
     keepLines: !!p.keepLines,
+    textPreset: typeof p.textPreset === "string" ? p.textPreset : undefined,
     captionYs: ys(p.captionYs),
     textScale: scale(p.textScale),
     captionScale: scale(p.captionScale),

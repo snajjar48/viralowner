@@ -165,6 +165,8 @@ export interface RenderText {
   textYs?: (number | null)[];
   captionYs?: (number | null)[];
   textStyle?: TextStyle;
+  /** The text look picked in the options when this version was made (applied once; later changes keep). */
+  textPreset?: string;
   /** The words are the user's own lines: draw them exactly as typed. */
   keepLines?: boolean;
   textScale?: number;

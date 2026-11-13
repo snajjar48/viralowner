@@ -12,7 +12,7 @@ import {
   type VideoOptions,
 } from "@/lib/video-options";
 import { AudioRightsNotice } from "./audio-rights";
-import { CaptionStylePicker, Toggle } from "./caption-styles";
+import { CaptionStylePicker, TextStylePicker, Toggle } from "./caption-styles";
 import { MusicIcon, SparkleIcon, TextIcon } from "./icons";
 import { inputClass } from "./form";
 
@@ -237,6 +237,14 @@ export function OptionsFields({
             ))}
           </div>
         </fieldset>
+        <div className={`flex flex-col gap-1.5 ${value.text.mode === "none" ? "hidden" : ""}`}>
+          <span className="text-sm text-muted">style</span>
+          <TextStylePicker
+            value={value.text.style}
+            onChange={(style) => set({ text: { ...value.text, style } })}
+            autoName={variant === "scratch" ? "we pick" : "like inspo"}
+          />
+        </div>
       </Section>
 
       <Section title="music" icon={<MusicIcon className="size-4 text-muted" />}>

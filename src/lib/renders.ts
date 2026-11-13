@@ -281,7 +281,7 @@ export async function getStillActiveRender(projectId: string): Promise<Render | 
  */
 export function textToReuse(from: Render | undefined, options: VideoOptions): Extras["reuseText"] {
   if (!from?.plan || !from.postCopy || textChanged(from, options)) return undefined;
-  const { texts, textPosition, textLook, textXs, textYs, captionYs, textScale, captionScale, textStyle, keepLines } =
+  const { texts, textPosition, textLook, textXs, textYs, captionYs, textScale, captionScale, textStyle, keepLines, textPreset } =
     from.plan;
   return {
     texts,
@@ -294,6 +294,7 @@ export function textToReuse(from: Render | undefined, options: VideoOptions): Ex
     captionScale,
     textStyle,
     keepLines,
+    textPreset,
     postCopy: from.postCopy,
   };
 }
