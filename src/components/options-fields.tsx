@@ -3,7 +3,6 @@
 import { useId, type ReactNode } from "react";
 import {
   INSPO_AUDIO_CONFIRM_ERROR,
-  MUSIC_LIBRARY_READY,
   NO_AUDIO_FILE_ERROR,
   NOTES_MAX,
   TEXT_MAX,
@@ -16,7 +15,6 @@ import { AudioRightsNotice } from "./audio-rights";
 import { CaptionStylePicker, Toggle } from "./caption-styles";
 import { MusicIcon, SparkleIcon, TextIcon } from "./icons";
 import { inputClass } from "./form";
-import { TrackPicker } from "./track-picker";
 
 export function Section({
   title,
@@ -108,11 +106,6 @@ const ALIGN_CHOICES: { align: TextAlign; title: string }[] = [
 
 const MUSIC_CHOICES: { mode: MusicMode; title: string; description: string }[] =
   [
-    {
-      mode: "track",
-      title: "pick a track",
-      description: "licensed music, safe to post anywhere",
-    },
     {
       mode: "original",
       title: "keep my clips’ original audio",
@@ -248,7 +241,7 @@ export function OptionsFields({
                   },
                 ]
               : []),
-            ...MUSIC_CHOICES.filter((c) => c.mode !== "track" || MUSIC_LIBRARY_READY),
+            ...MUSIC_CHOICES,
           ].map((c) => (
             <Choice
               key={c.mode}
@@ -260,14 +253,6 @@ export function OptionsFields({
             />
           ))}
         </div>
-        {value.music.mode === "track" && (
-          <TrackPicker
-            value={value.music.trackId}
-            onChange={(trackId) =>
-              set({ music: { ...value.music, mode: "track", trackId } })
-            }
-          />
-        )}
         {value.music.mode === "inspo" && (
           <AudioRightsNotice
             source="inspo"
@@ -309,8 +294,6 @@ export function OptionsFields({
 
 /** Problems that block making the video (shown next to the button). */
 export function optionsProblem(o: VideoOptions, hasAudioFile = true) {
-  if (o.music.mode === "track" && !o.music.trackId)
-    return "pick a track, or choose another music option.";
   if (o.music.mode === "inspo" && !o.music.inspoAudioConfirmed)
     return INSPO_AUDIO_CONFIRM_ERROR;
   if (o.music.mode === "upload" && !hasAudioFile) return NO_AUDIO_FILE_ERROR;

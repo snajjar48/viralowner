@@ -6,15 +6,13 @@
 export type TextMode = "match" | "adapt" | "custom";
 export type TextAlign = "inspo" | "left" | "center" | "right";
 /** upload: the user's own audio file (added on the clips step). */
-export type MusicMode = "track" | "original" | "inspo" | "upload" | "none";
-/** Off until real licensed music is in: the "pick a track" option stays hidden. */
-export const MUSIC_LIBRARY_READY = false;
+export type MusicMode = "original" | "inspo" | "upload" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "boxed" | "karaoke";
 
 export interface VideoOptions {
   text: { mode: TextMode; custom: string; align: TextAlign };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
-  music: { mode: MusicMode; trackId: string | null; inspoAudioConfirmed: boolean };
+  music: { mode: MusicMode; inspoAudioConfirmed: boolean };
   captions: { enabled: boolean; style: CaptionStyleId };
   /** "additional requests": anything the user wants the edit to know or do. */
   notes: string;
@@ -27,7 +25,7 @@ export const REQUEST_MAX = 500;
 
 export const DEFAULT_OPTIONS: VideoOptions = {
   text: { mode: "match", custom: "", align: "inspo" },
-  music: { mode: "original", trackId: null, inspoAudioConfirmed: false },
+  music: { mode: "original", inspoAudioConfirmed: false },
   captions: { enabled: true, style: "bold-pop" },
   notes: "",
 };
@@ -36,29 +34,6 @@ export const NO_AUDIO_FILE_ERROR = "add your audio file on the clips step, or ch
 
 export const INSPO_AUDIO_CONFIRM_ERROR =
   "please confirm the note about the inspo’s audio, or choose another music option.";
-
-export interface Track {
-  id: string;
-  title: string;
-  artist: string;
-  mood: string;
-  bpm: number;
-  durationS: number;
-  /** Preview audio. Placeholder library: null until real licensed tracks exist. */
-  previewUrl: string | null;
-}
-
-/** Placeholder licensed-track library. Swap for the real catalog later. */
-export const TRACKS: Track[] = [
-  { id: "trk_sunset_drive", title: "sunset drive", artist: "nova lane", mood: "upbeat", bpm: 118, durationS: 32, previewUrl: null },
-  { id: "trk_glow_up", title: "glow up", artist: "kiko", mood: "hype", bpm: 128, durationS: 28, previewUrl: null },
-  { id: "trk_soft_focus", title: "soft focus", artist: "maren", mood: "chill", bpm: 92, durationS: 40, previewUrl: null },
-  { id: "trk_big_reveal", title: "big reveal", artist: "the edit room", mood: "dramatic", bpm: 100, durationS: 30, previewUrl: null },
-  { id: "trk_morning_run", title: "morning run", artist: "pace setter", mood: "energetic", bpm: 140, durationS: 26, previewUrl: null },
-  { id: "trk_cafe_loop", title: "café loop", artist: "lofi supply", mood: "cozy", bpm: 84, durationS: 45, previewUrl: null },
-  { id: "trk_main_character", title: "main character", artist: "juno ray", mood: "confident", bpm: 110, durationS: 34, previewUrl: null },
-  { id: "trk_tiny_wins", title: "tiny wins", artist: "pocket band", mood: "playful", bpm: 122, durationS: 24, previewUrl: null },
-];
 
 export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: string }[] = [
   { id: "bold-pop", name: "bold pop", description: "big, bold, one or two words at a time" },
@@ -69,9 +44,9 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
 
 const TEXT_MODES: TextMode[] = ["match", "adapt", "custom"];
 const TEXT_ALIGNS: TextAlign[] = ["inspo", "left", "center", "right"];
-const MUSIC_MODES: MusicMode[] = ["track", "original", "inspo", "upload", "none"];
+// Old projects may have "track" saved (a music library that was never launched): it reads as "original".
+const MUSIC_MODES: MusicMode[] = ["original", "inspo", "upload", "none"];
 const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
-const TRACK_IDS = new Set(TRACKS.map((t) => t.id));
 
 function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -109,16 +84,9 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   }
   const textMode = TEXT_MODES.includes(text.mode as TextMode) ? (text.mode as TextMode) : DEFAULT_OPTIONS.text.mode;
 
-  let musicMode = MUSIC_MODES.includes(music.mode as MusicMode)
+  const musicMode = MUSIC_MODES.includes(music.mode as MusicMode)
     ? (music.mode as MusicMode)
     : DEFAULT_OPTIONS.music.mode;
-  const trackId = typeof music.trackId === "string" && TRACK_IDS.has(music.trackId) ? music.trackId : null;
-  // No licensed library yet: a saved "track" choice falls back to the clips' own audio.
-  if (musicMode === "track" && !MUSIC_LIBRARY_READY) musicMode = "original";
-  if (musicMode === "track" && !trackId) {
-    if (music.mode === "track") return { error: "pick a track, or choose another music option." };
-    musicMode = DEFAULT_OPTIONS.music.mode;
-  }
   const inspoAudioConfirmed = music.inspoAudioConfirmed === true;
   if (musicMode === "inspo" && !inspoAudioConfirmed) return { error: INSPO_AUDIO_CONFIRM_ERROR };
 
@@ -130,7 +98,6 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
     },
     music: {
       mode: musicMode,
-      trackId: musicMode === "track" ? trackId : null,
       inspoAudioConfirmed: musicMode === "inspo" && inspoAudioConfirmed,
     },
     captions: {

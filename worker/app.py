@@ -3337,7 +3337,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         inputs += ["-i", own_audio.name]
         main = "[1:a]aresample=48000,apad[m]"
     else:
-        # "track" has no licensed library behind it yet, so it keeps the clips' audio for now.
+        # The clips' own audio ("original", and anything unknown).
         main = "[0:a]anull[m]"
     # Sound effects: the inspo's are already in its own audio, so only add the ones asked for then.
     sounds = sfx_times([e for e in effects["sfx"] if not (use_inspo_audio and e.get("source") == "inspo")],
@@ -3599,7 +3599,7 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
         "inspo": {"storageKey": "u/test/p/test/inspo", "breakdown": breakdown},
         "clips": clip_list,
         "shots": [{"shotIndex": s["index"], "clipId": None, "trimStartS": None, "trimEndS": None} for s in breakdown["shots"]],
-        "options": {"text": {"mode": text, "custom": custom}, "music": {"mode": music, "trackId": None},
+        "options": {"text": {"mode": text, "custom": custom}, "music": {"mode": music},
                     "captions": {"enabled": captions != "off", "style": captions}, "notes": notes},
     }
     out, video = render_upload.remote(req, files)

@@ -133,8 +133,6 @@ What it does:
   (`src/components/audio-rights.tsx`, the same one as "use the inspo's audio").
   It's stored on `projects.audio` and becomes the "use my audio file" music
   option; captions follow what's said in it.
-- The "pick a track" music option keeps the clips' audio until a licensed music
-  library is added.
 
 Try it from a laptop without the website:
 
