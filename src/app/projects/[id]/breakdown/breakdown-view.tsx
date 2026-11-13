@@ -37,6 +37,7 @@ const TRANSITION_NAMES: Record<string, string> = {
   wipe_down: "wipe",
   circle_open: "circle reveal",
   pixelate: "pixelate",
+  fire: "fire",
 };
 const EFFECT_NAMES: Record<string, string> = {
   slow_zoom_in: "slow zoom in",
@@ -72,6 +73,9 @@ const SOUND_NAMES: Record<string, string> = {
   glitch: "glitch sound",
   record_scratch: "record scratch",
   typing: "typing",
+  flash: "flash",
+  vine_boom: "meme boom",
+  fire: "fire whoosh",
 };
 const FONT_NAMES: Record<string, string> = {
   clean_sans: "clean sans",

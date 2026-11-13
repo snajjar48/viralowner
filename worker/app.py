@@ -44,6 +44,15 @@ FRAME_WIDTH = 512  # px; enough to read on-screen text
 
 SHOT_ROLES = ["hook", "setup", "build", "reveal", "payoff", "b-roll", "cta"]
 
+# Another creator's watermark or handle is never part of the edit, so it's never copied.
+WATERMARK_LINE = re.compile(r"^\W*(@[\w.]+|(tik ?tok|instagram|reels|capcut|youtube( shorts)?)(\s*@[\w.]+)?)\W*$", re.I)
+
+
+def edit_text(text: str | None) -> str:
+    """Overlaid text without watermark / @handle lines."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip() and not WATERMARK_LINE.match(ln.strip())]
+    return "\n".join(lines).strip()
+
 
 def _download_whisper() -> None:
     from faster_whisper import WhisperModel
@@ -56,6 +65,120 @@ def _download_clap() -> None:
 
     ClapModel.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR)
     ClapProcessor.from_pretrained(CLAP_MODEL, cache_dir=MODELS_DIR)
+
+
+# ---- the fire transition's flames, simulated once when the image is built
+#
+# A small fire simulation (heat rising through a swirling flow, cooled into flame tongues):
+# flames climb from the bottom, fill the whole frame by FIRE_COVER[0], hold, and burn off
+# the top after FIRE_COVER[1]. The cut sits at FIRE_CUT, while the frame is fully covered.
+FIRE_DIR = "/opt/viralowner/fire"
+FIRE_SEEDS = (7, 42, 21)  # a few different fires, so back-to-back fire cuts don't repeat
+FIRE_W, FIRE_H, FIRE_FPS, FIRE_S = 540, 960, 30, 1.0
+FIRE_COVER = (0.36, 0.66)
+FIRE_CUT = 0.5
+
+
+def _fire_noise(rng, h: int, w: int, cell: int):
+    import numpy as np
+
+    lat = rng.standard_normal((h // cell + 2, w // cell + 2)).astype(np.float32)
+    yy, xx = np.arange(h) / cell, np.arange(w) / cell
+    yi, xi = yy.astype(int), xx.astype(int)
+    yf, xf = yy - yi, xx - xi
+    yf, xf = yf * yf * (3 - 2 * yf), xf * xf * (3 - 2 * xf)
+    r = lat[yi] * (1 - yf)[:, None] + lat[yi + 1] * yf[:, None]
+    return (r[:, xi] * (1 - xf) + r[:, xi + 1] * xf).astype(np.float32)
+
+
+def _fire_blur(f, r: int):
+    import numpy as np
+
+    for ax in (0, 1):
+        c = np.cumsum(np.pad(f, [(r + 1, r) if a == ax else (0, 0) for a in (0, 1)], mode="edge"), axis=ax)
+        f = (np.take(c, range(2 * r + 1, c.shape[ax]), axis=ax)
+             - np.take(c, range(0, c.shape[ax] - 2 * r - 1), axis=ax)) / (2 * r + 1)
+    return f.astype(np.float32)
+
+
+def make_fire(path: str, seed: int) -> None:
+    """Writes the flames as a transparent PNG-in-MOV clip, FIRE_W x FIRE_H, FIRE_S seconds."""
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    s, steps = 2, 6  # simulate at half resolution, 6 steps a frame
+    q = 3 / steps
+    h, w = FIRE_H // s, FIRE_W // s
+    frames_n = int(FIRE_S * FIRE_FPS)
+    heat = np.zeros((h, w), np.float32)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+
+    def sample(f, sy, sx):
+        sy, sx = np.clip(sy, 0, h - 1.001), np.clip(sx, 0, w - 1.001)
+        y0, x0 = sy.astype(int), sx.astype(int)
+        fy, fx = sy - y0, sx - x0
+        a = f[y0, x0] * (1 - fx) + f[y0, x0 + 1] * fx
+        return a * (1 - fy) + (f[y0 + 1, x0] * (1 - fx) + f[y0 + 1, x0 + 1] * fx) * fy
+
+    # Fields that move with the flames (fresh noise every step would only jitter).
+    cool_map = 0.05 * _fire_noise(rng, h * 4, w, 22) + 0.03 * _fire_noise(rng, h * 4, w, 9)
+    swirl = [_fire_noise(rng, h * 2, w, 40) * 2.4 + _fire_noise(rng, h * 2, w, 14) * 1.2 for _ in range(3)]
+    lift = _fire_noise(rng, h * 2, w, 30)
+    fuel_map = _fire_noise(rng, h * 2, w, 16)
+    edge_map = _fire_noise(rng, h, w, 25)
+    streak = _fire_noise(rng, h * 4, w, 16)[np.arange(h * 18) // 5] * 0.7 + _fire_noise(rng, h * 18, w, 40) * 0.5
+    out = []
+    for k in range(frames_n):
+        u = k / frames_n
+        for st in range(steps):
+            tt = k * steps + st
+            ph = tt / (frames_n * steps) * 2
+            i0, f = int(ph) % 2, ph - int(ph)
+            off = int(tt * 3 * q) % h
+            sw = 2.2 * q * (swirl[i0] * (1 - f) + swirl[i0 + 1] * f)[off:off + h]
+            vy = -q * (13.0 + 4.0 * lift[off:off + h])
+            heat = sample(heat, yy - vy, xx - sw)
+            c0 = (h * 3 - int(tt * 13 * q)) % (h * 3)
+            burn = 0.0 if u < FIRE_COVER[1] else 0.05 * (u - FIRE_COVER[1]) / (1 - FIRE_COVER[1])
+            heat = _fire_blur(np.clip(heat - q * np.clip(0.014 + burn + 1.1 * cool_map[c0:c0 + h], 0, 0.25), 0, None), 1)
+            if u < FIRE_COVER[1]:  # fuel below the rising front
+                front = 1.08 - 1.25 * min(1.0, u / FIRE_COVER[0]) ** 1.15
+                yv = yy / h
+                band = (((yv > front + 0.08 * edge_map) & (yv < front + 0.45 + 0.1 * edge_map))
+                        | (yv > 0.8 + 0.05 * edge_map))
+                f0 = (h - int(tt * 13 * q) % h) % h
+                fuel = band * np.clip(0.9 + 0.5 * fuel_map[f0:f0 + h], 0.5, 1.5)
+                heat = np.minimum(heat + fuel * 0.3 * q, 1.05)
+        so = (h * 17 - int(k * 34)) % (h * 17)
+        hv = _fire_blur(np.kron(_fire_blur(heat * (1 + 0.16 * streak[so:so + h]), 2), np.ones((s, s), np.float32)), 2)
+        glow = _fire_blur(_fire_blur(hv, 24), 24)  # the light the flames throw around them
+        v = np.clip(hv, 0, 1.6)
+        r = np.clip(v * 2.6, 0, 1)
+        g = np.clip((v - 0.1) * 1.1, 0, 1) ** 1.35
+        b = np.clip((v - 0.78) * 2.0, 0, 1) ** 1.2 * 0.95
+        a = np.clip(v * 2.6, 0, 1)
+        # Never let the cut show through: fully opaque for the few frames around it.
+        a = np.maximum(a, np.clip(1 - abs(u - FIRE_CUT) / 0.12, 0, 1))
+        ga = np.clip(glow * 0.9, 0, 0.55) * (1 - a)
+        tot = np.maximum(a + ga, 1e-4)
+        rgba = np.stack([(r * a + ga) / tot, (g * a + 0.55 * ga) / tot, (b * a + 0.15 * ga) / tot, a + ga], -1)
+        out.append((rgba.clip(0, 1) * 255).astype(np.uint8).tobytes())
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{FIRE_W}x{FIRE_H}",
+                    "-r", str(FIRE_FPS), "-i", "-", "-c:v", "png", path], input=b"".join(out), check=True)
+
+
+def _make_fire_assets() -> None:
+    os.makedirs(FIRE_DIR, exist_ok=True)
+    for seed in FIRE_SEEDS:
+        make_fire(f"{FIRE_DIR}/fire-{seed}.mov", seed)
+
+
+# Sound effects: real recordings (worker/assets/sfx, trimmed and leveled), with the moment each one
+# "hits" (its loudest point: a riser's top, a whoosh's middle, a hit's attack), in seconds from its start.
+SFX_DIR = "/opt/viralowner/sfx"
+SFX_HITS = {"whoosh": 0.55, "swish": 0.06, "pop": 0.03, "click": 0.03, "camera_shutter": 0.08, "flash": 0.07,
+            "ding": 0.06, "cash_register": 0.56, "boom": 0.11, "vine_boom": 0.04, "riser": 2.0, "glitch": 0.23,
+            "record_scratch": 0.04, "typing": 0.0, "fire": 0.21}
 
 
 app = modal.App(APP_NAME)
@@ -88,6 +211,8 @@ image = (
     .uv_pip_install("torch==2.7.1", index_url="https://download.pytorch.org/whl/cpu")
     .uv_pip_install("transformers>=4.46,<5")
     .run_function(_download_clap)
+    .run_function(_make_fire_assets)
+    .add_local_dir(Path(__file__).parent / "assets" / "sfx", SFX_DIR)
 )
 
 # viralowner-worker:      ANTHROPIC_API_KEY, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
@@ -358,7 +483,7 @@ ANALYSIS_SCHEMA = {
                 "why_it_works": {"type": "array", "items": {"type": "string"}, "description": "exactly 3 short reasons this video performs. max 18 words each."},
                 "audio": {"type": "string", "description": "what you hear: talking to camera, voiceover, trending song, no audio... max 15 words."},
                 "pacing": {"type": "string", "description": "the pacing in a short phrase, e.g. 'fast cuts that speed up toward the reveal'."},
-                "text_present": {"type": "boolean", "description": "true if any shot has text overlaid on the video (not burned-in speech captions)."},
+                "text_present": {"type": "boolean", "description": "true if any shot has text overlaid on the video (not burned-in speech captions, watermarks or @handles)."},
                 "text_style": {"type": "string", "description": "style and placement of overlaid text, e.g. 'bold white headline, top third'. empty string if none."},
                 "caption_style": {"type": "string", "description": "style of burned-in speech captions if present, e.g. 'word-by-word yellow pop'. 'none' if there are none."},
             },
@@ -374,7 +499,7 @@ ANALYSIS_SCHEMA = {
                     "index": {"type": "integer", "description": "the shot number given, starting at 1."},
                     "role": {"type": "string", "enum": SHOT_ROLES, "description": "the job this shot does. cta = call to action."},
                     "description": {"type": "string", "description": "what's on screen: subject, framing, movement. max 20 words."},
-                    "on_screen_text": {"type": "string", "description": "the exact overlaid text in this shot, as written. empty string if none."},
+                    "on_screen_text": {"type": "string", "description": "the exact overlaid text in this shot, as written. leave out watermarks, @handles / usernames, platform logos (tiktok, instagram) and end cards: they aren't part of the edit. empty string if none."},
                     "why_it_works": {"type": "string", "description": "why this shot keeps people watching. max 25 words."},
                     "tip": {"type": "string", "description": "how to film your version, starting with a verb. max 25 words."},
                 },
@@ -482,7 +607,7 @@ def analyze_path(path: Path) -> dict:
             "startS": r2(a),
             "durationS": r2(b - a),
             "description": s.get("description") or "",
-            "onScreenText": s.get("on_screen_text") or None,
+            "onScreenText": edit_text(s.get("on_screen_text")) or None,
             "whyItWorks": s.get("why_it_works") or "",
         })
 
@@ -566,6 +691,7 @@ TRANSITION_INFO = {
     "wipe_down": "a hard edge wipes down the frame",
     "circle_open": "the new shot opens out from a circle in the middle",
     "pixelate": "the picture breaks into big blocks and back",
+    "fire": "a wall of real-looking flames rises over the whole screen, hiding the cut, then burns away into the next shot",
 }
 TRANSITIONS = list(TRANSITION_INFO)
 # Names from analyses made before the list grew.
@@ -614,11 +740,14 @@ SFX_INFO = {
     "glitch": "a digital glitch stutter",
     "record_scratch": "a record scratch (a sudden stop)",
     "typing": "keyboard typing",
+    "flash": "a camera flash: a bright zap / pop (white flashes, quick cuts)",
+    "vine_boom": "the meme bass boom (a funny or dramatic moment)",
+    "fire": "a burst of flames whooshing (fire transitions, something catching fire)",
 }
 SFX = list(SFX_INFO)
 EDIT_TYPES = ["shots", "jump_cut"]
 COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
-STYLE_VERSION = 2  # analyses older than this get their style worked out again on their next render
+STYLE_VERSION = 3  # analyses older than this get their style worked out again on their next render
 
 
 def catalog(info: dict[str, str]) -> str:
@@ -662,7 +791,7 @@ Then, per shot:
 - speed: """ + ", ".join(f"{k} ({v})" for k, v in SPEED_INFO.items()) + """.
 - effects: short effects inside the shot (usually none):
 """ + catalog(SHOT_EFFECT_INFO) + """
-- sound_in: the sound effect on the cut into this shot. Only when the measurements say a new sound starts right at the cut (strength around 6 or more; whooshes build up, so they read weaker than hits) and it isn't just the music or someone talking. The sound model is unreliable at naming sounds over music (it often hears whooshes as record scratches or pops), so: when its top guess is a distinctive sound (ding, cash register, camera shutter, glitch, typing, boom, riser) at 0.3 or more, go with it; otherwise choose with what you see: whips, slides and zooms usually have a whoosh or swish, an impact or big reveal a boom, a flash a camera shutter, something popping up a pop. A riser is a sound building up into the cut. 'none' when there's no clear new sound.
+- sound_in: the sound effect on the cut into this shot. Only when the measurements say a new sound starts right at the cut (strength around 6 or more; whooshes build up, so they read weaker than hits) and it isn't just the music or someone talking. The sound model is unreliable at naming sounds over music (it often hears whooshes as record scratches or pops), so: when its top guess is a distinctive sound (ding, cash register, camera shutter, glitch, typing, boom, riser, fire) at 0.3 or more, go with it; otherwise choose with what you see: whips, slides and zooms usually have a whoosh or swish, an impact or big reveal a boom, a white flash a flash, a fire transition a fire whoosh, something popping up a pop. A riser is a sound building up into the cut. 'none' when there's no clear new sound.
 - sounds_during: clear sound effects inside the shot (from the ones listed for it), like a pop when text appears or a ding. Usually none.
 Sound effects:
 """ + catalog(SFX_INFO) + """
@@ -872,6 +1001,9 @@ SFX_PROMPTS = {
     "glitch": "a digital glitch sound effect",
     "record_scratch": "a record scratch",
     "typing": "keyboard typing",
+    "flash": "a camera flash sound effect",
+    "vine_boom": "a loud meme bass boom",
+    "fire": "a fire whoosh, flames bursting",
 }
 OTHER_SOUNDS = ["people talking", "a person speaking", "music playing", "a song with vocals", "silence",
                 "background noise", "laughing", "footsteps"]
@@ -1368,6 +1500,8 @@ TRANSITION_SPECS = {
     "light_leak": ("fade", 0.45, "light_leak"), "blur": ("fade", 0.35, "blur"),
     **{f"wipe_{d}": (f"wipe{d}", 0.3, None) for d in ("left", "right", "up", "down")},
     "circle_open": ("circleopen", 0.4, None), "pixelate": ("pixelize", 0.3, None),
+    # The flames themselves are laid over the finished video (fire_overlays); the shots get their warm light.
+    "fire": (None, 0.5, "fire"),
 }
 
 
@@ -1414,6 +1548,10 @@ def fx_filter(fx: str, side: str, length: float) -> str:
         return "colorbalance=rs=0.3:gs=0.1:bs=-0.25:rm=0.25:gm=0.08:bm=-0.2,eq=brightness=0.16:saturation=1.2,gblur=sigma=2"
     if fx == "blur":
         return "gblur=sigma=16"
+    if fx == "fire":
+        # Firelight: the picture warms up and brightens as the flames get close.
+        return (f"colorbalance=rs=0.25:gs=0.05:bs=-0.25:rm=0.2:bm=-0.15,"
+                f"eq=brightness='0.18*{P}':saturation=1.15:eval=frame")
     return "null"
 
 
@@ -1615,6 +1753,25 @@ def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | 
 
 # ---- looks over the whole video (applied with the text, at the end)
 
+def fire_overlays(cuts: list[dict | None], starts: list[float], inputs: list[str]) -> list[str]:
+    """Lays the flames over the joined video at each fire cut (adding their inputs); labels the result [fired]."""
+    out, src, j = [], "0:v", 0
+    for i, c in enumerate(cuts):
+        clip = Path(FIRE_DIR) / f"fire-{FIRE_SEEDS[j % len(FIRE_SEEDS)]}.mov"
+        if not c or c.get("name") != "fire" or not clip.exists():
+            continue
+        idx = inputs.count("-i")
+        inputs += ["-i", str(clip)]
+        lead = starts[i + 1] - FIRE_CUT  # the cut lands in the middle of the fully covered stretch
+        head = f"trim=start={-lead:.3f},setpts=PTS-STARTPTS," if lead < 0 else ""
+        pad = f",tpad=start_duration={lead:.3f}:color=black@0" if lead > 0 else ""
+        out.append(f"[{idx}:v]{head}scale={OUT_W}:{OUT_H}:flags=bicubic,format=rgba,fps={OUT_FPS}{pad}[fire{j}]")
+        out.append(f"[{src}][fire{j}]overlay=eof_action=pass:format=auto[fired{j}]")
+        src, j = f"fired{j}", j + 1
+    out.append(f"[{src}]null[fired]")
+    return out
+
+
 def look_graph(looks: list[str], src: str, dest: str) -> list[str]:
     """Filter-graph lines taking video `src` through each look to `dest` (labels without brackets)."""
     simple = {
@@ -1637,9 +1794,16 @@ def look_graph(looks: list[str], src: str, dest: str) -> list[str]:
     return lines
 
 
-# ---- sound effects, made from scratch (no licensing), 48 kHz stereo
+# ---- sound effects
+#
+# Real recordings from SFX_DIR. The synthesized versions below are only a fallback for when a
+# file is missing (e.g. running outside the worker image).
 
 SFX_GAIN = 0.7
+# Where a cut's sound lands, from its plan "offset" (which is when the sound starts, measured as if
+# its hit came this many seconds in): a riser at -1.2 tops out on the cut; a whoosh at -0.1 peaks on it.
+SFX_LEAD = {"riser": 1.2, "whoosh": 0.1, "swish": 0.05, "fire": 0.05}
+SFX_FALLBACK = {"flash": "camera_shutter", "vine_boom": "boom", "fire": "whoosh"}
 
 
 def synth_sfx(name: str, sr: int = 48000):
@@ -1751,6 +1915,10 @@ def sfx_file(name: str, workdir: Path) -> Path:
 
     import numpy as np
 
+    real = Path(SFX_DIR) / f"{name}.mp3"
+    if real.exists():
+        return real
+    name = SFX_FALLBACK.get(name, name)
     dest = workdir / f"sfx-{name}.wav"
     if not dest.exists():
         y = (synth_sfx(name) * 32767).astype(np.int16)
@@ -1763,18 +1931,21 @@ def sfx_file(name: str, workdir: Path) -> Path:
 
 
 def sfx_times(events: list[dict], starts: list[float], durations: list[float], total: float) -> list[tuple[float, str, float]]:
-    """Each sound effect's time in the finished video."""
+    """Each sound effect as (when its file starts in the finished video, name, volume). The start can be
+    negative: a riser on the first cut begins before the video does, and gets its head trimmed off."""
     out = []
     for e in events:
-        i = e.get("index", -1)
+        i, name = e.get("index", -1), e.get("name")
+        if name not in SFX:
+            continue
         if e.get("anchor") == "cut" and 0 <= i < len(starts) - 1:
-            t = starts[i + 1] + float(e.get("offset") or 0)
+            lands = starts[i + 1] + float(e.get("offset") or 0) + SFX_LEAD.get(name, 0.0)
         elif e.get("anchor") == "shot" and 0 <= i < len(starts):
-            t = starts[i] + float(e.get("frac") or 0) * durations[i]
+            lands = starts[i] + float(e.get("frac") or 0) * durations[i]
         else:
             continue
-        if e.get("name") in SFX and -0.5 < t < total - 0.05:
-            out.append((max(0.0, t), e["name"], float(e.get("volume") or 0.85)))
+        if 0 <= lands < total - 0.05:
+            out.append((round(lands - SFX_HITS.get(name, 0.0), 3), name, float(e.get("volume") or 0.85)))
     return out
 
 
@@ -2612,7 +2783,8 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
 EFFECT_WORDS = re.compile(
     r"transition|whoosh|swoosh|swish|sound|sfx|effect|zoom|whip|spin|glitch|shake|flash|fade|slow|speed|fast|"
     r"freeze|blur|grain|vhs|retro|vintage|filter|vignette|letterbox|glow|\bcuts?\b|swipe|slide|wipe|\bpop|ding|"
-    r"boom|riser|click|shutter|scratch|typing|cha.?ching|\bpan|pulse|black and white|b&w|rgb|chromatic|bass|beat",
+    r"boom|riser|click|shutter|scratch|typing|cha.?ching|\bpan|pulse|black and white|b&w|rgb|chromatic|bass|beat|"
+    r"fire|flame|burn",
     re.I,
 )
 
@@ -2656,7 +2828,7 @@ def clean_effects(e, n: int) -> dict | None:
 
 EFFECTS_SYSTEM = """You set the edit of a short-form video ViralOwner is making: the transition at each cut, each shot's motion, speed and short effects, looks over the whole video, the color filter and sound effects. They start out copied from the viral video the user is remaking.
 
-Change only what the user's words ask for, and keep everything else exactly as it is. If the words don't ask about any of these, return everything unchanged with an empty summary. A request about "the transitions" or "every cut" in general applies to all cuts. When the user asks for a sound with a transition (e.g. "add a whoosh to the whips"), put the sound at each of those cuts. A riser starts about 1.2s before the cut it builds to (offset -1.2); most other sounds sit right on the cut (offset 0, or about -0.1 for a whoosh).
+Change only what the user's words ask for, and keep everything else exactly as it is. If the words don't ask about any of these, return everything unchanged with an empty summary. A request about "the transitions" or "every cut" in general applies to all cuts. When the user asks for a sound with a transition (e.g. "add a whoosh to the whips"), put the sound at each of those cuts. A riser starts about 1.2s before the cut it builds to (offset -1.2); most other sounds sit right on the cut (offset 0, or about -0.1 for a whoosh). A fire transition goes best with a fire whoosh on the same cut (offset -0.05), and a flash with a flash sound, unless the user says otherwise.
 
 Transitions:
 """ + catalog(TRANSITION_INFO) + """
@@ -2826,6 +2998,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     started = time.time()
     breakdown = req["inspo"]["breakdown"]
     shots = breakdown["shots"]
+    for s in shots:  # analyses from before watermarks were left out
+        s["onScreenText"] = edit_text(s.get("onScreenText")) or None
     n = len(shots)
     options = req["options"]
     text_opts = options["text"]
@@ -2880,7 +3054,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     base = default_inspo_style(n)
     inspo_style = {**base, **{k: v for k, v in inspo_style.items() if v is not None}}
     spots = (list(inspo_style.get("textSpots") or []) + [None] * n)[:n]
-    inspo_lines = [(t or "").strip() for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
+    inspo_lines = [edit_text(t) for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
     inspo_text = clean_text_style(inspo_style.get("text"))
 
     def clean_post(caption: str, hashtags: list[str]) -> dict:
@@ -3174,12 +3348,15 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     graph = [main]
     first_sfx = 1 if main.startswith("[0:a]") else 2  # input number of the first sound effect
     for k, (t, name, vol) in enumerate(sounds):
-        inputs += ["-i", sfx_file(name, workdir).name]
-        ms = round(t * 1000)
-        graph.append(f"[{first_sfx + k}:a]aresample=48000,volume={vol * SFX_GAIN:.2f},adelay={ms}|{ms}[x{k}]")
+        inputs += ["-i", str(sfx_file(name, workdir))]
+        ms = round(max(0.0, t) * 1000)
+        head = f"atrim=start={-t:.3f},asetpts=PTS-STARTPTS," if t < 0 else ""
+        graph.append(f"[{first_sfx + k}:a]{head}aresample=48000,aformat=channel_layouts=stereo,"
+                     f"volume={vol * SFX_GAIN:.2f},adelay={ms}|{ms}[x{k}]")
     graph.append("[m]" + "".join(f"[x{k}]" for k in range(len(sounds)))
                  + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
-    graph += look_graph(effects["looks"], "0:v", "looked")
+    graph += fire_overlays(cuts, starts, inputs)
+    graph += look_graph(effects["looks"], "fired", "looked")
     if ass:
         (workdir / "text.ass").write_text(ass, encoding="utf-8")
     graph.append("[looked]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
