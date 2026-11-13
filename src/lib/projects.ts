@@ -191,6 +191,32 @@ export async function listClips(userId: string, projectId: string): Promise<Clip
   return rows.map(toClip);
 }
 
+/**
+ * Everything the project's owner has asked for across their videos (additional requests and change requests),
+ * oldest first, so new videos can follow their standing preferences.
+ */
+export async function requestHistory(projectId: string, limit = 60): Promise<string[]> {
+  const rows = await getSql()`
+    SELECT r.settings ->> 'request' AS request, r.settings -> 'options' ->> 'notes' AS notes
+    FROM renders r JOIN projects p ON p.id = r.project_id
+    WHERE p.user_id = (SELECT user_id FROM projects WHERE id = ${projectId})
+    ORDER BY r.created_at DESC
+    LIMIT 300`;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of rows) {
+    for (const v of [r.request, r.notes]) {
+      const text = typeof v === "string" ? v.trim() : "";
+      if (text && !seen.has(text)) {
+        seen.add(text);
+        out.push(text.slice(0, 500));
+      }
+    }
+    if (out.length >= limit) break;
+  }
+  return out.reverse();
+}
+
 export async function listRenders(userId: string, projectId: string): Promise<Render[]> {
   if (!isUuid(projectId)) return [];
   const rows = await getSql()`

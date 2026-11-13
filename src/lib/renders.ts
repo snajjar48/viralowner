@@ -7,6 +7,7 @@ import {
   getInspiration,
   listClips,
   listRenders,
+  requestHistory,
   saveInspoStyle,
   setRenderJob,
   updateRender,
@@ -139,6 +140,8 @@ export async function submit(
   extras: Extras = {},
 ) {
   try {
+    // Earlier requests teach the editor this user's taste; a video can still be made without them.
+    const history = await requestHistory(projectId).catch(() => []);
     const { jobId } = await startRender({
       projectId,
       renderId: render.id,
@@ -153,6 +156,7 @@ export async function submit(
       })),
       settings,
       ...extras,
+      history,
     });
     await setRenderJob(projectId, render.id, jobId);
   } catch (error) {

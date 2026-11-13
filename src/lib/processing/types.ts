@@ -194,6 +194,8 @@ export interface RenderInput {
   audio?: { storageKey: string };
   /** Keep this earlier version's transitions and effects (an edit of it). */
   effects?: Record<string, unknown>;
+  /** Everything the user asked for in earlier videos, oldest first (their standing preferences are learned from it). */
+  history?: string[];
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";

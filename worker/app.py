@@ -221,6 +221,8 @@ secrets = [modal.Secret.from_name("viralowner-worker"), modal.Secret.from_name("
 
 # job id -> {"stage": str | None, "progress": int, "updated_at": float}
 progress_store = modal.Dict.from_name("viralowner-job-progress", create_if_missing=True)
+# Each user's standing preferences, worked out from their past notes and requests (keyed by those words).
+prefs_store = modal.Dict.from_name("viralowner-user-prefs", create_if_missing=True)
 
 
 class JobError(Exception):
@@ -599,6 +601,70 @@ def apply_caption_fixes(words: list[dict], fixes: list[dict]) -> list[dict]:
             print(f"caption fix from the user: {f['wrong']!r} -> {f['right']!r} ({hits}x)")
         words = out
     return words
+
+
+PREFS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "preferences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "each standing preference as one short instruction for the editor. empty if there are none.",
+        },
+    },
+    "required": ["preferences"],
+    "additionalProperties": False,
+}
+
+
+def standing_preferences(history: list) -> str:
+    """What this user wants in every video, learned from everything they've asked for before (their
+    additional requests and change requests, oldest first). "" if nothing carries over. Cached."""
+    import hashlib
+
+    items = [" ".join(h.split())[:500] for h in history or [] if isinstance(h, str) and h.strip()][-60:]
+    if not items:
+        return ""
+    key = hashlib.sha256(json.dumps(items).encode()).hexdigest()
+    try:
+        cached = prefs_store.get(key)
+        if isinstance(cached, str):
+            return cached
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        result = ask_claude(
+            "You learn a video editor's client's taste. You get everything one user has asked for across their "
+            "earlier short-form videos (additional requests written before a video was made, and change requests "
+            "after seeing one), oldest first. Write down their standing preferences: what they'd want in every "
+            "future video without having to ask again. Include how they like captions and on-screen text to look and "
+            "sit (stroke, size, centering, line breaks, spelling rules like no hyphens), pacing, effects they keep "
+            "asking for or keep removing (if they removed slow motion several times, they don't want slow motion "
+            "unless they ask), quality, and anything they had to repeat. Leave out one-offs that only fit one video: "
+            "a specific word fix, one clip's length, one shot's text. When a later request contradicts an earlier "
+            "one, the later one wins. Short, concrete instructions, at most 12.",
+            [{"type": "text", "text": "\n".join(f"- {h}" for h in items)}],
+            PREFS_SCHEMA, "preferences", effort="medium")
+        prefs = [p.strip() for p in result["data"].get("preferences") or [] if isinstance(p, str) and p.strip()][:12]
+        text = "\n".join(f"- {p}" for p in prefs)
+        print(f"standing preferences (${result['cost_usd']}):\n{text or '(none)'}")
+    except Exception as e:  # noqa: BLE001
+        print(f"preferences failed: {type(e).__name__}: {e}")
+        return ""
+    try:
+        prefs_store[key] = text
+    except Exception:  # noqa: BLE001
+        pass
+    return text
+
+
+def with_preferences(instructions: str, prefs: str) -> str:
+    """The user's words for this video, then their standing preferences (this video's words win)."""
+    if not prefs:
+        return instructions
+    return ((instructions + "\n\n") if instructions else "") + (
+        "what this user wants in every video (from their earlier requests; follow these unless the words above "
+        "say otherwise):\n" + prefs)
 
 
 def transcribe_take(path: Path) -> dict:
@@ -3201,7 +3267,7 @@ REVISE_SYSTEM = """You make changes to a short-form video a user already made wi
 
 You get the user's request, frames from every shot of the current version exactly as it looks now (with its on-screen text and captions), the plan behind it, where faces are in each shot, and frames from all of the user's clips.
 
-Make the change the user asks for and keep everything else exactly as it is. The user's request always wins over matching the inspo: the inspo is only where the video started, so never refuse or water down a change because it makes the video differ from the inspo. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
+Make the change the user asks for and keep everything else exactly as it is. A question or complaint ("why is the text covering her face?", "why is it not bold pop?") is a request to fix that thing: fix it, and say in the summary what you changed. The user's request always wins over matching the inspo: the inspo is only where the video started, so never refuse or water down a change because it makes the video differ from the inspo. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
 You can change: how long each shot lasts (length_s: when the user asks to extend, lengthen, shorten or trim a shot or clip, or to make a part longer or shorter, change those shots' lengths by what they ask, or by a clear amount like 1-2 seconds if they don't say; the shots after it simply move later or earlier); which clip and moment fills a shot (to show more of a moment when a shot gets longer, start it earlier in the clip if the clip runs out); the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the caption style (caption_style: when the user asks for a different look, like a stroke or outline, bolder, a box, or turning captions off or on, pick the style that gives it); the words in the captions (caption_fixes: when the user says a word in the captions is wrong, or tells you what a word should say or how to spell it, add it as wrong -> right exactly as they want it, using the current captions below to find the words as they appear now); the post caption and hashtags.
 You can't change: the number of shots, the music or audio (the user changes that in the options under the video), or add stickers.
@@ -3249,7 +3315,8 @@ REVISE_SCHEMA = {
             "description": (
                 "what you changed, for the user, in one or two short lowercase sentences, speaking as 'we', in plain "
                 "words with no numbers or positions (e.g. 'we made the text bigger and moved it above her face in the "
-                "first two shots.'). mention anything you couldn't do."
+                "first two shots.'). mention anything you couldn't do. if nothing needed changing, say why in plain words "
+                "(it's empty only when the request is just about transitions, effects or speed)."
             ),
         },
     },
@@ -3551,6 +3618,7 @@ How the video is built: a list of shots, played in the order you give them. Each
 Editing craft:
 - The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
 - Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Give every shot its own clip. Use a second part of a clip only when it's necessary: there aren't enough other clips for the video, or the clip holds a different moment the video needs (like the finished result at the end of a long take). Then the parts must be clearly different portions of the clip: never overlapping, and at least 1 second apart, so nobody sees the same section twice (and no teaser of the ending at the start that plays again later). A clip of someone talking to the camera is the exception: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
+- Speed: every shot plays at normal speed unless the user asks for slow motion or sped-up footage (users keep asking to take slow motion out when they didn't ask for it).
 - Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
 - Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
@@ -3724,7 +3792,7 @@ def plan_from_render(plan: dict, clip_index: dict[str, int]) -> dict | None:
 
 def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | None, text_mode: str,
                 custom_text: str, previous: dict | None, prev_frames: list[Path | None], request: str,
-                fresh: bool, captions: bool, fix: tuple[dict, list[str]] | None = None) -> dict:
+                fresh: bool, captions: bool, fix: tuple[dict, list[str]] | None = None, prefs: str = "") -> dict:
     """Claude's plan for the whole video (DIRECTOR_SCHEMA), with usage and cost."""
     total_words = sum(len(s.get("words") or []) for c in clips for s in c.get("speech") or [])
     if audio_info:
@@ -3756,6 +3824,9 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
 
     ask = [DIRECTOR_TEXT_RULES[text_mode],
            "speech captions: " + ("on (added automatically from what's said)." if captions else "off.")]
+    if prefs:
+        ask.append("what this user wants in every video, learned from their earlier requests (follow these unless "
+                   "the prompt or request says otherwise):\n" + prefs)
     if text_mode == "custom":
         ask.append("the user's lines: " + json.dumps(custom_text, ensure_ascii=False))
     if previous:
@@ -3986,6 +4057,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     request = (req.get("request") or "").strip()[:1500]
     base = req.get("previous") if isinstance(req.get("previous"), dict) else None
     cost = 0.0
+    prefs = standing_preferences(req.get("history"))  # what this user has asked for before
 
     report("analyzing", 3)
     prev_path = workdir / "previous.mp4"
@@ -4075,7 +4147,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                         "captionFixes": caption_fixes}
         report("matching", 20)
         result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
-                             prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")))
+                             prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")),
+                             prefs=prefs)
         cost += result["cost_usd"]
         # Checked before clean_director's own fix-up, which can only move or drop shots.
         talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
@@ -4087,7 +4160,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             report("matching", 32)
             again = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                                 prev_frames, request, bool(req.get("fresh")),
-                                bool((options.get("captions") or {}).get("enabled")), fix=(result["data"], problems))
+                                bool((options.get("captions") or {}).get("enabled")), fix=(result["data"], problems),
+                                prefs=prefs)
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
@@ -4121,6 +4195,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "speechHint": prompt[:600], "carry": {"captionFixes": caption_fixes},
         # The prompt (and any change request) can say how the captions should look and read.
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
+        "preferences": prefs,
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -4156,6 +4231,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     text_choice = text_opts.get("mode") if text_opts.get("mode") in ("match", "adapt", "custom") else "match"
     align_choice = text_opts.get("align") if text_opts.get("align") in TEXT_ALIGNS else None
     notes = (options.get("notes") or "").strip()[:600]
+    # What this user has asked for before, applied without them having to ask again.
+    prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
+    guide = with_preferences(notes, prefs)
     music = options["music"]["mode"]
     caption_style = options["captions"]["style"] if options["captions"]["enabled"] else None
     # What the video is about, so captions spell the business, products and names right.
@@ -4263,7 +4341,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                           f"{json.dumps(ln['stats'], default=float)}")
                 report("matching", 25)
                 choice = "keep" if keep else text_choice
-                result = select_lines(req["inspo"], lines, groups, "adapt" if choice == "adapt" else "set", notes, inspo_lines)
+                result = select_lines(req["inspo"], lines, groups, "adapt" if choice == "adapt" else "set", guide, inspo_lines)
                 cost += result["cost_usd"]
                 data = result["data"]
                 keep_ids = [k for k in data["keep"] if isinstance(k, int)] or [ln["id"] for ln in lines]
@@ -4294,7 +4372,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     given = clean_effects(req.get("effects") or ((previous or {}).get("plan") or {}).get("effects"), n)
     effects = given or effects_from(inspo_style, n, jump)
     effects_note = ""
-    words = request or ("" if given else notes)
+    words = request or ("" if given else guide)
     if words.strip():  # Claude reads every request; it changes nothing when none of it is about effects
         report("analyzing", 6)
         try:
@@ -4380,7 +4458,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             else:
                 text_rule = TEXT_RULES["adapt"]
         report("matching", 25)
-        result = revise_plan(request, notes, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
+        result = revise_plan(request, guide, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
                              plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule,
                              one_take=jump, caption_text=str(previous["plan"].get("captionText") or ""),
                              caption_fixes=caption_fixes)
@@ -4455,7 +4533,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
         report("matching", 25)
         result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode if text_mode != "set" else "keep",
-                             text_opts.get("custom", ""), bool(req.get("fresh")), notes, shots, inspo_lines)
+                             text_opts.get("custom", ""), bool(req.get("fresh")), guide, shots, inspo_lines)
         cost += result["cost_usd"]
         data = result["data"]
         picked = {s["index"]: s for s in data["shots"]}
@@ -4513,7 +4591,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         for seg in segments:
             words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
         # The additional requests also steer the captions (their words, place, size and look).
-        words, rules = proofread_words(words, speech_hint, notes or (req.get("captionInstructions") or "").strip()[:1500])
+        words, rules = proofread_words(words, speech_hint,
+                                       with_preferences(notes or (req.get("captionInstructions") or "").strip()[:1500], prefs))
         words = apply_caption_fixes(words, caption_fixes)
         if not previous:  # a change request already did what was asked
             if rules.get("style") == "off":

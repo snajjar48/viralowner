@@ -206,6 +206,7 @@ export const modalEngine: ProcessingEngine = {
         audio: input.audio ?? null,
         effects: input.effects ?? null,
         carry: input.settings.carry ?? null,
+        history: input.history ?? [],
         // The worker calls this when the video is done, so we can email the user.
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
