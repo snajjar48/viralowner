@@ -534,20 +534,24 @@ def understand(shots: list[tuple[float, float]], frames: list[list[Path]], trans
     return ask_claude(SYSTEM_PROMPT, content, ANALYSIS_SCHEMA, "we couldn’t analyze that video. try a different one.")
 
 
-def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str) -> dict:
-    """One structured-output request. Returns the parsed JSON plus usage and cost."""
+def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
+    """One structured-output request. Returns the parsed JSON plus usage and cost.
+    `effort`: how hard Claude thinks. "high" for analysis and planning; "xhigh" where getting
+    exactly what the user asked for matters most (their requests and change requests)."""
     import anthropic
 
-    client = anthropic.Anthropic(max_retries=3, timeout=240)
-    response = client.beta.messages.create(
+    client = anthropic.Anthropic(max_retries=3, timeout=900)
+    # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
+    with client.beta.messages.stream(
         model=CLAUDE_MODEL,
-        max_tokens=16000,
+        max_tokens=64000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # if a safety check declines, another model finishes the request
         system=system,
         messages=[{"role": "user", "content": content}],
-        output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema}},
-    )
+        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+    ) as stream:
+        response = stream.get_final_message()
     if response.stop_reason == "refusal":
         raise JobError(refusal_message)
     if response.stop_reason == "max_tokens":
@@ -2770,7 +2774,8 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
     content.append({"type": "text", "text": "\n".join(ask)})
-    return ask_claude(REVISE_SYSTEM, content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.")
+    return ask_claude(REVISE_SYSTEM, content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.",
+                      effort="xhigh")
 
 
 # ---------------------------------------------------------------- the edit's effects
@@ -2779,14 +2784,6 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
 # effects, looks over the whole video, the color filter and sound effects.
 # They start as the inspo's (its style analysis), and change when the user
 # asks in "additional requests" or "request a change".
-
-EFFECT_WORDS = re.compile(
-    r"transition|whoosh|swoosh|swish|sound|sfx|effect|zoom|whip|spin|glitch|shake|flash|fade|slow|speed|fast|"
-    r"freeze|blur|grain|vhs|retro|vintage|filter|vignette|letterbox|glow|\bcuts?\b|swipe|slide|wipe|\bpop|ding|"
-    r"boom|riser|click|shutter|scratch|typing|cha.?ching|\bpan|pulse|black and white|b&w|rgb|chromatic|bass|beat|"
-    r"fire|flame|burn",
-    re.I,
-)
 
 
 def effects_from(style: dict, n: int, jump: bool) -> dict:
@@ -2828,7 +2825,7 @@ def clean_effects(e, n: int) -> dict | None:
 
 EFFECTS_SYSTEM = """You set the edit of a short-form video ViralOwner is making: the transition at each cut, each shot's motion, speed and short effects, looks over the whole video, the color filter and sound effects. They start out copied from the viral video the user is remaking.
 
-Change only what the user's words ask for, and keep everything else exactly as it is. If the words don't ask about any of these, return everything unchanged with an empty summary. A request about "the transitions" or "every cut" in general applies to all cuts. When the user asks for a sound with a transition (e.g. "add a whoosh to the whips"), put the sound at each of those cuts. A riser starts about 1.2s before the cut it builds to (offset -1.2); most other sounds sit right on the cut (offset 0, or about -0.1 for a whoosh). A fire transition goes best with a fire whoosh on the same cut (offset -0.05), and a flash with a flash sound, unless the user says otherwise.
+Do exactly what the user's words ask for, and keep everything else exactly as it is. If the words don't ask about any of these, return everything unchanged with an empty summary. When they describe a feeling instead of naming effects ("make it hit harder", "more energy", "make the reveal dramatic"), choose the transitions, effects and sounds from the lists below that best deliver it, where it matters most. When they ask for something that isn't in the lists, use the closest thing that is, and say plainly in the summary what you used instead. A request about "the transitions" or "every cut" in general applies to all cuts. When the user asks for a sound with a transition (e.g. "add a whoosh to the whips"), put the sound at each of those cuts. A riser starts about 1.2s before the cut it builds to (offset -1.2); most other sounds sit right on the cut (offset 0, or about -0.1 for a whoosh). A fire transition goes best with a fire whoosh on the same cut (offset -0.05), and a flash with a flash sound, unless the user says otherwise.
 
 Transitions:
 """ + catalog(TRANSITION_INFO) + """
@@ -2910,7 +2907,7 @@ def plan_effects(words: str, effects: dict, shots: list[dict]) -> tuple[dict, st
         f"the video now ({n} shots, {n - 1} cuts):\n{describe_effects(effects, shots)}\n\n"
         "return the whole updated edit."
     )}]
-    result = ask_claude(EFFECTS_SYSTEM, content, EFFECTS_SCHEMA, "we couldn’t work out those effects.")
+    result = ask_claude(EFFECTS_SYSTEM, content, EFFECTS_SCHEMA, "we couldn’t work out those effects.", effort="xhigh")
     d = result["data"]
     by = {x["index"]: x for x in d["shots"]}
     new = {
@@ -3122,7 +3119,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     effects = given or effects_from(inspo_style, n, jump)
     effects_note = ""
     words = request or ("" if given else notes)
-    if words and EFFECT_WORDS.search(words):
+    if words.strip():  # Claude reads every request; it changes nothing when none of it is about effects
         report("analyzing", 6)
         try:
             effects, effects_note, effects_cost = plan_effects(words, effects, shots)
@@ -3444,7 +3441,7 @@ def check_render_request(req: dict) -> str | None:
 job_resources = dict(image=image, secrets=secrets, cpu=4, memory=4096)
 
 
-@app.function(**job_resources, timeout=600)
+@app.function(**job_resources, timeout=900)
 def analyze_job(storage_key: str) -> dict:
     """Analyzes an uploaded inspo (read from storage by key)."""
     try:
