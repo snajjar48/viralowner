@@ -2215,7 +2215,9 @@ def sfx_times(events: list[dict], starts: list[float], durations: list[float], t
 # and captions always stay inside the area left over, as fractions of the frame.
 SAFE = {"top": 0.115, "bottom": 0.75, "left": 0.065, "right": 0.85}
 MARGIN_L, MARGIN_R = round(SAFE["left"] * OUT_W), round((1 - SAFE["right"]) * OUT_W)
-SAFE_CENTER_X = (SAFE["left"] + SAFE["right"]) / 2
+# Centered text and captions sit on the video's own center line (narrow enough to stay clear of the
+# app's buttons on the right), not the middle of the safe area, which is left of center.
+CENTER_X = 0.5
 CAPTION_MARGIN = 620  # px from the bottom to the bottom of the captions (inside the safe zone)
 TOP_TEXT_Y = 0.2  # where "top" text sits by default (its top edge)
 SAFE_ZONE_RULE = (
@@ -2328,6 +2330,15 @@ def font_metrics(key: str) -> dict:
     return m
 
 
+def luminance(hex_color: str) -> float:
+    """0 (black) to 1 (white)."""
+    try:
+        r, g, b = (int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    except (ValueError, TypeError):
+        return 1.0
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
 def text_look(style: dict, scale: float) -> dict:
     """How on-screen text is drawn, from a text style (see DEFAULT_TEXT_STYLE)."""
     key = style.get("font") if style.get("font") in FONTS else "clean_sans"
@@ -2338,9 +2349,15 @@ def text_look(style: dict, scale: float) -> dict:
     if style.get("box"):
         border, outline, outline_c = 3, max(6, round(size * 0.2)), ass_color(style.get("boxColor", "#FFFFFF"))
     else:
-        outline = {"none": 0, "thin": max(2, round(size * 0.04)), "thick": max(4, round(size * 0.08))}.get(
-            style.get("outline"), 0)
-        border, outline_c = 1, ass_color(style.get("outlineColor", "#000000"))
+        # Always a stroke, like TikTok's classic text, so the words read over any footage: at least a
+        # solid outline, dark around light text and light around dark text.
+        outline = max(max(3, round(size * 0.07)),
+                      {"none": 0, "thin": round(size * 0.05), "thick": round(size * 0.09)}.get(style.get("outline"), 0))
+        text_light = luminance(style.get("color", "#FFFFFF")) >= 0.5
+        stroke = style.get("outlineColor") or "#000000"
+        if (luminance(stroke) >= 0.5) == text_light:
+            stroke = "#000000" if text_light else "#FFFFFF"
+        border, outline_c = 1, ass_color(stroke)
     return {"family": family, "bold": bold, "key": key, "size": size,
             "primary": ass_color(style.get("color", "#FFFFFF")), "outline_c": outline_c,
             "border": border, "outline": outline, "shadow": 3 if style.get("shadow") else 0}
@@ -2393,7 +2410,7 @@ def block_size(lines: list[str], look: dict, size: int) -> tuple[float, float]:
 
 
 def default_x(align: str) -> float:
-    return {"left": SAFE["left"] + 0.01, "right": SAFE["right"] - 0.01}.get(align, SAFE_CENTER_X)
+    return {"left": SAFE["left"] + 0.01, "right": SAFE["right"] - 0.01}.get(align, CENTER_X)
 
 
 def available_width(align: str, x: float) -> float:
@@ -2408,6 +2425,8 @@ def clamp_to_safe(align: str, x: float, y: float, w: float, h: float) -> tuple[f
     lo_x, hi_x = {"left": (SAFE["left"], SAFE["right"] - w), "right": (SAFE["left"] + w, SAFE["right"])}.get(
         align, (SAFE["left"] + w / 2, SAFE["right"] - w / 2))
     x = min(max(x, lo_x), hi_x) if lo_x <= hi_x else default_x(align)
+    if align == "center":
+        x = CENTER_X  # always the video's center line (the lines were already fitted to the width there)
     lo_y, hi_y = SAFE["top"] + h / 2, SAFE["bottom"] - h / 2
     y = min(max(y, lo_y), hi_y) if lo_y <= hi_y else (SAFE["top"] + SAFE["bottom"]) / 2
     return r2(x), r2(y)
@@ -2483,6 +2502,8 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
             spot = inspo_spot(spots, i)
             asked_x, asked_y = layout["textXs"][i], layout["textYs"][i]
             x = asked_x if asked_x is not None else (spot[0] if spot and align == inspo_align else default_x(align))
+            if align == "center":
+                x = CENTER_X  # centered means the center of the whole video
             lines, size = fit_lines(text, look, available_width(align, x), keep_lines)
             w, h = block_size(lines, look, size)
             if asked_y is not None:
@@ -2573,7 +2594,7 @@ def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layou
         cap = scaled(CAPTION_LOOKS.get(caption_style, CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
         styles.append(caption_style_line(cap))
         chunks = caption_chunks(words, cap["words"], cap["chars"])
-        cx = round(SAFE_CENTER_X * OUT_W)
+        cx = round(CENTER_X * OUT_W)
         for n, chunk in enumerate(chunks):
             start = chunk[0]["s"]
             end = chunk[-1]["e"] + 0.3
