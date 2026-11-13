@@ -33,7 +33,7 @@ APP_NAME = "viralowner-worker"
 CLAUDE_MODEL = "claude-opus-5-5"
 # USD per million tokens (Claude Opus 5.5), for the cost log.
 PRICES = {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20}
-WHISPER_MODEL = "small"
+WHISPER_MODEL = "large-v3-turbo"  # much more accurate than small, still quick on CPU
 CLAP_MODEL = "laion/larger_clap_general"  # recognizes sound effects
 MODELS_DIR = "/models"
 
@@ -205,7 +205,7 @@ image = (
           for name, src in FONT_FILES.items()],
         "fc-cache -f",
     )
-    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper", "pillow")
+    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper>=1.1", "pillow")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
     # The sound-effect recognizer (CLAP), CPU-only.
     .uv_pip_install("torch==2.7.1", index_url="https://download.pytorch.org/whl/cpu")
@@ -396,8 +396,9 @@ def whisper_model():
     return _whisper
 
 
-def transcribe(path: Path) -> dict:
-    """What's said, with timings. Empty if there's no audio or no speech."""
+def transcribe(path: Path, hint: str = "") -> dict:
+    """What's said, with timings. Empty if there's no audio or no speech. `hint`: words likely to
+    come up (the business, products, names), so they're spelled right."""
     import numpy as np
 
     # Decode with ffmpeg to 16 kHz mono samples and hand Whisper the array
@@ -410,7 +411,8 @@ def transcribe(path: Path) -> dict:
         return {"language": None, "segments": []}
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
     model = whisper_model()
-    segments, info = model.transcribe(audio, vad_filter=True, word_timestamps=True)
+    segments, info = model.transcribe(audio, vad_filter=True, word_timestamps=True, beam_size=5,
+                                      initial_prompt=hint.strip()[:400] or None)
     out = []
     for s in segments:
         text = s.text.strip()
@@ -422,6 +424,55 @@ def transcribe(path: Path) -> dict:
                           for w in (s.words or [])],
             })
     return {"language": info.language if out else None, "segments": out}
+
+
+CAPTION_FIX_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "fixes": {
+            "type": "array",
+            "description": "only words that are clearly misheard. empty if everything is right.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "the word's number."},
+                    "word": {"type": "string", "description": "what was actually said, as it should be written (one word, keep its punctuation)."},
+                },
+                "required": ["index", "word"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["fixes"],
+    "additionalProperties": False,
+}
+
+
+def proofread_words(words: list[dict], context: str) -> list[dict]:
+    """Fixes words the speech model clearly misheard (a business or product name, a homophone that
+    makes no sense), using what the video is about. Timings stay, so captions stay in sync. Best effort."""
+    if not words:
+        return words
+    listing = " ".join(f"[{i}]{w['w']}" for i, w in enumerate(words))
+    try:
+        result = ask_claude(
+            "You proofread automatic speech captions for a short social video. Fix only words that were clearly "
+            "misheard: a business, product or person's name spelled wrong, or a word that makes no sense where a "
+            "similar-sounding one obviously does. Never reword, shorten, censor or change what was said, and never "
+            "fix grammar. When unsure, leave the word as it is.",
+            [{"type": "text", "text": f"what the video is about: {context or '(no description)'}\n\ncaptions, each "
+                                     f"word with its number:\n{listing}"}],
+            CAPTION_FIX_SCHEMA, "captions", effort="medium")
+    except Exception as e:  # noqa: BLE001
+        print(f"caption proofread failed: {type(e).__name__}: {e}")
+        return words
+    out = [dict(w) for w in words]
+    for f in result["data"].get("fixes") or []:
+        i, word = f.get("index"), (f.get("word") or "").strip()
+        if isinstance(i, int) and 0 <= i < len(out) and word and " " not in word:
+            print(f"caption fix: {out[i]['w']!r} -> {word!r}")
+            out[i]["w"] = word
+    return out
 
 
 def transcribe_take(path: Path) -> dict:
@@ -2138,11 +2189,22 @@ def ass_color(hex_color: str, alpha: int = 0) -> str:
 WHITE, BLACK, SHADOW = "&H00FFFFFF", "&H00000000", "&H90000000"
 HIGHLIGHT = "&H0000E5FF"  # yellow, in ASS's BGR order
 
+# Each look matches its sample in the website's caption picker (src/components/caption-styles.tsx).
+POP_YELLOW = "&H004DD8FF"  # #FFD84D, in ASS's BGR order
+DIM_WHITE = "&H66FFFFFF"  # white at 60%
 CAPTION_LOOKS = {
-    "bold-pop": dict(size=136, primary=WHITE, outline_c=BLACK, border=1, outline=9, shadow=0, words=2, chars=14),
-    "clean": dict(size=80, primary=WHITE, outline_c=BLACK, border=1, outline=4, shadow=2, words=5, chars=28),
-    "boxed": dict(size=84, primary=WHITE, outline_c="&H33000000", border=3, outline=16, shadow=0, words=4, chars=22),
-    "karaoke": dict(size=104, primary=WHITE, outline_c=BLACK, border=1, outline=8, shadow=0, words=3, chars=20),
+    # bold pop: heavy capitals, white with a black edge, the word being said in yellow; pops in.
+    "bold-pop": dict(font="Montserrat Black", bold=0, size=118, primary=WHITE, outline_c=BLACK, border=1, outline=8,
+                     shadow=0, words=2, chars=14, upper=True, active=POP_YELLOW),
+    # clean: plain white sentences with a soft shadow.
+    "clean": dict(font="Montserrat Medium", bold=0, size=70, primary=WHITE, outline_c=BLACK, border=1, outline=0,
+                  shadow=3, words=6, chars=30, upper=False, active=None),
+    # boxed: black text on a white box.
+    "boxed": dict(font="Montserrat SemiBold", bold=0, size=74, primary=BLACK, outline_c=WHITE, border=3, outline=14,
+                  shadow=0, words=4, chars=24, upper=False, active=None),
+    # highlight: every word dimmed, the word being said lit up white.
+    "karaoke": dict(font="Montserrat ExtraBold", bold=0, size=96, primary=DIM_WHITE, outline_c="&H99000000", border=1,
+                    outline=4, shadow=0, words=3, chars=20, upper=False, active=WHITE),
 }
 
 
@@ -2151,8 +2213,9 @@ def scaled(look: dict, scale: float) -> dict:
 
 
 def caption_style_line(look: dict) -> str:
-    return (f"Style: Caption,{FONT},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},{SHADOW},"
-            f"-1,0,0,0,100,100,0,0,{look['border']},{look['outline']},{look['shadow']},2,"
+    bold = -1 if look.get("bold", -1) else 0
+    return (f"Style: Caption,{look.get('font', FONT)},{look['size']},{look['primary']},{look['primary']},"
+            f"{look['outline_c']},{SHADOW},{bold},0,0,0,100,100,0,0,{look['border']},{look['outline']},{look['shadow']},2,"
             f"{MARGIN_L},{MARGIN_R},{CAPTION_MARGIN},1")
 
 
@@ -2457,19 +2520,24 @@ def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layou
             end = max(end, start + 0.25)
             y = caption_y_at(start)
             pos = f"{{\\an5\\pos({cx},{round(y * OUT_H)})}}" if y is not None else ""
-            if caption_style == "karaoke":
+            say = (lambda t: t.upper()) if cap.get("upper") else (lambda t: t)  # noqa: E731
+            if cap.get("active"):
+                # The word being said stands out (yellow for bold pop, lit up for highlight).
                 for k, w in enumerate(chunk):
                     ws = start if k == 0 else w["s"]
                     we = end if k == len(chunk) - 1 else chunk[k + 1]["s"]
+                    # ASS colors are &HAABBGGRR: switch the color and the transparency.
+                    on = f"\\1c&H{cap['active'][4:]}&\\1a&H{cap['active'][2:4]}&"
+                    off = f"\\1c&H{cap['primary'][4:]}&\\1a&H{cap['primary'][2:4]}&"
                     line = " ".join(
-                        f"{{\\c{HIGHLIGHT}&}}{ass_text(x['w'])}{{\\c{WHITE}&}}" if j == k else ass_text(x["w"])
+                        f"{{{on}}}{ass_text(say(x['w']))}{{{off}}}" if j == k else ass_text(say(x["w"]))
                         for j, x in enumerate(chunk)
                     )
+                    if caption_style == "bold-pop" and k == 0:
+                        line = "{\\fscx80\\fscy80\\t(0,100,\\fscx100\\fscy100)}" + line
                     events.append(f"Dialogue: 0,{ass_time(ws)},{ass_time(max(we, ws + 0.05))},Caption,,0,0,0,,{pos}{line}")
             else:
-                line = " ".join(ass_text(x["w"]) for x in chunk)
-                if caption_style == "bold-pop":
-                    line = "{\\fscx85\\fscy85\\t(0,90,\\fscx100\\fscy100)}" + line
+                line = " ".join(ass_text(say(x["w"])) for x in chunk)
                 events.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Caption,,0,0,0,,{pos}{line}")
 
     if not events:
@@ -3712,6 +3780,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "options": {**options, "notes": "", "music": {**options["music"], "mode": sound},
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
+        "speechHint": prompt[:600],
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -3748,6 +3817,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     notes = (options.get("notes") or "").strip()[:600]
     music = options["music"]["mode"]
     caption_style = options["captions"]["style"] if options["captions"]["enabled"] else None
+    # What the video is about, so captions spell the business, products and names right.
+    speech_hint = (req.get("speechHint") or notes or "").strip()[:600]
     request = (req.get("request") or "").strip()[:600]
     previous = req.get("previous") if request else None
     cost = 0.0
@@ -4044,11 +4115,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             segments = (breakdown.get("transcript") or {}).get("segments") or []
         elif use_own_audio:
             # A voiceover gets captioned; a song without words simply has none.
-            segments = transcribe(own_audio)["segments"]
+            segments = transcribe(own_audio, speech_hint)["segments"]
         else:
-            segments = transcribe(joined)["segments"]
+            segments = transcribe(joined, speech_hint)["segments"]
         for seg in segments:
             words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
+        words = proofread_words(words, speech_hint)
 
     report("editing", 80)
     faces: list = [[] for _ in plan]
