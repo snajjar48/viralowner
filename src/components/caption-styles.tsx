@@ -82,7 +82,7 @@ function TextSample({ id }: { id: TextStyleId }) {
     case "auto":
       return <span className={`${base} font-semibold text-white/80`}>Aa</span>;
     case "classic":
-      return <span className={`${base} font-extrabold text-white`} style={stroke(3)}>pov: you</span>;
+      return <span className={`${base} font-extrabold text-white`} style={stroke(2)}>pov: you</span>;
     case "bold-pop":
       return <span className={`${base} font-black text-[#FFD84D]`} style={stroke(3)}>pov: you</span>;
     case "boxed":

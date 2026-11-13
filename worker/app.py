@@ -1153,7 +1153,8 @@ TEXT_SIZES = {"small": 0.028, "medium": 0.038, "large": 0.052, "xl": 0.075}
 TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"]
 # The on-screen text looks the user can pick (the website's TEXT_STYLES). "auto" (or none) keeps the inspo's / ours.
 TEXT_PRESETS = {
-    "classic": {"font": "clean_sans", "color": "#FFFFFF", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
+    # classic: a slightly thinner stroke than the rest (thin = the standard stroke every text gets).
+    "classic": {"font": "clean_sans", "color": "#FFFFFF", "outline": "thin", "outlineColor": "#000000", "box": False, "shadow": False},
     "bold-pop": {"font": "heavy_sans", "color": "#FFD84D", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
     "boxed": {"font": "clean_sans", "color": "#000000", "outline": "none", "box": True, "boxColor": "#FFFFFF", "shadow": False},
     "dark-box": {"font": "clean_sans", "color": "#FFFFFF", "outline": "none", "box": True, "boxColor": "#000000", "shadow": False},
