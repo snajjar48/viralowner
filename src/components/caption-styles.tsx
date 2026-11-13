@@ -13,6 +13,12 @@ function Sample({ id }: { id: CaptionStyleId }) {
       );
     case "clean":
       return <span className="text-xs font-medium text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]">this changed everything for me</span>;
+    case "outline":
+      return (
+        <span className="text-sm font-medium text-white [-webkit-text-stroke:3px_#000] [paint-order:stroke_fill]">
+          this changed everything
+        </span>
+      );
     case "boxed":
       return <span className="rounded bg-white px-1.5 py-0.5 text-xs font-semibold text-black">this changed everything</span>;
     case "karaoke":
@@ -34,7 +40,7 @@ export function CaptionStylePicker({
   disabled?: boolean;
 }) {
   return (
-    <div role="radiogroup" aria-label="caption style" className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div role="radiogroup" aria-label="caption style" className="grid grid-cols-2 gap-2 sm:grid-cols-3">
       {CAPTION_STYLES.map((s) => {
         const checked = value === s.id;
         return (

@@ -458,8 +458,9 @@ def proofread_words(words: list[dict], context: str) -> list[dict]:
         result = ask_claude(
             "You proofread automatic speech captions for a short social video. Fix only words that were clearly "
             "misheard: a business, product or person's name spelled wrong, or a word that makes no sense where a "
-            "similar-sounding one obviously does. Never reword, shorten, censor or change what was said, and never "
-            "fix grammar. When unsure, leave the word as it is.",
+            "similar-sounding one obviously does. Only make a fix when the description of the video or the rest of "
+            "the captions shows what the right word is; never guess a name or product from the sound alone. Never "
+            "reword, shorten, censor or change what was said, and never fix grammar. When unsure, leave the word as it is.",
             [{"type": "text", "text": f"what the video is about: {context or '(no description)'}\n\ncaptions, each "
                                      f"word with its number:\n{listing}"}],
             CAPTION_FIX_SCHEMA, "captions", effort="medium")
@@ -473,6 +474,78 @@ def proofread_words(words: list[dict], context: str) -> list[dict]:
             print(f"caption fix: {out[i]['w']!r} -> {word!r}")
             out[i]["w"] = word
     return out
+
+
+CAPTION_FIXES_FIELD = {
+    "type": "array",
+    "description": ("words the user says the captions got wrong, and what they should say instead (the user's spelling "
+                    "and capitals, exactly). keep every earlier fix listed and add the new ones. empty if none."),
+    "items": {
+        "type": "object",
+        "properties": {
+            "wrong": {"type": "string", "description": "the word or words as the captions show them now."},
+            "right": {"type": "string", "description": "what they should say."},
+        },
+        "required": ["wrong", "right"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _word_key(w: str) -> str:
+    import re
+
+    return re.sub(r"[^\w']", "", w.lower()).removesuffix("'")
+
+
+def clean_caption_fixes(*lists) -> list[dict]:
+    """The caption fixes in effect: earlier ones first, later ones win for the same words."""
+    out: dict[str, dict] = {}
+    for fixes in lists:
+        for f in fixes or []:
+            if not isinstance(f, dict) or not isinstance(f.get("wrong"), str) or not isinstance(f.get("right"), str):
+                continue
+            wrong, right = " ".join(f["wrong"].split())[:80], " ".join(f["right"].split())[:80]
+            key = " ".join(k for k in (_word_key(t) for t in wrong.split()) if k)
+            if key and wrong != right:
+                out.pop(key, None)
+                out[key] = {"wrong": wrong, "right": right}
+    return list(out.values())[-40:]
+
+
+def apply_caption_fixes(words: list[dict], fixes: list[dict]) -> list[dict]:
+    """Swaps each wrong word (or run of words) in the captions for what the user says it should be.
+    The new words share the old ones' time, so the captions stay in sync."""
+    import re
+
+    for f in fixes:
+        want = [k for k in (_word_key(t) for t in f["wrong"].split()) if k]
+        right = f["right"].split()
+        if not want:
+            continue
+        out, i, hits = [], 0, 0
+        while i < len(words):
+            span = words[i:i + len(want)]
+            if len(span) == len(want) and [_word_key(w["w"]) for w in span] == want:
+                s0, e1 = span[0]["s"], span[-1]["e"]
+                lead = re.match(r"^[^\w']*", span[0]["w"]).group()
+                trail = re.search(r"[^\w']*$", span[-1]["w"]).group()
+                step = (e1 - s0) / max(1, len(right))
+                for k, t in enumerate(right):
+                    text = (lead if k == 0 else "") + t
+                    if k == len(right) - 1 and trail and not re.search(r"[^\w']$", t):
+                        text += trail
+                    # glue: the words of one fix stay together in a caption.
+                    out.append({**span[0], "w": text, "s": s0 + k * step, "e": s0 + (k + 1) * step, "glue": k > 0})
+                i += len(want)
+                hits += 1
+            else:
+                out.append(words[i])
+                i += 1
+        if hits:
+            print(f"caption fix from the user: {f['wrong']!r} -> {f['right']!r} ({hits}x)")
+        words = out
+    return words
 
 
 def transcribe_take(path: Path) -> dict:
@@ -1578,6 +1651,20 @@ def overlaps(span: tuple[float, float], used: list[tuple[float, float]], gap: fl
     return any(span[0] < b + gap and span[1] > a - gap for a, b in used)
 
 
+MIN_SHOT_S, MAX_SHOT_S = 0.3, 30.0
+
+
+def with_lengths(shots: list[dict], lengths: list[float]) -> list[dict]:
+    """The shots with new lengths, each starting where the one before ends."""
+    out, t = [], 0.0
+    for s, length in zip(shots, lengths):
+        # inspoMidS: where the matching moment is in the inspo, which doesn't move.
+        out.append({**s, "startS": r2(t), "durationS": r2(length),
+                    "inspoMidS": s.get("inspoMidS", s["startS"] + s["durationS"] / 2)})
+        t += length
+    return out
+
+
 def resolve_plan(shots: list[dict], clips: list[dict], fixed: list[dict], picked: dict[int, dict]) -> list[dict]:
     """Final clip, start and length for each shot. User choices win; then Claude's; then a simple fallback."""
     plan = []
@@ -2263,6 +2350,9 @@ CAPTION_LOOKS = {
     # clean: plain white sentences with a soft shadow.
     "clean": dict(font="Montserrat Medium", bold=0, size=70, primary=WHITE, outline_c=BLACK, border=1, outline=0,
                   shadow=3, words=6, chars=30, upper=False, active=None),
+    # outline: the clean font and sentences, white with a solid black stroke (tiktok's classic text).
+    "outline": dict(font="Montserrat Medium", bold=0, size=76, primary=WHITE, outline_c=BLACK, border=1, outline=6,
+                    shadow=0, words=5, chars=26, upper=False, active=None),
     # boxed: black text on a white box.
     "boxed": dict(font="Montserrat SemiBold", bold=0, size=74, primary=BLACK, outline_c=WHITE, border=3, outline=14,
                   shadow=0, words=4, chars=24, upper=False, active=None),
@@ -2287,7 +2377,9 @@ def caption_chunks(words: list[dict], max_words: int, max_chars: int) -> list[li
     chunks: list[list[dict]] = []
     for w in words:
         cur = chunks[-1] if chunks else None
-        if (cur is None or len(cur) >= max_words
+        if cur is not None and w.get("glue"):
+            cur.append(w)
+        elif (cur is None or len(cur) >= max_words
                 or len(" ".join(x["w"] for x in cur)) + 1 + len(w["w"]) > max_chars
                 or w["s"] - cur[-1]["e"] > 0.6
                 or cur[-1]["w"][-1:] in ".?!"):
@@ -2962,14 +3054,14 @@ def jumpcut_shots(ranges: list[dict], inspo_shots: list[dict], inspo_duration: f
 
 # ---- "request a change": Claude edits an existing version
 
-REVISE_SYSTEM = """You make changes to a short-form video a user already made with ViralOwner (an app that remakes a proven viral video, the "inspo", with the user's own footage, keeping the inspo's exact shot timing).
+REVISE_SYSTEM = """You make changes to a short-form video a user already made with ViralOwner (an app that remakes a proven viral video, the "inspo", with the user's own footage, starting from the inspo's shot timing).
 
 You get the user's request, frames from every shot of the current version exactly as it looks now (with its on-screen text and captions), the plan behind it, where faces are in each shot, and frames from all of the user's clips.
 
-Make the change the user asks for and keep everything else exactly as it is. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
+Make the change the user asks for and keep everything else exactly as it is. The user's request always wins over matching the inspo: the inspo is only where the video started, so never refuse or water down a change because it makes the video differ from the inspo. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
-You can change: which clip and moment fills a shot; the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the post caption and hashtags.
-You can't change: shot timing or the number of shots, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
+You can change: how long each shot lasts (length_s: when the user asks to extend, lengthen, shorten or trim a shot or clip, or to make a part longer or shorter, change those shots' lengths by what they ask, or by a clear amount like 1-2 seconds if they don't say; the shots after it simply move later or earlier); which clip and moment fills a shot (to show more of a moment when a shot gets longer, start it earlier in the clip if the clip runs out); the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the words in the captions (caption_fixes: when the user says a word in the captions is wrong, or tells you what a word should say or how to spell it, add it as wrong -> right exactly as they want it, using the current captions below to find the words as they appear now); the post caption and hashtags.
+You can't change: the number of shots, the music or audio, whether captions are on or their style (the user changes those in the options under the video), or add stickers. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
 Transitions, sound effects, speed (slow motion, sped up), zooms, shakes, filters, looks and other video effects are handled by a separate step: never call them impossible and leave them out of your summary. If the request is only about those, change nothing and return an empty summary.
 
 Positions are fractions of the frame: x from 0 (left edge) to 1 (right edge), y from 0 (top) to 1 (bottom). text_x is the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text; text_y and caption_y are the vertical center. """ + SAFE_ZONE_RULE + """ Use -1 to leave a position as it is, and "keep" to leave a setting as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
@@ -2984,6 +3076,7 @@ REVISE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "index": {"type": "integer", "description": "the shot number, starting at 1."},
+                    "length_s": {"type": "number", "description": "how long the shot lasts, in seconds (its current length unless the user asked to change it)."},
                     "clip": {"type": "integer", "description": "the clip number to use, starting at 1."},
                     "start_s": {"type": "number", "description": "where in that clip the shot starts, in seconds."},
                     "text": {"type": "string", "description": "on-screen text for this shot. empty string for none."},
@@ -2991,7 +3084,7 @@ REVISE_SCHEMA = {
                     "text_y": {"type": "number", "description": "vertical center of the on-screen text, or -1 to leave it."},
                     "caption_y": {"type": "number", "description": "vertical center of the captions, or -1 to leave it."},
                 },
-                "required": ["index", "clip", "start_s", "text", "text_x", "text_y", "caption_y"],
+                "required": ["index", "length_s", "clip", "start_s", "text", "text_x", "text_y", "caption_y"],
                 "additionalProperties": False,
             },
         },
@@ -3004,6 +3097,7 @@ REVISE_SCHEMA = {
         "text_animation": {"type": "string", "enum": ["keep", *TEXT_ANIMATIONS]},
         "caption": {"type": "string", "description": "the post caption (keep it unless asked)."},
         "hashtags": {"type": "array", "items": {"type": "string"}},
+        "caption_fixes": CAPTION_FIXES_FIELD,
         "summary": {
             "type": "string",
             "description": (
@@ -3014,7 +3108,7 @@ REVISE_SCHEMA = {
         },
     },
     "required": ["shots", "text_scale", "caption_scale", "font", "text_color", "text_look", "text_align",
-                 "text_animation", "caption", "hashtags", "summary"],
+                 "text_animation", "caption", "hashtags", "caption_fixes", "summary"],
     "additionalProperties": False,
 }
 
@@ -3029,7 +3123,7 @@ def style_summary(style: dict) -> str:
 def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], current: list[dict],
                 texts: list[str], layout: dict, style: dict, post: dict, lays: list, cap_ys: list,
                 faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None,
-                one_take: bool = False) -> dict:
+                one_take: bool = False, caption_text: str = "", caption_fixes: list[dict] | None = None) -> dict:
     cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
     cap_default = caption_center(cap)
     content: list[dict] = [{"type": "text", "text": (
@@ -3038,6 +3132,8 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
         + f"\nthe current version ({len(shots)} shots). on-screen text: {style_summary(style)}, size {layout['textScale']:.2f}; "
         + (f"captions on ('{caption_style}'), size {layout['captionScale']:.2f}." if caption_style else "captions off.")
         + f"\npost caption: {json.dumps(post.get('caption', ''), ensure_ascii=False)}\nhashtags: {' '.join(post.get('hashtags', []))}"
+        + (f"\nthe captions now say: {json.dumps(caption_text, ensure_ascii=False)}" if caption_style and caption_text else "")
+        + (f"\ncaption fixes already in effect: {json.dumps(caption_fixes, ensure_ascii=False)}" if caption_fixes else "")
     )}]
     for i, s in enumerate(shots):
         c = current[i]
@@ -3062,7 +3158,7 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
     ask = ["make the requested change and return the whole updated plan."]
     if one_take:
         ask.append("this video is the user's one take with the pauses cut out, so its footage can't be swapped: "
-                   "return every shot's clip and start exactly as given.")
+                   "return every shot's clip, start and length exactly as given.")
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
     content.append({"type": "text", "text": "\n".join(ask)})
@@ -3317,6 +3413,7 @@ Editing craft:
 - Text style: pick the font, color, look, size, animation and position that fit the video's vibe (a bold condensed or heavy font for hype, a serif or script for aesthetic, a typewriter for storytelling). position: top (the upper safe area, the usual place for a hook), middle, or bottom (just above where the app's caption sits).
 - Never invent facts, prices, results or claims the clips or the prompt don't support.
 - Write the post caption (one or two lines, in the user's voice, with a hook) and 3-8 hashtags.
+- Speech captions are written automatically from what's said. When the user says a word in them is wrong, or tells you what a word should say or how to spell it, put it in caption_fixes (the words as the captions show them now -> exactly what the user wants), and keep every fix already in effect. When the user asks for a shot or clip to be longer or shorter, change its start_s/end_s (or the speed) by what they ask, or by a clear amount like 1-2 seconds if they don't say.
 - summary: one or two short sentences to the user, all lowercase, saying what you made (or, for a change, what you changed), including anything you couldn't do. Write as "we" ("we cut it down to..."), never "i", and never mention claude, ai or a model.
 
 Transitions (transition_in is how the video gets into that shot; shot 1 is always 'cut'):
@@ -3404,8 +3501,9 @@ DIRECTOR_SCHEMA = {
         },
         "caption": {"type": "string", "description": "the post caption."},
         "hashtags": {"type": "array", "items": {"type": "string"}},
+        "caption_fixes": CAPTION_FIXES_FIELD,
     },
-    "required": ["summary", "shots", "text_style", "looks", "color_filter", "sfx", "caption", "hashtags"],
+    "required": ["summary", "shots", "text_style", "looks", "color_filter", "sfx", "caption", "hashtags", "caption_fixes"],
     "additionalProperties": False,
 }
 
@@ -3515,7 +3613,12 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     if text_mode == "custom":
         ask.append("the user's lines: " + json.dumps(custom_text, ensure_ascii=False))
     if previous:
-        content.append({"type": "text", "text": "\nthe current version's plan:\n" + json.dumps(previous, ensure_ascii=False)})
+        content.append({"type": "text", "text": "\nthe current version's plan:\n" + json.dumps(
+            {k: v for k, v in previous.items() if k not in ("captionText", "captionFixes")}, ensure_ascii=False)})
+        if previous.get("captionText"):
+            content.append({"type": "text", "text": "the captions now say: " + json.dumps(previous["captionText"], ensure_ascii=False)})
+        if previous.get("captionFixes"):
+            content.append({"type": "text", "text": "caption fixes already in effect: " + json.dumps(previous["captionFixes"], ensure_ascii=False)})
         for i, p in enumerate(prev_frames):
             if p:
                 content.append({"type": "text", "text": f"the current version, shot {i + 1} (as it looks now, with its text):"})
@@ -3764,6 +3867,9 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         sound = "original"
 
     previous = plan_from_render(base["plan"], index_of) if base and isinstance(base.get("plan"), dict) else None
+    carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
+    caption_fixes = clean_caption_fixes(((base or {}).get("plan") or {}).get("captionFixes") if base else None,
+                                        carry.get("captionFixes"))
     text_changed = bool(base and base.get("textChanged"))
     if previous and not request and text_changed:
         # Only the text setting changed: the director updates the words and nothing else.
@@ -3816,9 +3922,11 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                 prev_frames.append(grab_frame(prev_path, t + length / 2, workdir / f"prev{i:02d}.jpg", MATCH_FRAME_WIDTH)
                                    if prev_path.exists() else None)
                 t += length
-            # The current caption and hashtags, so a change can keep them.
+            # The current caption and hashtags, so a change can keep them, and what the captions say.
             previous = {**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
-                        "hashtags": (base.get("postCopy") or {}).get("hashtags", [])}
+                        "hashtags": (base.get("postCopy") or {}).get("hashtags", []),
+                        "captionText": str(base["plan"].get("captionText") or ""),
+                        "captionFixes": caption_fixes}
         report("matching", 20)
         result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                              prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")))
@@ -3837,6 +3945,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
+        caption_fixes = clean_caption_fixes(caption_fixes, result["data"].get("caption_fixes"))
         if text_mode == "custom" and custom_text.strip() and not custom_lines_kept(cleaned["shots"], custom_text):
             # The user's own words go in exactly as typed, whatever Claude did with them.
             placed = spread_lines(custom_text, [{"onScreenText": s["text"] or None,
@@ -3863,7 +3972,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "options": {**options, "notes": "", "music": {**options["music"], "mode": sound},
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
-        "speechHint": prompt[:600],
+        "speechHint": prompt[:600], "carry": {"captionFixes": caption_fixes},
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -3974,6 +4083,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     # One take, pauses cut out: the cuts come from the user's take, not the inspo's timing.
     jump = inspo_style.get("editType") == "jump_cut"
+    carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
+    caption_fixes = clean_caption_fixes(((previous or {}).get("plan") or {}).get("captionFixes"), carry.get("captionFixes"))
+    inspo_lengths = [s["durationS"] for s in shots]
+    lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
+    if (not jump and isinstance(lengths, list) and len(lengths) == n
+            and all(isinstance(x, (int, float)) and x > 0 for x in lengths)):
+        # Shot lengths the user asked for in an earlier version.
+        shots = with_lengths(shots, [float(x) for x in lengths])
     jump_ranges: list[dict] = []
     jump_texts: list[str] | None = None
     jump_post = None
@@ -4111,10 +4228,13 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         report("matching", 25)
         result = revise_plan(request, notes, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
                              plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule,
-                             one_take=jump)
+                             one_take=jump, caption_text=str(previous["plan"].get("captionText") or ""),
+                             caption_fixes=caption_fixes)
         cost += result["cost_usd"]
         data = result["data"]
+        caption_fixes = clean_caption_fixes(caption_fixes, data.get("caption_fixes"))
         by_index = {s["index"]: s for s in data["shots"]}
+        new_lengths = [s["durationS"] for s in shots]
         for i in range(n):
             r = by_index.get(i + 1)
             if not r:
@@ -4123,6 +4243,20 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 ci = r["clip"] - 1
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
                     fixed[i] = {"clip": ci, "start": max(0.0, float(r["start_s"])), "end": None}
+            length = r.get("length_s")
+            if not jump and isinstance(length, (int, float)) and abs(length - shots[i]["durationS"]) > 0.05:
+                # The user asked for a longer or shorter shot: more (or less) of the same moment.
+                new_lengths[i] = min(MAX_SHOT_S, max(MIN_SHOT_S, float(length)))
+                f = fixed[i]
+                ci = f["clip"] if f["clip"] is not None else current[i]["clip"]
+                start = f["start"] if f["clip"] is not None and f["start"] is not None else current[i]["start"]
+                d = clips[ci]["duration"]
+                if start + new_lengths[i] > d:
+                    start = max(0.0, d - new_lengths[i])  # start earlier rather than run out of clip
+                fixed[i] = {"clip": ci, "start": start, "end": None}
+        if new_lengths != [s["durationS"] for s in shots]:
+            print(f"revise: shot lengths {[r2(s['durationS']) for s in shots]} -> {[r2(x) for x in new_lengths]}")
+            shots = with_lengths(shots, new_lengths)
             plan_texts[i] = (r.get("text") or "").strip()
             for key, field in (("text_x", "textXs"), ("text_y", "textYs"), ("caption_y", "captionYs")):
                 v = r.get(key)
@@ -4218,6 +4352,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         for seg in segments:
             words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
         words = proofread_words(words, speech_hint)
+        words = apply_caption_fixes(words, caption_fixes)
 
     report("editing", 80)
     faces: list = [[] for _ in plan]
@@ -4318,6 +4453,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "captionScale": layout["captionScale"],
             "note": " ".join(x for x in (note, effects_note if request else "") if x) or None,
             "effects": effects,
+            **({"captionFixes": caption_fixes} if caption_fixes else {}),
+            **({"captionText": " ".join(w["w"] for w in words)[:5000]} if words else {}),
+            **({"shotLengths": [r2(s["durationS"]) for s in shots]}
+               if not jump and req.get("inspo", {}).get("storageKey") and len(shots) == len(inspo_lengths)
+               and any(abs(s["durationS"] - L) > 0.05 for s, L in zip(shots, inspo_lengths)) else {}),
             **({"jumpcut": [{"clipId": clips[p["clip"]]["id"], "startS": r2(p["start"]), "endS": r2(p["start"] + p["take"])}
                             for p in plan]} if jump else {}),
         },

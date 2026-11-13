@@ -313,3 +313,13 @@ export function previousFor(from: Render, options: VideoOptions): Extras["previo
 export function settingsFor(options: VideoOptions, shots: ShotEdit[], seed = newSeed()): RenderSettings {
   return { options, shots, seed };
 }
+
+/** What a new version keeps from the one it starts from: shot lengths the user asked for and caption fixes. */
+export function carryFrom(from: Render | undefined): Pick<RenderSettings, "carry"> {
+  const plan = from?.plan;
+  const carry = {
+    ...(plan?.shotLengths?.length ? { shotLengths: plan.shotLengths } : {}),
+    ...(plan?.captionFixes?.length ? { captionFixes: plan.captionFixes } : {}),
+  };
+  return Object.keys(carry).length ? { carry } : {};
+}

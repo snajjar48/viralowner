@@ -133,6 +133,15 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
             descriptions: Array.isArray(p.scratch.descriptions) ? p.scratch.descriptions.map(str) : [],
           }
         : undefined,
+    shotLengths:
+      Array.isArray(p.shotLengths) && p.shotLengths.every((x) => isNum(x) && x > 0) ? p.shotLengths : undefined,
+    captionFixes: Array.isArray(p.captionFixes)
+      ? p.captionFixes
+          .filter((f) => f && typeof f.wrong === "string" && typeof f.right === "string" && f.wrong.trim())
+          .slice(0, 40)
+          .map((f) => ({ wrong: f.wrong, right: f.right }))
+      : undefined,
+    captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,
@@ -193,6 +202,7 @@ export const modalEngine: ProcessingEngine = {
         cuts: input.cuts ?? null,
         audio: input.audio ?? null,
         effects: input.effects ?? null,
+        carry: input.settings.carry ?? null,
         // The worker calls this when the video is done, so we can email the user.
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },

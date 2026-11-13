@@ -137,6 +137,20 @@ export interface RenderSettings {
   /** A typed "request a change", applied to version `fromVersion`. */
   request?: string | null;
   fromVersion?: number | null;
+  /** Carried from the version this one starts from: shot lengths the user asked for, caption word fixes. */
+  carry?: Carry;
+}
+
+/** A word (or words) the captions got wrong, and what it should say. */
+export interface CaptionFix {
+  wrong: string;
+  right: string;
+}
+
+export interface Carry {
+  /** Inspo videos: each shot's length, when the user asked for different lengths than the inspo's. */
+  shotLengths?: number[];
+  captionFixes?: CaptionFix[];
 }
 
 /** The words chosen for a version, reused by later versions that don't change the text options. */
@@ -211,6 +225,10 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   jumpcut?: TakeCut[];
   /** The edit's transitions, motion, speed, effects, looks and sound effects (worker-defined shape). */
   effects?: Record<string, unknown>;
+  /** Shot lengths the user asked for (inspo videos), the caption fixes in effect and the captions shown. */
+  shotLengths?: number[];
+  captionFixes?: CaptionFix[];
+  captionText?: string;
   /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */
   scratch?: { roles: ShotRole[]; descriptions: string[] };
 }

@@ -3,6 +3,7 @@ import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "
 import { listClips, listRenders, saveSettings, type Project } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
+  carryFrom,
   getStillActiveRender,
   newSeed,
   parseShotEdits,
@@ -82,7 +83,11 @@ async function makeVersion(userId: string, project: Project, body: Record<string
         if (body.mode === "new") return settingsFor(options, shotsFromAssignments(shotCount, clips));
         const shots = parseShotEdits(body.shots, shotCount, clips);
         if ("error" in shots) return shots;
-        return { ...settingsFor(options, shots), ...(request ? { request, fromVersion: from!.version } : {}) };
+        return {
+          ...settingsFor(options, shots),
+          ...carryFrom(from),
+          ...(request ? { request, fromVersion: from!.version } : {}),
+        };
       },
       // One-take videos keep where the take was cut, unless it's a fresh take. Edits keep the
       // version's transitions and effects (a request can change them).
@@ -95,7 +100,9 @@ async function makeVersion(userId: string, project: Project, body: Record<string
   } else if (body.mode === "regenerate") {
     const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);
     if (!from) return jsonError("we couldn’t find that version.", 404);
-    result = await startNewRender(userId, project, () => ({ ...from.settings, seed: newSeed() }), { fresh: true });
+    result = await startNewRender(userId, project, () => ({ ...from.settings, ...carryFrom(from), seed: newSeed() }), {
+      fresh: true,
+    });
   } else {
     return jsonError("invalid request.", 400);
   }
@@ -105,7 +112,7 @@ async function makeVersion(userId: string, project: Project, body: Record<string
 }
 
 /**
- * "Start from scratch" versions. Claude plans the edit from the prompt and clips:
+ * "Start from scratch" versions. We plan the edit from the prompt and clips:
  *   new: the first version. edit: from a version, with the user's shot edits and/or a request
  *   (the worker rebuilds that version, or asks Claude for the change). regenerate: a fresh take.
  */
@@ -130,14 +137,14 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
       result = await startScratchRender(
         userId,
         project,
-        { ...settingsFor(options, shots), fromVersion: from.version, ...(request ? { request } : {}) },
+        { ...settingsFor(options, shots), ...carryFrom(from), fromVersion: from.version, ...(request ? { request } : {}) },
         { previous, ...(request ? { request } : {}) },
       );
     }
   } else if (body.mode === "regenerate") {
     const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);
     if (!from) return jsonError("we couldn’t find that version.", 404);
-    result = await startScratchRender(userId, project, settingsFor(scratchOptions(from.settings.options), []), {
+    result = await startScratchRender(userId, project, { ...settingsFor(scratchOptions(from.settings.options), []), ...carryFrom(from) }, {
       fresh: true,
     });
   } else {
