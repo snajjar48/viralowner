@@ -1329,12 +1329,12 @@ def grab_frame(path: Path, t: float, dest: Path, width: int) -> Path | None:
     return dest if dest.exists() and dest.stat().st_size > 0 else None
 
 
-def sample_clip_frames(clips: list[dict], workdir: Path) -> None:
-    """Adds clip["frames"] = [(seconds, jpeg), ...], spread evenly, about MAX_CLIP_FRAMES in total."""
+def sample_clip_frames(clips: list[dict], workdir: Path, limit: int = MAX_CLIP_FRAMES) -> None:
+    """Adds clip["frames"] = [(seconds, jpeg), ...], spread evenly, about `limit` in total."""
     from concurrent.futures import ThreadPoolExecutor
 
     total = sum(c["duration"] for c in clips)
-    interval = max(1.0, total / MAX_CLIP_FRAMES)
+    interval = max(1.0, total / limit)
     jobs = []
     for ci, c in enumerate(clips):
         d = c["duration"]
@@ -2987,6 +2987,538 @@ def look_name(style: dict) -> str:
     return "box" if style.get("box") else ("plain" if style.get("outline") == "none" else "outline")
 
 
+# ---- start from scratch: Claude directs the whole edit
+#
+# No inspo. Claude watches every clip, hears what's said in them, reads the user's
+# prompt (written as if talking to Claude directly) and plans the whole video: the
+# shots, the words and their look, transitions, effects and sound effects. The plan
+# becomes the same shot list and style an analyzed inspo gives, so render_video
+# builds it with exactly the same tools. Change requests go back to the director
+# with the current version in front of it, so any part of the edit can change.
+
+SCRATCH_MAX_S = 180.0
+SCRATCH_MAX_SHOTS = 60
+SCRATCH_MIN_SHOT_S = 0.4
+SCRATCH_CLIP_FRAMES = 120  # more than matching: Claude is choosing everything
+SCRATCH_MAX_WORDS = 5000  # word timings sent to Claude (beyond this, phrase timings only)
+POSITIONS = ["top", "middle", "bottom"]
+
+DIRECTOR_SYSTEM = """You are the video editor behind ViralOwner's "start from scratch". A creator or small business owner uploads their own clips and tells you, in their own words, the short-form video they want (TikTok, Instagram Reels, YouTube Shorts: vertical 9:16). You make it for them, exactly as a great editor would if they were sitting next to you describing it: every cut, what's on screen and the words, the transitions, effects and sound effects.
+
+Do exactly what the user asks. Their prompt is the brief: follow every specific instruction (what to show and in what order, the length, the words, the style, the pacing, the effects, the feel). Where they leave something open, make the choice that makes the strongest video for what they're going for. Never quietly skip part of the prompt: if something can't be done with these clips or these tools, do the closest thing you can and say so plainly in the summary.
+
+What you get: the user's prompt; every clip, with frames sampled through it (each labelled with its time in the clip) and what's said in it, with timings; what the sound will be; the on-screen text setting; and, when the user is asking for a change, the current version's plan and a frame from each of its shots.
+
+How the video is built: a list of shots, played in the order you give them. Each shot plays one clip from start_s to end_s (seconds in that clip) at a speed: normal; slow_motion (plays at half speed, so the shot lasts twice as long); fast (1.6x, so it's shorter). The video's length is the sum of its shots. The sound:
+- "the clips' own audio": each shot's sound is that clip's own sound at that moment. Cutting to another clip cuts away from whatever was being said, so when someone talks to the camera their words are the backbone of the edit: keep whole sentences and cut only in the gaps between words (start a shot about 0.1s before its first word and end it about 0.15s after its last word, using the word timings); take out retakes, flubs, false starts, long pauses, "um"s and dead air unless the user wants them kept; never cut a word in half; never repeat a sentence. Only cut away to other clips where nothing important is being said, or where the user asks for it.
+- "the user's audio file": it plays from the start of the video and the clips' own sound isn't heard. If it has words (a voiceover), the edit follows them: show what's being talked about while it's said. If it's music, cut on its beats and hits (their times are given) and make the video no longer than the file.
+- "no sound": only the sound effects you add.
+
+Editing craft:
+- The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
+- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Don't reuse the same moment unless that's the point.
+- Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
+- Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
+- Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
+- Sound effects: use them where they help (a whoosh on whips, a pop when text appears, a boom on a big reveal, a riser building into a moment) and never so many that they get annoying. A riser starts about 1.2s before the cut it builds to (offset -1.2); most sounds sit right on the cut (offset 0, or about -0.1 for a whoosh). A fire transition goes best with a fire whoosh (offset -0.05), a flash with a flash sound.
+- On-screen text is short and punchy, and it never repeats what's being said (speech captions are added separately when they're turned on, so don't put the spoken words in on-screen text). TikTok and Instagram cover the top ~12%, the bottom ~25% and the right edge of the screen with their own buttons, so keep text short enough to sit in the area left over. Use \\n for line breaks. No emoji or hashtags in on-screen text. A line can stay on screen across several shots: repeat it for each of those shots. Placement: by default (text_y -1) the app puts text at the chosen position and moves it off faces and captions automatically. Set text_y yourself (the vertical center, between 0.15 and 0.72) when the frame needs it, looking at the clip's frames. text_y is the center of the whole block: one line of large text is about 0.06 of the frame tall, two lines about 0.13, so keep half the block's height clear on each side of anything you're avoiding, plus a little margin. if the footage already has text or captions burned into it, never cover them; put your text in the clear space (for example between a burned-in title and the speaker's face), or leave it off. When speech captions are on, they sit around 0.6-0.7 from the top, so keep your text above them.
+- Text style: pick the font, color, look, size, animation and position that fit the video's vibe (a bold condensed or heavy font for hype, a serif or script for aesthetic, a typewriter for storytelling). position: top (the upper safe area, the usual place for a hook), middle, or bottom (just above where the app's caption sits).
+- Never invent facts, prices, results or claims the clips or the prompt don't support.
+- Write the post caption (one or two lines, in the user's voice, with a hook) and 3-8 hashtags.
+- summary: one or two short sentences to the user, all lowercase, saying what you made (or, for a change, what you changed), including anything you couldn't do.
+
+Transitions (transition_in is how the video gets into that shot; shot 1 is always 'cut'):
+""" + catalog(TRANSITION_INFO) + """
+Motions (an edit effect moving the whole frame through the shot; usually none):
+""" + catalog(MOTION_INFO) + """
+Shot effects (short effects inside the shot; usually none):
+""" + catalog(SHOT_EFFECT_INFO) + """
+Looks over the whole video (usually none):
+""" + catalog(LOOK_INFO) + """
+Color filters: """ + ", ".join(COLOR_FILTERS) + """
+Sound effects:
+""" + catalog(SFX_INFO) + """
+Fonts: clean_sans (geometric sans, tiktok's classic), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact), tall_caps (thin tall capitals), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful).
+Text looks: outline (colored text with a dark outline), box (text on a solid box), plain (no outline, soft shadow).
+Text sizes: small (a label), medium, large (a headline), xl (fills the width).
+Text animations: none, pop (scales up), fade, typewriter (letter by letter), word_by_word, slide_up."""
+
+DIRECTOR_TEXT_RULES = {
+    "adapt": "on-screen text: you write it, from the prompt and what the clips show (or none where the video is better without).",
+    "custom": "on-screen text: use the user's own lines below exactly as typed: every line, word for word, in order, each "
+              "line on its own line. put them on the shots where they fit best; a line can stay on screen across several "
+              "shots (repeat it). don't add any other text.",
+    "none": "on-screen text: none. return an empty string for every shot's text.",
+}
+
+DIRECTOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "description": "one or two short sentences to the user, all lowercase."},
+        "shots": {
+            "type": "array",
+            "description": "the video's shots, in the order they play.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "clip": {"type": "integer", "description": "the clip number, starting at 1."},
+                    "start_s": {"type": "number", "description": "where the shot starts in that clip, in seconds."},
+                    "end_s": {"type": "number", "description": "where the shot ends in that clip, in seconds."},
+                    "speed": {"type": "string", "enum": SPEEDS},
+                    "transition_in": {"type": "string", "enum": TRANSITIONS},
+                    "motion": {"type": "string", "enum": MOTIONS},
+                    "effects": {"type": "array", "items": {"type": "string", "enum": SHOT_EFFECTS}},
+                    "text": {"type": "string", "description": "on-screen text during this shot, \\n between lines. empty for none."},
+                    "text_y": {"type": "number", "description": "where the text's vertical center sits (0 = top, 1 = bottom), or -1 to place it automatically."},
+                    "role": {"type": "string", "enum": SHOT_ROLES, "description": "the job this shot does. cta = call to action."},
+                    "description": {"type": "string", "description": "what's in the shot, max 12 words."},
+                },
+                "required": ["clip", "start_s", "end_s", "speed", "transition_in", "motion", "effects", "text", "text_y",
+                             "role", "description"],
+                "additionalProperties": False,
+            },
+        },
+        "text_style": {
+            "type": "object",
+            "properties": {
+                "font": {"type": "string", "enum": list(FONTS)},
+                "color": {"type": "string", "description": "#RRGGBB"},
+                "look": {"type": "string", "enum": ["outline", "box", "plain"]},
+                "box_color": {"type": "string", "description": "#RRGGBB, used when look is box."},
+                "align": {"type": "string", "enum": TEXT_ALIGNS},
+                "size": {"type": "string", "enum": list(TEXT_SIZES)},
+                "animation": {"type": "string", "enum": TEXT_ANIMATIONS},
+                "position": {"type": "string", "enum": POSITIONS},
+            },
+            "required": ["font", "color", "look", "box_color", "align", "size", "animation", "position"],
+            "additionalProperties": False,
+        },
+        "looks": {"type": "array", "items": {"type": "string", "enum": LOOKS}},
+        "color_filter": {"type": "string", "enum": COLOR_FILTERS},
+        "sfx": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "at": {"type": "string", "enum": ["cut", "shot"],
+                           "description": "cut: on the cut into shot `index`. shot: inside shot `index`."},
+                    "index": {"type": "integer", "description": "the shot number, starting at 1 (for a cut: the shot it cuts into, 2 or more)."},
+                    "name": {"type": "string", "enum": SFX},
+                    "offset": {"type": "number", "description": "at a cut: seconds from the cut. in a shot: how far through it, 0 to 1."},
+                },
+                "required": ["at", "index", "name", "offset"],
+                "additionalProperties": False,
+            },
+        },
+        "caption": {"type": "string", "description": "the post caption."},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "shots", "text_style", "looks", "color_filter", "sfx", "caption", "hashtags"],
+    "additionalProperties": False,
+}
+
+_STYLE_LOOK = {"outline": {"box": False, "outline": "thick", "shadow": False},
+               "box": {"box": True, "outline": "none", "shadow": False},
+               "plain": {"box": False, "outline": "none", "shadow": True}}
+
+
+def scratch_speech(clips: list[dict]) -> None:
+    """Adds clip["speech"]: what's said in each clip, with word timings."""
+    for c in clips:
+        c["speech"] = transcribe(c["path"])["segments"] if c["has_audio"] else []
+
+
+def describe_speech(segments: list[dict], words_ok: bool) -> str:
+    lines = []
+    for s in segments:
+        lines.append(f"[{s['startS']:.2f}s-{s['endS']:.2f}s] {s['text']}")
+        if words_ok and s.get("words"):
+            lines.append("  words: " + " ".join(f"{w['w']}@{w['s']:.2f}-{w['e']:.2f}" for w in s["words"]))
+    return "\n".join(lines)
+
+
+def audio_file_info(path: Path) -> dict:
+    """The user's audio file: its length, the strong hits/beats in it, and any words."""
+    a = load_audio(path)
+    dur = len(a) / 48000
+    hits = sorted(t for t, _ in onsets(a, limit=80))
+    return {"duration": dur, "hits": [r2(t) for t in hits], "speech": transcribe(path)["segments"]}
+
+
+def plan_from_render(plan: dict, clip_index: dict[str, int]) -> dict | None:
+    """A finished scratch version's plan, in the director's own shape (for change requests and edits)."""
+    shots_in = plan.get("shots") or []
+    eff = plan.get("effects") or {}
+    n = len(shots_in)
+    if not n or any(s.get("clipId") not in clip_index for s in shots_in):
+        return None
+    pick = lambda key, i, d: ((eff.get(key) or []) + [d] * n)[i]  # noqa: E731
+    roles = ((plan.get("scratch") or {}).get("roles") or []) + ["build"] * n
+    descs = ((plan.get("scratch") or {}).get("descriptions") or []) + [""] * n
+    texts = (list(plan.get("texts") or []) + [""] * n)[:n]
+    ys = (list(plan.get("textYs") or []) + [None] * n)[:n]
+    trans = ["cut"] + list(eff.get("transitions") or [])
+    shots = []
+    for i, s in enumerate(shots_in):
+        shots.append({
+            "clip": clip_index[s["clipId"]] + 1, "start_s": float(s.get("trimStartS") or 0.0),
+            "end_s": float(s.get("trimEndS") or 0.0), "speed": pick("speeds", i, "normal"),
+            "transition_in": trans[i] if i < len(trans) else "cut", "motion": pick("motions", i, "none"),
+            "effects": list(pick("shotEffects", i, []) or []), "text": texts[i] or "",
+            "text_y": ys[i] if isinstance(ys[i], (int, float)) else -1, "role": roles[i],
+            "description": descs[i],
+        })
+    st = clean_text_style(plan.get("textStyle"))
+    look = "box" if st["box"] else ("plain" if st["outline"] == "none" else "outline")
+    sfx = []
+    for e in eff.get("sfx") or []:
+        if e.get("anchor") == "cut":
+            sfx.append({"at": "cut", "index": int(e["index"]) + 2, "name": e["name"], "offset": float(e.get("offset") or 0)})
+        elif e.get("anchor") == "shot":
+            sfx.append({"at": "shot", "index": int(e["index"]) + 1, "name": e["name"], "offset": float(e.get("frac") or 0)})
+    return {
+        "summary": "", "shots": shots,
+        "text_style": {"font": st["font"], "color": st["color"], "look": look, "box_color": st["boxColor"],
+                       "align": st["align"], "size": st["size"], "animation": st["animation"],
+                       "position": plan.get("textPosition") if plan.get("textPosition") in POSITIONS else "top"},
+        "looks": list(eff.get("looks") or []), "color_filter": eff.get("colorFilter") or "none", "sfx": sfx,
+        "caption": "", "hashtags": [],
+    }
+
+
+def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | None, text_mode: str,
+                custom_text: str, previous: dict | None, prev_frames: list[Path | None], request: str,
+                fresh: bool, captions: bool) -> dict:
+    """Claude's plan for the whole video (DIRECTOR_SCHEMA), with usage and cost."""
+    total_words = sum(len(s.get("words") or []) for c in clips for s in c.get("speech") or [])
+    if audio_info:
+        total_words += sum(len(s.get("words") or []) for s in audio_info["speech"])
+    words_ok = total_words <= SCRATCH_MAX_WORDS
+
+    content: list[dict] = [{"type": "text", "text": "the user's prompt, in their own words:\n" + json.dumps(prompt, ensure_ascii=False)}]
+    content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
+    for ci, c in enumerate(clips):
+        content.append({"type": "text", "text": f"clip {ci + 1}: {c['duration']:.1f}s long"
+                                                 + ("" if c["has_audio"] else ", no sound")})
+        for t, p in c["frames"]:
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+        said = describe_speech(c.get("speech") or [], words_ok)
+        content.append({"type": "text", "text": f"said in clip {ci + 1}:\n{said}" if said else f"nothing is said in clip {ci + 1}."})
+
+    if sound == "upload" and audio_info:
+        said = describe_speech(audio_info["speech"], words_ok)
+        about = (f"the sound: the user's audio file ({audio_info['duration']:.1f}s long). it plays from the start of the "
+                 f"video; the clips' own sound isn't heard. strong hits/beats at: "
+                 f"{', '.join(f'{t:.2f}' for t in audio_info['hits']) or 'none found'} (seconds).\n"
+                 + (f"words in it:\n{said}" if said else "it has no words (music)."))
+    elif sound == "none":
+        about = "the sound: no sound, only the sound effects you add."
+    else:
+        about = "the sound: the clips' own audio."
+    content.append({"type": "text", "text": "\n" + about})
+
+    ask = [DIRECTOR_TEXT_RULES[text_mode],
+           "speech captions: " + ("on (added automatically from what's said)." if captions else "off.")]
+    if text_mode == "custom":
+        ask.append("the user's lines: " + json.dumps(custom_text, ensure_ascii=False))
+    if previous:
+        content.append({"type": "text", "text": "\nthe current version's plan:\n" + json.dumps(previous, ensure_ascii=False)})
+        for i, p in enumerate(prev_frames):
+            if p:
+                content.append({"type": "text", "text": f"the current version, shot {i + 1} (as it looks now, with its text):"})
+                content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+        ask += [
+            "the user is asking for a change to the current version. their request, in their own words: "
+            + json.dumps(request, ensure_ascii=False),
+            "make exactly that change and keep everything else identical: the same shots, moments, words, style, "
+            "transitions, effects and sounds, unless the request needs them changed. restructure as much as the request "
+            "needs (reorder, add, remove or retime shots). the caption and hashtags stay the same unless the change "
+            "affects them. the summary says what you changed.",
+        ]
+    elif fresh:
+        ask.append("this is a fresh take: make a different edit from the obvious one, still following the prompt exactly.")
+    ask.append("plan the whole video.")
+    content.append({"type": "text", "text": "\n" + "\n".join(ask)})
+    return ask_claude(DIRECTOR_SYSTEM, content, DIRECTOR_SCHEMA,
+                      "we couldn’t make a video from that. try different clips or a different prompt.", effort="xhigh")
+
+
+def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str) -> dict:
+    """Checks Claude's plan against the real clips: every shot inside its clip and long enough, the
+    video within its length limit. Returns the plan, cleaned."""
+    shots = []
+    total = 0.0
+    for s in data.get("shots") or []:
+        ci = s.get("clip")
+        if not isinstance(ci, int) or not 1 <= ci <= len(clips):
+            continue
+        d = clips[ci - 1]["duration"]
+        try:
+            a, b = float(s["start_s"]), float(s["end_s"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        a = min(max(0.0, a), max(0.0, d - SCRATCH_MIN_SHOT_S))
+        b = min(max(b, a + SCRATCH_MIN_SHOT_S), d)
+        if b - a < 0.15:
+            continue
+        speed = s.get("speed") if s.get("speed") in SPEEDS else "normal"
+        length = (b - a) / SPEED_RATES[speed]
+        if total + length > max_s:
+            # The last shot that fits gets shortened to land on the limit.
+            room = max_s - total
+            if room < SCRATCH_MIN_SHOT_S:
+                break
+            b = a + room * SPEED_RATES[speed]
+            length = room
+        total += length
+        shots.append({
+            "clip": ci - 1, "start": r2(a), "end": r2(b), "speed": speed,
+            "transition_in": OLD_TRANSITIONS.get(s.get("transition_in"), s.get("transition_in"))
+            if s.get("transition_in") in TRANSITIONS or s.get("transition_in") in OLD_TRANSITIONS else "cut",
+            "motion": s.get("motion") if s.get("motion") in MOTIONS else "none",
+            "effects": [x for x in s.get("effects") or [] if x in SHOT_EFFECTS],
+            "text": "" if text_mode == "none" else edit_text((s.get("text") or "").replace("\\n", "\n")),
+            "text_y": r2(min(0.75, max(0.15, float(s["text_y"])))) if isinstance(s.get("text_y"), (int, float))
+            and s["text_y"] >= 0 else None,
+            "role": s.get("role") if s.get("role") in SHOT_ROLES else "build",
+            "description": (s.get("description") or "").strip()[:120],
+        })
+        if len(shots) >= SCRATCH_MAX_SHOTS or total >= max_s - 0.05:
+            break
+    if not shots:
+        raise JobError("we couldn’t plan a video from these clips. try adding clips or describing the video differently.")
+    shots[0]["transition_in"] = "cut"
+
+    ts = data.get("text_style") or {}
+    style = clean_text_style({
+        "font": ts.get("font"), "color": ts.get("color"), "boxColor": ts.get("box_color"),
+        "align": ts.get("align"), "size": ts.get("size"), "animation": ts.get("animation"),
+        **_STYLE_LOOK.get(ts.get("look"), {}),
+    })
+    if style["box"] and style["boxColor"] == style["color"]:
+        style["color"] = "#000000" if style["boxColor"] in ("#FFFFFF", "#FFFF00") else "#FFFFFF"
+    n = len(shots)
+    sfx = []
+    for e in data.get("sfx") or []:
+        idx, name = e.get("index"), e.get("name")
+        if name not in SFX or not isinstance(idx, int):
+            continue
+        try:
+            off = float(e.get("offset") or 0)
+        except (TypeError, ValueError):
+            off = 0.0
+        if e.get("at") == "cut" and 2 <= idx <= n:
+            sfx.append({"anchor": "cut", "index": idx - 2, "offset": r2(max(-1.5, min(1.5, off))), "name": name,
+                        "volume": 0.85, "source": "request"})
+        elif e.get("at") == "shot" and 1 <= idx <= n:
+            sfx.append({"anchor": "shot", "index": idx - 1, "frac": r2(max(0.0, min(0.99, off))), "name": name,
+                        "volume": 0.85, "source": "request"})
+    return {
+        "summary": (data.get("summary") or "").strip(),
+        "shots": shots,
+        "style": style,
+        "position": ts.get("position") if ts.get("position") in POSITIONS else "top",
+        "looks": [x for x in data.get("looks") or [] if x in LOOKS],
+        "colorFilter": data.get("color_filter") if data.get("color_filter") in COLOR_FILTERS else "none",
+        "sfx": sfx,
+        "caption": (data.get("caption") or "").strip(),
+        "hashtags": [h.strip() for h in data.get("hashtags") or [] if isinstance(h, str) and h.strip()],
+    }
+
+
+def custom_lines_kept(shots: list[dict], custom: str) -> bool:
+    """The user's own lines all appear, word for word and in order, with nothing added."""
+    want = [ln.strip() for ln in custom.replace("\r", "").split("\n") if ln.strip()]
+    got: list[str] = []
+    prev = None
+    for s in shots:
+        if s["text"] and s["text"] != prev:
+            got += [ln.strip() for ln in s["text"].split("\n") if ln.strip()]
+        prev = s["text"] or None
+    return got == want
+
+
+def scratch_inputs(cleaned: dict, clips: list[dict]) -> dict:
+    """Turns the director's plan into what render_video builds from: a shot list (like an analyzed
+    inspo's), the clip and trim for each shot, the words and their look, and the effects."""
+    shots = cleaned["shots"]
+    n = len(shots)
+    t = 0.0
+    bd_shots = []
+    for i, s in enumerate(shots):
+        length = r2((s["end"] - s["start"]) / SPEED_RATES[s["speed"]])
+        bd_shots.append({"index": i, "role": s["role"], "tip": "", "startS": r2(t), "durationS": length,
+                         "description": s["description"], "onScreenText": s["text"] or None, "whyItWorks": ""})
+        t += length
+    style = {
+        **default_inspo_style(n), "version": STYLE_VERSION, "editType": "shots", "text": cleaned["style"],
+        "textSpots": [None] * n, "textLines": [s["text"] for s in shots],
+    }
+    return {
+        "breakdown": {"durationS": r2(t), "shotCount": n, "shots": bd_shots, "style": style},
+        "shots": [{"shotIndex": i, "clipId": clips[s["clip"]]["id"], "trimStartS": s["start"], "trimEndS": s["end"]}
+                  for i, s in enumerate(shots)],
+        "reuse": {
+            "texts": [s["text"] for s in shots], "textStyle": cleaned["style"], "textPosition": cleaned["position"],
+            "textYs": [s["text_y"] for s in shots], "keepLines": True,
+            "postCopy": {"caption": cleaned["caption"],
+                         "hashtags": [h if h.startswith("#") else f"#{h}" for h in cleaned["hashtags"]][:8]},
+        },
+        "effects": {
+            "transitions": [s["transition_in"] for s in shots[1:]], "motions": [s["motion"] for s in shots],
+            "speeds": [s["speed"] for s in shots], "shotEffects": [s["effects"] for s in shots],
+            "looks": cleaned["looks"], "colorFilter": cleaned["colorFilter"], "sfx": cleaned["sfx"],
+        },
+    }
+
+
+def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
+    """A "start from scratch" version: Claude directs (or the earlier version is rebuilt with the
+    user's own shot edits), then render_video builds it."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    started = time.time()
+    sc = req.get("scratch") or {}
+    prompt = (sc.get("prompt") or "").strip()[:4000]
+    options = req["options"]
+    text_opts = options.get("text") or {}
+    text_mode = text_opts.get("mode") if text_opts.get("mode") in DIRECTOR_TEXT_RULES else "adapt"
+    custom_text = (text_opts.get("custom") or "") if text_mode == "custom" else ""
+    sound = options["music"]["mode"] if options["music"]["mode"] in ("upload", "none") else "original"
+    request = (req.get("request") or "").strip()[:1500]
+    base = req.get("previous") if isinstance(req.get("previous"), dict) else None
+    cost = 0.0
+
+    report("analyzing", 3)
+    prev_path = workdir / "previous.mp4"
+    own_audio = workdir / "own-audio"
+    downloads = [(c["storageKey"], workdir / f"clip{i:02d}") for i, c in enumerate(req["clips"])]
+    if request and base:
+        downloads.append((base["storageKey"], prev_path))
+    if sound == "upload" and isinstance(req.get("audio"), dict) and req["audio"].get("storageKey"):
+        downloads.append((req["audio"]["storageKey"], own_audio))
+    with ThreadPoolExecutor(6) as pool:
+        list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
+
+    clips = []
+    for i, c in enumerate(req["clips"]):
+        path = workdir / f"clip{i:02d}"
+        try:
+            clips.append({"id": c["id"], "path": path, "storageKey": c["storageKey"], **probe_clip(path)})
+        except Exception as e:  # noqa: BLE001
+            print(f"skipping unreadable clip {c['id']}: {e}")
+    if not clips:
+        raise JobError("we couldn’t read your clips. try uploading them again.")
+    index_of = {c["id"]: i for i, c in enumerate(clips)}
+    has_audio_file = sound == "upload" and own_audio.exists() and own_audio.stat().st_size > 0
+    if sound == "upload" and not has_audio_file:
+        sound = "original"
+
+    previous = plan_from_render(base["plan"], index_of) if base and isinstance(base.get("plan"), dict) else None
+    text_changed = bool(base and base.get("textChanged"))
+    if previous and not request and text_changed:
+        # Only the text setting changed: the director updates the words and nothing else.
+        request = {"custom": "use my own on-screen text now (the lines in the text setting).",
+                   "none": "take all the on-screen text off.",
+                   "adapt": "write the on-screen text for me now."}[text_mode]
+    if previous and request:
+        report("analyzing", 6)
+    max_s = SCRATCH_MAX_S
+    audio_info = None
+    if previous and not request:
+        # An edit without words: the same plan, with the user's own clip and trim choices per shot.
+        cleaned = clean_director({**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
+                                  "hashtags": (base.get("postCopy") or {}).get("hashtags", [])}, clips, max_s, text_mode)
+        edits = {e.get("shotIndex"): e for e in req.get("shots") or [] if isinstance(e, dict)}
+        for i, s in enumerate(cleaned["shots"]):
+            e = edits.get(i) or {}
+            ci = index_of.get(e.get("clipId"))
+            if ci is None:
+                continue
+            d = clips[ci]["duration"]
+            a = e.get("trimStartS") if isinstance(e.get("trimStartS"), (int, float)) else None
+            b = e.get("trimEndS") if isinstance(e.get("trimEndS"), (int, float)) else None
+            if ci != s["clip"] and a is None and b is None:
+                # A different clip, no trim given: the same length from its start.
+                a, b = 0.0, min(d, s["end"] - s["start"])
+            a = min(max(0.0, a if a is not None else s["start"]), max(0.0, d - SCRATCH_MIN_SHOT_S))
+            b = min(max(b if b is not None else s["end"], a + SCRATCH_MIN_SHOT_S), d)
+            s.update(clip=ci, start=r2(a), end=r2(b))
+        cleaned["summary"] = ""
+        print("scratch: rebuilt from the earlier version with the user's shot edits")
+    else:
+        report("analyzing", 8)
+        sample_clip_frames(clips, workdir, limit=SCRATCH_CLIP_FRAMES)
+        report("analyzing", 12)
+        audio_info_box: list[dict] = []
+        jobs = [lambda: scratch_speech(clips)]
+        if has_audio_file:
+            jobs.append(lambda: audio_info_box.append(audio_file_info(own_audio)))
+        with ThreadPoolExecutor(2) as pool:
+            list(pool.map(lambda f: f(), jobs))
+        audio_info = audio_info_box[0] if audio_info_box else None
+        if audio_info:
+            max_s = min(max_s, audio_info["duration"])
+        prev_frames: list[Path | None] = []
+        if previous and request:
+            t = 0.0
+            for i, s in enumerate(previous["shots"]):
+                length = max(0.1, (s["end_s"] - s["start_s"]) / SPEED_RATES.get(s["speed"], 1.0))
+                prev_frames.append(grab_frame(prev_path, t + length / 2, workdir / f"prev{i:02d}.jpg", MATCH_FRAME_WIDTH)
+                                   if prev_path.exists() else None)
+                t += length
+            # The current caption and hashtags, so a change can keep them.
+            previous = {**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
+                        "hashtags": (base.get("postCopy") or {}).get("hashtags", [])}
+        report("matching", 20)
+        result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
+                             prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")))
+        cost += result["cost_usd"]
+        cleaned = clean_director(result["data"], clips, max_s, text_mode)
+        if text_mode == "custom" and custom_text.strip() and not custom_lines_kept(cleaned["shots"], custom_text):
+            # The user's own words go in exactly as typed, whatever Claude did with them.
+            placed = spread_lines(custom_text, [{"onScreenText": s["text"] or None,
+                                                 "durationS": (s["end"] - s["start"]) / SPEED_RATES[s["speed"]]}
+                                                for s in cleaned["shots"]])
+            for s, txt in zip(cleaned["shots"], placed):
+                s["text"] = txt
+        if previous and request and not cleaned["caption"]:
+            cleaned["caption"] = previous.get("caption") or ""
+            cleaned["hashtags"] = previous.get("hashtags") or []
+        print(f"scratch director: {len(cleaned['shots'])} shots, ${result['cost_usd']}, usage={result['usage']}, "
+              f"summary={cleaned['summary']!r}")
+        for i, s in enumerate(cleaned["shots"]):
+            print(f"  {i + 1}. clip {s['clip'] + 1} {s['start']:.2f}-{s['end']:.2f} {s['speed']} {s['transition_in']} "
+                  f"{s['motion']} {s['effects']} {s['role']} text={s['text']!r} ({s['description']})")
+
+    built = scratch_inputs(cleaned, clips)
+    req2 = {
+        **req,
+        "inspo": {"storageKey": None, "breakdown": built["breakdown"]},
+        "shots": built["shots"],
+        "reuse": built["reuse"],
+        "effects": built["effects"],
+        "options": {**options, "notes": "", "music": {**options["music"], "mode": sound},
+                    "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
+        "request": None, "previous": None, "fresh": False, "cuts": None,
+    }
+
+    def fetch_once(key: str, dest: Path) -> None:
+        if not dest.exists():
+            fetch(key, dest)
+
+    out = render_video(req2, workdir, fetch=fetch_once, store=store)
+    out["plan"]["note"] = cleaned["summary"] or None
+    out["plan"]["scratch"] = {"roles": [s["role"] for s in cleaned["shots"]],
+                              "descriptions": [s["description"] for s in cleaned["shots"]]}
+    meta = out.setdefault("meta", {})
+    meta["costUsd"] = round(float(meta.get("costUsd") or 0) + cost, 4)
+    meta["seconds"] = round(time.time() - started, 1)
+    meta["scratch"] = True
+    return out
+
+
 def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
     """The whole render. Returns the website's RenderOutput shape (plus the plan and meta)."""
     import re
@@ -3015,7 +3547,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     inspo_path = workdir / "inspo"
     prev_path = workdir / "previous.mp4"
     clip_ids = [c["id"] for c in req["clips"]]
-    downloads = [(req["inspo"]["storageKey"], inspo_path)] + [
+    # "start from scratch" versions have no inspo file (render_scratch planned the shots).
+    downloads = ([(req["inspo"]["storageKey"], inspo_path)] if req["inspo"].get("storageKey") else []) + [
         (c["storageKey"], workdir / f"clip{i:02d}") for i, c in enumerate(req["clips"])
     ] + ([(previous["storageKey"], prev_path)] if previous else [])
     # The user's own audio file, when that's the chosen sound.
@@ -3419,18 +3952,25 @@ def check_render_request(req: dict) -> str | None:
     if not isinstance(out, str) or ".." in out or not re.match(KEY_PREFIX_RE, out):
         return "invalid output key"
     prefix = re.match(KEY_PREFIX_RE, out).group(0)
-    keys = [req.get("inspo", {}).get("storageKey")] + [c.get("storageKey") for c in req.get("clips") or []]
+    scratch = isinstance(req.get("scratch"), dict)
+    keys = ([] if scratch else [(req.get("inspo") or {}).get("storageKey")]) + [c.get("storageKey") for c in req.get("clips") or []]
     if isinstance(req.get("audio"), dict):
         keys.append(req["audio"].get("storageKey"))
-    if req.get("request") and req.get("previous"):
+    if isinstance(req.get("previous"), dict) and (req.get("request") or scratch):
         keys.append(req["previous"].get("storageKey"))
         if not isinstance(req["previous"].get("plan"), dict):
             return "invalid previous version"
     if not req.get("clips") or any(not isinstance(k, str) or ".." in k or not k.startswith(prefix) for k in keys):
         return "invalid storage keys"
-    shots = (req["inspo"].get("breakdown") or {}).get("shots")
-    if not isinstance(shots, list) or not shots or not isinstance(req.get("shots"), list):
-        return "invalid shots"
+    if scratch:
+        if not isinstance(req["scratch"].get("prompt"), str) or not req["scratch"]["prompt"].strip():
+            return "missing prompt"
+        if not isinstance(req.get("shots"), list):
+            return "invalid shots"
+    else:
+        shots = ((req.get("inspo") or {}).get("breakdown") or {}).get("shots")
+        if not isinstance(shots, list) or not shots or not isinstance(req.get("shots"), list):
+            return "invalid shots"
     if not isinstance(req.get("options"), dict):
         return "invalid options"
     return None
@@ -3521,6 +4061,8 @@ def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
         with tempfile.TemporaryDirectory() as tmp:
+            if isinstance(req.get("scratch"), dict):
+                return render_scratch(req, Path(tmp))
             return render_video(req, Path(tmp))
     except JobError:
         raise
@@ -3546,7 +4088,8 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
         def store(path: Path, key: str) -> None:
             result["video"] = path.read_bytes()
 
-        out = render_video(req, workdir, fetch=lambda key, dest: dest.write_bytes(files[key]), store=store)
+        render = render_scratch if isinstance(req.get("scratch"), dict) else render_video
+        out = render(req, workdir, fetch=lambda key, dest: dest.write_bytes(files[key]), store=store)
         return out, result["video"]
 
 
@@ -3609,6 +4152,41 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
         files[req["outputKey"]] = video
         req2 = {**req, "shots": out["plan"]["shots"], "request": request,
                 "previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"]}}
+        out2, video2 = render_upload.remote(req2, files)
+        Path(dest.removesuffix(".mp4") + "-changed.mp4").write_bytes(video2)
+        print(json.dumps(out2, indent=2, ensure_ascii=False))
+
+
+@app.local_entrypoint()
+def try_scratch(clips: str, dest: str, prompt: str, text: str = "adapt", custom: str = "", music: str = "original",
+                audio: str = "", captions: str = "bold-pop", request: str = ""):
+    """modal run worker/app.py::try_scratch --clips a.mp4,b.mp4 --dest out.mp4 --prompt "..."
+    A "start from scratch" video. With --request, also makes a changed version (<dest>-changed.mp4)."""
+    files: dict[str, bytes] = {}
+    clip_list = []
+    for i, c in enumerate(clips.split(",")):
+        files[f"u/test/p/test/clip{i}"] = Path(c).read_bytes()
+        clip_list.append({"id": f"clip{i}", "storageKey": f"u/test/p/test/clip{i}"})
+    if audio:
+        files["u/test/p/test/audio"] = Path(audio).read_bytes()
+        music = "upload"
+    req = {
+        "outputKey": "u/test/p/test/renders/out.mp4",
+        "clips": clip_list, "shots": [],
+        "audio": {"storageKey": "u/test/p/test/audio"} if audio else None,
+        "options": {"text": {"mode": text, "custom": custom, "align": "inspo"}, "music": {"mode": music},
+                    "captions": {"enabled": captions != "off", "style": captions if captions != "off" else "bold-pop"},
+                    "notes": ""},
+        "scratch": {"prompt": prompt},
+    }
+    out, video = render_upload.remote(req, files)
+    Path(dest).write_bytes(video)
+    print(json.dumps(out, indent=2, ensure_ascii=False))
+    if request:
+        files[req["outputKey"]] = video
+        req2 = {**req, "request": request, "shots": out["plan"]["shots"],
+                "previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"],
+                             "textChanged": False}}
         out2, video2 = render_upload.remote(req2, files)
         Path(dest.removesuffix(".mp4") + "-changed.mp4").write_bytes(video2)
         print(json.dumps(out2, indent=2, ensure_ascii=False))

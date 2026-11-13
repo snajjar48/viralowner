@@ -32,6 +32,7 @@ export default function OptionsPage({ params }: PageProps<"/projects/[id]/option
 
 async function Options({ id }: { id: string }) {
   const { userId, project } = await loadProject(id, `/projects/${id}/options`);
+  if (project.kind === "scratch") redirect(`/projects/${id}/create`); // "start from scratch" has no inspo steps
   const [inspo, clips] = await Promise.all([getInspiration(userId, id), listClips(userId, id)]);
   if (!inspo?.breakdown) redirect(`/projects/${id}/breakdown`);
   const uploaded = clips.filter((c) => c.status === "uploaded");

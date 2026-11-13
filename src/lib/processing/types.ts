@@ -161,7 +161,10 @@ export interface RenderInput {
   projectId: string;
   renderId: string;
   version: number;
-  inspo: { storageKey: string; breakdown: Breakdown };
+  /** The inspo being remade; absent for "start from scratch" videos, which have `scratch` instead. */
+  inspo?: { storageKey: string; breakdown: Breakdown };
+  /** "Start from scratch": the user's prompt. Claude plans the whole edit from it and the clips. */
+  scratch?: { prompt: string };
   clips: { id: string; storageKey: string; durationS: number; position: number; shotIndex: number | null }[];
   settings: RenderSettings;
   /** Keep an earlier version's words instead of writing new ones. */
@@ -208,6 +211,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   jumpcut?: TakeCut[];
   /** The edit's transitions, motion, speed, effects, looks and sound effects (worker-defined shape). */
   effects?: Record<string, unknown>;
+  /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */
+  scratch?: { roles: ShotRole[]; descriptions: string[] };
 }
 
 export interface JobStatus {

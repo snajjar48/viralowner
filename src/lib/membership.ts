@@ -128,7 +128,14 @@ export function formatResetDate(iso: string) {
   return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-export type Blocked = { reason: "subscribe" | "limit"; message: string };
+export type Blocked = { reason: "subscribe" | "limit" | "pro"; message: string };
+
+/** "Start from scratch" is a Pro feature (and the owner's). */
+export function canUseScratch(m: Membership) {
+  return m.unlimited || m.plan?.tier === "pro";
+}
+
+export const SCRATCH_PRO_MESSAGE = "start from scratch is part of Pro. upgrade to make videos from just your clips and a prompt.";
 
 /** Can this account start a new video (count against trial or plan)? */
 export function canStartVideo(m: Membership): { as: "trial" | "plan" } | Blocked {
@@ -239,9 +246,13 @@ export async function claimRender(
 /** Max projects started but not yet made into a video, so inspo analysis can't be run without limit. */
 const OPEN_DRAFTS = { trial: 3, plan: 15 };
 
-/** Can this account start a new project (upload an inspo)? */
-export async function canCreateProject(userId: string): Promise<null | (Blocked & { status: number })> {
+/** Can this account start a new project (upload an inspo, or start from scratch)? */
+export async function canCreateProject(
+  userId: string,
+  kind: "inspo" | "scratch" = "inspo",
+): Promise<null | (Blocked & { status: number })> {
   const m = await getMembership(userId);
+  if (kind === "scratch" && !canUseScratch(m)) return { reason: "pro", message: SCRATCH_PRO_MESSAGE, status: 402 };
   const can = canStartVideo(m);
   if ("reason" in can) return { ...can, status: 402 };
   const rows = await getSql()`

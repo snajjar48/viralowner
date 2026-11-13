@@ -7,6 +7,7 @@ import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips, listRenders } from "@/lib/projects";
 import { syncUnfinished } from "@/lib/renders";
 import { createDownloadUrl } from "@/lib/storage";
+import type { Shot } from "@/lib/processing/types";
 import { PreviewEditor } from "./preview-editor";
 
 export const metadata: Metadata = {
@@ -42,9 +43,23 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
   const latest = renders.at(-1);
   const inProgress = latest && (latest.status === "queued" || latest.status === "processing") ? latest : null;
   if (!done.length) redirect(latest ? `/projects/${id}/status?render=${latest.id}` : `/projects/${id}/options`);
-  if (!inspo?.breakdown) redirect(`/projects/${id}/breakdown`);
+  const scratch = project.kind === "scratch";
+  if (!scratch && !inspo?.breakdown) redirect(`/projects/${id}/breakdown`);
 
   const current = done.find((r) => r.version === version) ?? done.at(-1)!;
+  // "Start from scratch" has no inspo shot list: the shots are the ones Claude planned for this version.
+  const shots: Shot[] = scratch
+    ? (current.plan?.shots ?? []).map((_, i) => ({
+        index: i,
+        role: current.plan?.scratch?.roles[i] ?? "build",
+        tip: current.plan?.scratch?.descriptions[i] ?? "",
+        startS: 0,
+        durationS: 0,
+        description: current.plan?.scratch?.descriptions[i] ?? "",
+        onScreenText: current.plan?.texts[i] || null,
+        whyItWorks: "",
+      }))
+    : inspo!.breakdown!.shots;
   const uploaded = clips.filter((c) => c.status === "uploaded");
   const [videoUrl, clipList] = await Promise.all([
     createDownloadUrl(current.storageKey!, { expiresIn: 6 * 3600 }),
@@ -73,7 +88,9 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}
-        shots={inspo.breakdown.shots}
+        shots={shots}
+        variant={scratch ? "scratch" : "inspo"}
+        prompt={scratch ? project.prompt : undefined}
         oneTake={!!current.plan?.jumpcut}
         uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
         clips={clipList}

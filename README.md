@@ -84,6 +84,26 @@ Payment receipts come from Stripe itself.
 | `src/lib/projects.ts` | Database access; every query is scoped to the signed-in user |
 | `db/migrations/0001_video_projects.sql` | `projects`, `inspirations`, `clips`, `renders` |
 
+## Start from scratch (Pro)
+
+`/scratch` (describe the video) → `/projects/[id]/create` (clips, optional audio file, text / music / captions) → `/status` → `/preview` → `/export`
+
+No inspo: the user uploads clips and writes a prompt as if talking to Claude. Projects have
+`kind = 'scratch'` and a `prompt` (`db/migrations/0006_scratch.sql`). Only Pro accounts (and
+`UNLIMITED_EMAILS`) can start or edit one (`canUseScratch`); each counts as one of the month's
+videos with the usual changes.
+
+In the worker, `render_scratch` asks Claude (Opus 5.5, xhigh effort) to direct the whole edit
+(`direct_edit`, `DIRECTOR_SYSTEM`): it gets frames from every clip, what's said in them with word
+timings, the user's audio file (length, beats, words) and the text / music / caption settings, and
+returns every shot (clip, in/out, speed), the words and their look, transitions, effects, sound
+effects and the post copy. `clean_director` checks it against the real clips, `scratch_inputs`
+turns it into the same shot list and style an analyzed inspo gives, and `render_video` builds it.
+A change request goes back to the director with the current version's plan and frames, so anything
+can change (order, length, words, effects). Shot edits without a request rebuild the version with
+the user's clips and trims, no Claude. Try it with
+`modal run worker/app.py::try_scratch --clips a.mp4,b.mp4 --dest out.mp4 --prompt "..." [--request "..."]`.
+
 ## Processing worker (Modal)
 
 Video analysis and editing run on [Modal](https://modal.com) (`worker/app.py`),

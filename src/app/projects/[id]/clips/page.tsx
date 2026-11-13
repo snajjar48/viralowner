@@ -34,6 +34,7 @@ export default function ClipsPage({ params }: PageProps<"/projects/[id]/clips">)
 
 async function Clips({ id }: { id: string }) {
   const { userId, project } = await loadProject(id, `/projects/${id}/clips`);
+  if (project.kind === "scratch") redirect(`/projects/${id}/create`); // "start from scratch" has no inspo steps
   const [inspo, clips] = await Promise.all([getInspiration(userId, id), listClips(userId, id)]);
   if (!inspo?.breakdown) redirect(`/projects/${id}/breakdown`);
 

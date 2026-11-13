@@ -2,8 +2,9 @@
 // server with parseVideoOptions before anything is saved or rendered.
 
 /** match: the inspo's own words, style and placement. adapt: its style and placement, words about
- * the user's business. custom: the user's own lines, exactly as typed. */
-export type TextMode = "match" | "adapt" | "custom";
+ * the user's business (from scratch: Claude writes them). custom: the user's own lines, exactly as
+ * typed. none: no on-screen text (start from scratch only). */
+export type TextMode = "match" | "adapt" | "custom" | "none";
 export type TextAlign = "inspo" | "left" | "center" | "right";
 /** upload: the user's own audio file (added on the clips step). */
 export type MusicMode = "original" | "inspo" | "upload" | "none";
@@ -22,6 +23,8 @@ export const TEXT_MAX = 300;
 export const NOTES_MAX = 500;
 /** A typed "request a change" in the preview editor. */
 export const REQUEST_MAX = 500;
+/** "Start from scratch": the user's description of the video they want. */
+export const PROMPT_MAX = 2000;
 
 export const DEFAULT_OPTIONS: VideoOptions = {
   text: { mode: "match", custom: "", align: "inspo" },
@@ -42,7 +45,7 @@ export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: st
   { id: "karaoke", name: "highlight", description: "each word lights up as it's spoken" },
 ];
 
-const TEXT_MODES: TextMode[] = ["match", "adapt", "custom"];
+const TEXT_MODES: TextMode[] = ["match", "adapt", "custom", "none"];
 const TEXT_ALIGNS: TextAlign[] = ["inspo", "left", "center", "right"];
 // Old projects may have "track" saved (a music library that was never launched): it reads as "original".
 const MUSIC_MODES: MusicMode[] = ["original", "inspo", "upload", "none"];
@@ -111,6 +114,23 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
 }
 
 /** Options as stored in the database (never errors; invalid → defaults). */
+/**
+ * "Start from scratch" has no inspo to match: its text is Claude's, the user's own, or none,
+ * and its sound is the clips', the user's file, or none.
+ */
+export function scratchOptions(o: VideoOptions): VideoOptions {
+  return {
+    ...o,
+    text: { ...o.text, mode: o.text.mode === "match" ? "adapt" : o.text.mode },
+    music: { ...o.music, mode: o.music.mode === "inspo" ? "original" : o.music.mode, inspoAudioConfirmed: false },
+  };
+}
+
+/** Inspo videos never use "none" (it's offered from scratch only). */
+export function inspoOptions(o: VideoOptions): VideoOptions {
+  return o.text.mode === "none" ? { ...o, text: { ...o.text, mode: "match" } } : o;
+}
+
 export function optionsFromJson(json: unknown): VideoOptions {
   const parsed = parseVideoOptions(json);
   return "error" in parsed ? DEFAULT_OPTIONS : parsed;

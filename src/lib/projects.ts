@@ -7,9 +7,14 @@ import { optionsFromJson, type VideoOptions } from "./video-options";
 // signed-in user's id and only ever touches that user's rows.
 
 export type ProjectStatus = "draft" | "analyzing" | "ready_for_clips" | "processing" | "done" | "failed";
+/** inspo: remake a viral video. scratch: "start from scratch" (Pro), the user's prompt instead of an inspo. */
+export type ProjectKind = "inspo" | "scratch";
 
 export interface Project {
   id: string;
+  kind: ProjectKind;
+  /** "Start from scratch": the video the user described. */
+  prompt: string;
   status: ProjectStatus;
   settings: VideoOptions;
   clipsRightsConfirmedAt: string | null;
@@ -80,6 +85,8 @@ export const isUuid = (value: unknown): value is string => typeof value === "str
 function toProject(r: Row): Project {
   return {
     id: String(r.id),
+    kind: r.kind === "scratch" ? "scratch" : "inspo",
+    prompt: typeof r.prompt === "string" ? r.prompt : "",
     status: r.status as ProjectStatus,
     settings: optionsFromJson(r.settings),
     clipsRightsConfirmedAt: iso(r.clips_rights_confirmed_at),
@@ -139,6 +146,18 @@ export async function createProject(userId: string): Promise<Project> {
   return toProject(rows[0]);
 }
 
+/** A "start from scratch" project: no inspo, the user's prompt. Starts with Claude writing any text. */
+export async function createScratchProject(userId: string, prompt: string, options: VideoOptions): Promise<Project> {
+  const rows = await getSql()`
+    INSERT INTO projects (user_id, kind, prompt, settings)
+    VALUES (${userId}, 'scratch', ${prompt}, ${JSON.stringify(options)}::jsonb) RETURNING *`;
+  return toProject(rows[0]);
+}
+
+export async function saveProjectPrompt(projectId: string, prompt: string) {
+  await getSql()`UPDATE projects SET prompt = ${prompt}, updated_at = now() WHERE id = ${projectId}`;
+}
+
 export async function getProject(userId: string, projectId: string): Promise<Project | null> {
   if (!isUuid(projectId)) return null;
   const rows = await getSql()`
@@ -174,6 +193,7 @@ export async function listRenders(userId: string, projectId: string): Promise<Re
 
 export interface ProjectSummary {
   id: string;
+  kind: ProjectKind;
   status: ProjectStatus;
   createdAt: string;
   inspoDurationS: number | null;
@@ -184,7 +204,7 @@ export interface ProjectSummary {
 
 export async function listProjects(userId: string, limit = 20): Promise<ProjectSummary[]> {
   const rows = await getSql()`
-    SELECT p.id, p.status, p.created_at,
+    SELECT p.id, p.status, p.created_at, to_jsonb(p) ->> 'kind' AS kind,
            i.duration_s AS inspo_duration_s,
            (i.breakdown_json ->> 'shotCount')::int AS shot_count,
            (SELECT count(*) FROM clips c WHERE c.project_id = p.id AND c.status = 'uploaded')::int AS clip_count,
@@ -195,6 +215,7 @@ export async function listProjects(userId: string, limit = 20): Promise<ProjectS
     LIMIT ${limit}`;
   return rows.map((r) => ({
     id: String(r.id),
+    kind: r.kind === "scratch" ? "scratch" : "inspo",
     status: r.status as ProjectStatus,
     createdAt: iso(r.created_at)!,
     inspoDurationS: num(r.inspo_duration_s),
@@ -205,7 +226,10 @@ export async function listProjects(userId: string, limit = 20): Promise<ProjectS
 }
 
 /** Where "continue" should take the user for a project. */
-export function resumeHref(p: { id: string; status: ProjectStatus }) {
+export function resumeHref(p: { id: string; status: ProjectStatus; kind?: ProjectKind }) {
+  if (p.kind === "scratch" && (p.status === "draft" || p.status === "analyzing" || p.status === "ready_for_clips")) {
+    return `/projects/${p.id}/create`;
+  }
   switch (p.status) {
     case "draft":
     case "analyzing":

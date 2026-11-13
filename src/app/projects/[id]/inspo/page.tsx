@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
@@ -21,7 +22,8 @@ export default function ReplaceInspoPage({ params }: PageProps<"/projects/[id]/i
 }
 
 async function ReplaceInspo({ id }: { id: string }) {
-  await loadProject(id, `/projects/${id}/inspo`);
+  const { project } = await loadProject(id, `/projects/${id}/inspo`);
+  if (project.kind === "scratch") redirect(`/projects/${id}/create`); // "start from scratch" has no inspo steps
   return (
     <FlowShell step={1} projectId={id}>
       <PageTitle

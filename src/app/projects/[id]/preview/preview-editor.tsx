@@ -34,6 +34,8 @@ export function PreviewEditor({
   oneTake = false,
   uploadedAudio = null,
   changes,
+  variant = "inspo",
+  prompt,
 }: {
   projectId: string;
   versions: number[];
@@ -48,6 +50,10 @@ export function PreviewEditor({
   uploadedAudio?: { fileName: string } | null;
   /** Changes (new versions) this video has left, and whether the account has a plan. */
   changes: { left: number | null; subscribed: boolean };
+  /** "scratch": a "start from scratch" video. */
+  variant?: "inspo" | "scratch";
+  /** What the user described ("start from scratch"), shown for reference. */
+  prompt?: string;
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
@@ -182,18 +188,36 @@ export function PreviewEditor({
           </div>
         )}
 
+        {prompt && (
+          <details className="group rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-muted focus-visible:outline-2 focus-visible:outline-coral">
+              what you asked for
+              <span className="transition group-open:rotate-180" aria-hidden="true">
+                ▾
+              </span>
+            </summary>
+            <p className="mt-2 whitespace-pre-wrap">{prompt}</p>
+          </details>
+        )}
+
         <ChangesLeft changes={changes} />
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">
-            tell us what to change, in your own words. we’ll make a new version.
+            {variant === "scratch"
+              ? "tell claude what to change, in your own words: anything from the cuts and order to the words, effects and sounds. it makes a new version."
+              : "tell us what to change, in your own words. we’ll make a new version."}
           </label>
           <textarea
             id="change-request"
             value={request}
             maxLength={REQUEST_MAX}
             rows={3}
-            placeholder="e.g. shrink the words and move them so they aren’t covering any faces"
+            placeholder={
+              variant === "scratch"
+                ? "e.g. make it faster, open on the finished pizza, and add a fire transition before the reveal"
+                : "e.g. shrink the words and move them so they aren’t covering any faces"
+            }
             onChange={(e) => setRequest(e.target.value)}
             className={`${inputClass} h-auto py-3`}
           />
@@ -264,7 +288,13 @@ export function PreviewEditor({
           </ol>
         </Section>
 
-        <OptionsFields value={options} onChange={setOptions} showNotes={false} uploadedAudio={uploadedAudio} />
+        <OptionsFields
+          value={options}
+          onChange={setOptions}
+          showNotes={false}
+          uploadedAudio={uploadedAudio}
+          variant={variant}
+        />
 
         {(problem || error) && (
           <p role="alert" className="text-center text-sm text-coral">

@@ -61,7 +61,9 @@ const inFlight = (s: ItemStatus) => s === "queued" || s === "uploading" || s ===
 
 export function ClipsManager({
   projectId,
-  oneTake = false,
+  oneTake: takeMode = false,
+  freeform = false,
+  onStatus,
   shots,
   initialClips,
   rightsConfirmed,
@@ -72,10 +74,17 @@ export function ClipsManager({
   extra?: React.ReactNode;
   /** The inspo is one take with the pauses cut out: no shot list, just the take(s). */
   oneTake?: boolean;
+  /**
+   * "Start from scratch": just the clips, no shot list. The page around it has the consent and
+   * the button, and hears how the uploads are going through `onStatus`.
+   */
+  freeform?: boolean;
+  onStatus?: (status: { uploaded: number; busy: boolean }) => void;
   shots: Shot[];
   initialClips: InitialClip[];
   rightsConfirmed: boolean;
 }) {
+  const oneTake = takeMode || freeform; // neither has shots to assign clips to
   const router = useRouter();
   const dndId = useId(); // stable ids for dnd-kit's accessibility attributes (avoids a hydration mismatch)
   const [items, setItems] = useState<Item[]>(() =>
@@ -277,6 +286,9 @@ export function ClipsManager({
 
   const uploaded = items.filter((i) => i.status === "uploaded");
   const busy = items.some((i) => inFlight(i.status));
+  useEffect(() => {
+    onStatus?.({ uploaded: uploaded.length, busy });
+  }, [onStatus, uploaded.length, busy]);
   const covered = new Set(uploaded.map((i) => i.shotIndex).filter((s): s is number => s !== null));
   const missing = shots.length - covered.size;
   const selectedItem = items.find((i) => i.key === selected) ?? null;
@@ -314,7 +326,19 @@ export function ClipsManager({
           onFiles={addFiles}
           compact={items.length > 0}
           icon={<FilmIcon className="size-5" />}
-          title={oneTake ? (items.length ? "add another clip" : "upload your take") : items.length ? "add more clips" : "upload your clips"}
+          title={
+            freeform
+              ? items.length
+                ? "add more clips"
+                : "upload your clips"
+              : oneTake
+                ? items.length
+                  ? "add another clip"
+                  : "upload your take"
+                : items.length
+                  ? "add more clips"
+                  : "upload your clips"
+          }
           hint={
             <>
               <span className="sm:hidden">tap to choose from your camera roll.</span>
@@ -354,9 +378,11 @@ export function ClipsManager({
 
         {items.length === 0 ? (
           <p className="text-center text-sm text-muted">
-            {oneTake
-              ? "no take yet. film yourself saying your version in one go, then add it here."
-              : "no clips yet. film one clip for each shot in your shot list, then add them here."}
+            {freeform
+              ? "no clips yet. add everything you filmed for this video, in any order. claude watches all of it."
+              : oneTake
+                ? "no take yet. film yourself saying your version in one go, then add it here."
+                : "no clips yet. film one clip for each shot in your shot list, then add them here."}
           </p>
         ) : (
           <DndContext id={dndId} sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
@@ -383,11 +409,13 @@ export function ClipsManager({
 
         {extra}
 
-        <ConsentCheckbox checked={confirmed} onChange={setConfirmed}>
-          i own or have permission to use these clips and the people in them.
-        </ConsentCheckbox>
+        {!freeform && (
+          <ConsentCheckbox checked={confirmed} onChange={setConfirmed}>
+            i own or have permission to use these clips and the people in them.
+          </ConsentCheckbox>
+        )}
 
-        {oneTake && uploaded.length > 1 && (
+        {takeMode && uploaded.length > 1 && (
           <p className="rounded-xl bg-white/[0.04] p-3 text-sm text-muted">
             your clips play in this order. drag to change it.
           </p>
@@ -405,14 +433,16 @@ export function ClipsManager({
           </p>
         )}
 
-        <button
-          type="button"
-          onClick={onContinue}
-          disabled={!uploaded.length || !confirmed || busy || continuing}
-          className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
-        >
-          {continuing ? "saving…" : "continue to options"}
-        </button>
+        {!freeform && (
+          <button
+            type="button"
+            onClick={onContinue}
+            disabled={!uploaded.length || !confirmed || busy || continuing}
+            className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
+          >
+            {continuing ? "saving…" : "continue to options"}
+          </button>
+        )}
       </div>
 
       {/* Desktop: sticky checklist */}

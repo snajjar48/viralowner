@@ -95,7 +95,34 @@ export async function startNewRender(
   }
 
   const render = await createRender(project.id, settings);
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, {
+  await submit(project.id, render, { inspo: { storageKey: inspo.storageKey, breakdown: inspo.breakdown } }, uploaded, settings, {
+    ...extras,
+    ...audioFor(project, settings),
+  });
+  return { render };
+}
+
+/**
+ * "Start from scratch": a new version made from the user's prompt and clips (Claude plans
+ * the edit). Edits pass the version they start from in `extras.previous`.
+ */
+export async function startScratchRender(
+  userId: string,
+  project: Project,
+  settings: RenderSettings,
+  extras: Extras = {},
+): Promise<{ render: Render } | Fail> {
+  if (!project.prompt.trim()) return { status: 400, error: "describe the video you want first." };
+  const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
+  if (!uploaded.length) return { status: 400, error: "upload at least one clip first." };
+  if (!project.clipsRightsConfirmedAt) {
+    return { status: 400, error: "please confirm you have permission to use your clips." };
+  }
+  if (settings.options.music.mode === "upload" && project.audio?.status !== "uploaded") {
+    return { status: 400, error: NO_AUDIO_FILE_ERROR };
+  }
+  const render = await createRender(project.id, settings);
+  await submit(project.id, render, { scratch: { prompt: project.prompt } }, uploaded, settings, {
     ...extras,
     ...audioFor(project, settings),
   });
@@ -106,8 +133,7 @@ export async function startNewRender(
 export async function submit(
   projectId: string,
   render: Render,
-  inspoKey: string,
-  breakdown: NonNullable<Awaited<ReturnType<typeof getInspiration>>>["breakdown"],
+  source: Pick<RenderInput, "inspo" | "scratch">,
   clips: Clip[],
   settings: RenderSettings,
   extras: Extras = {},
@@ -117,7 +143,7 @@ export async function submit(
       projectId,
       renderId: render.id,
       version: render.version,
-      inspo: { storageKey: inspoKey, breakdown: breakdown! },
+      ...source,
       clips: clips.map((c) => ({
         id: c.id,
         storageKey: c.storageKey,
@@ -142,6 +168,7 @@ export async function submit(
 
 /** Restarts a failed render with the same settings (same version number). */
 export async function retryRender(userId: string, project: Project, render: Render) {
+  if (project.kind === "scratch") return retryScratchRender(userId, project, render);
   const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
   if (!inspo?.breakdown) return { status: 400, error: "your inspo isn’t analyzed yet." } as Fail;
   const uploaded = clips.filter((c) => c.status === "uploaded");
@@ -160,7 +187,25 @@ export async function retryRender(userId: string, project: Project, render: Rend
     if (previous) extras = { request: settings.request, previous };
   }
   await resetRenderEmail(render.id); // email how this attempt turns out
-  await submit(project.id, render, inspo.storageKey, inspo.breakdown, uploaded, settings, {
+  await submit(project.id, render, { inspo: { storageKey: inspo.storageKey, breakdown: inspo.breakdown } }, uploaded, settings, {
+    ...extras,
+    ...audioFor(project, settings),
+  });
+  return null;
+}
+
+async function retryScratchRender(userId: string, project: Project, render: Render) {
+  const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
+  if (!uploaded.length) return { status: 400, error: "upload at least one clip first." } as Fail;
+  const settings = render.settings;
+  let extras: Extras = {};
+  if (settings.fromVersion) {
+    const from = (await listRenders(userId, project.id)).find((r) => r.version === settings.fromVersion);
+    const previous = from && previousFor(from, settings.options);
+    if (previous) extras = { previous, ...(settings.request ? { request: settings.request } : {}) };
+  }
+  await resetRenderEmail(render.id);
+  await submit(project.id, render, { scratch: { prompt: project.prompt } }, uploaded, settings, {
     ...extras,
     ...audioFor(project, settings),
   });

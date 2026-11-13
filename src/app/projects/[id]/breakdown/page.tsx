@@ -24,7 +24,8 @@ export default function BreakdownPage({ params }: PageProps<"/projects/[id]/brea
 }
 
 async function Breakdown({ id }: { id: string }) {
-  const { userId } = await loadProject(id, `/projects/${id}/breakdown`);
+  const { userId, project } = await loadProject(id, `/projects/${id}/breakdown`);
+  if (project.kind === "scratch") redirect(`/projects/${id}/create`); // "start from scratch" has no inspo steps
   const inspo = await getInspiration(userId, id);
   if (!inspo) redirect(`/projects/${id}/inspo`);
 

@@ -15,6 +15,14 @@ const STAGE_COPY: Record<JobStage, { title: string; detail: string }> = {
   finishing: { title: "finishing", detail: "exporting in full hd, 1080×1920" },
 };
 
+// "Start from scratch": Claude watches the clips and plans the edit from the prompt.
+const SCRATCH_STAGE_COPY: Record<JobStage, { title: string; detail: string }> = {
+  analyzing: { title: "watching", detail: "watching your clips and listening to what’s said" },
+  matching: { title: "planning", detail: "claude is planning your edit from your description" },
+  editing: { title: "editing", detail: "cutting it together with text, effects and sounds" },
+  finishing: { title: "finishing", detail: "exporting in full hd, 1080×1920" },
+};
+
 interface RenderState {
   version: number;
   status: "queued" | "processing" | "done" | "failed";
@@ -25,7 +33,19 @@ interface RenderState {
 
 const POLL_MS = 2500;
 
-export function StatusTracker({ projectId, renderId, initial }: { projectId: string; renderId: string; initial: RenderState }) {
+export function StatusTracker({
+  projectId,
+  renderId,
+  initial,
+  scratch = false,
+}: {
+  projectId: string;
+  renderId: string;
+  initial: RenderState;
+  /** A "start from scratch" video (different stage descriptions). */
+  scratch?: boolean;
+}) {
+  const stageCopy = scratch ? SCRATCH_STAGE_COPY : STAGE_COPY;
   const router = useRouter();
   const [state, setState] = useState(initial);
   const [retrying, setRetrying] = useState(false);
@@ -133,10 +153,10 @@ export function StatusTracker({ projectId, renderId, initial }: { projectId: str
                 </span>
                 <span className="flex flex-col">
                   <span className={`text-sm font-medium ${done || active ? "text-foreground" : "text-muted"}`}>
-                    {STAGE_COPY[stage].title}
+                    {stageCopy[stage].title}
                     {done && <span className="sr-only"> (done)</span>}
                   </span>
-                  <span className="text-xs text-muted">{STAGE_COPY[stage].detail}</span>
+                  <span className="text-xs text-muted">{stageCopy[stage].detail}</span>
                 </span>
               </li>
             );

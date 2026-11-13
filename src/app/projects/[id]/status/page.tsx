@@ -29,10 +29,10 @@ export default function StatusPage({ params, searchParams }: PageProps<"/project
 }
 
 async function Status({ id, renderId }: { id: string; renderId: string | null }) {
-  const { userId } = await loadProject(id, `/projects/${id}/status`);
+  const { userId, project } = await loadProject(id, `/projects/${id}/status`);
   const renders = await syncUnfinished(id, await listRenders(userId, id));
   const render = renders.find((r) => r.id === renderId) ?? renders.at(-1);
-  if (!render) redirect(`/projects/${id}/options`);
+  if (!render) redirect(project.kind === "scratch" ? `/projects/${id}/create` : `/projects/${id}/options`);
   if (render.status === "done") redirect(`/projects/${id}/preview?v=${render.version}`);
 
   return (
@@ -40,6 +40,7 @@ async function Status({ id, renderId }: { id: string; renderId: string | null })
       <StatusTracker
         projectId={id}
         renderId={render.id}
+        scratch={project.kind === "scratch"}
         initial={{
           version: render.version,
           status: render.status,

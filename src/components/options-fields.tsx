@@ -97,6 +97,13 @@ const TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
   { mode: "custom", title: "write my own", description: "your exact words and lines, in the inspo’s style" },
 ];
 
+// "Start from scratch": there's no inspo to match.
+const SCRATCH_TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
+  { mode: "adapt", title: "claude writes it", description: "short, punchy text from your prompt and clips" },
+  { mode: "custom", title: "write my own", description: "your exact words and lines" },
+  { mode: "none", title: "no on-screen text", description: "just the video (captions are separate, below)" },
+];
+
 const ALIGN_CHOICES: { align: TextAlign; title: string }[] = [
   { align: "inspo", title: "like inspo" },
   { align: "left", title: "left" },
@@ -129,9 +136,12 @@ export function OptionsFields({
   onChange,
   showNotes = true,
   uploadedAudio = null,
+  variant = "inspo",
 }: {
   value: VideoOptions;
   onChange: (next: VideoOptions) => void;
+  /** "scratch": a "start from scratch" video (no inspo to match or take audio from). */
+  variant?: "inspo" | "scratch";
   /** The user's own audio file (added on the clips step), if any. */
   uploadedAudio?: { fileName: string } | null;
   /** The preview editor has "request a change" instead. */
@@ -173,7 +183,7 @@ export function OptionsFields({
         icon={<TextIcon className="size-4 text-muted" />}
       >
         <div className="flex flex-col gap-2">
-          {TEXT_CHOICES.map((c) => (
+          {(variant === "scratch" ? SCRATCH_TEXT_CHOICES : TEXT_CHOICES).map((c) => (
             <Choice
               key={c.mode}
               name={`${id}-text`}
@@ -203,7 +213,7 @@ export function OptionsFields({
             </span>
           </div>
         )}
-        <fieldset className="flex flex-col gap-1.5">
+        <fieldset className={`flex flex-col gap-1.5 ${value.text.mode === "none" ? "hidden" : ""}`}>
           <legend className="mb-1.5 text-sm text-muted">alignment</legend>
           <div className="grid grid-cols-4 gap-1 rounded-xl border border-white/10 p-1">
             {ALIGN_CHOICES.map((c) => (
@@ -222,7 +232,7 @@ export function OptionsFields({
                   onChange={() => set({ text: { ...value.text, align: c.align } })}
                   className="sr-only"
                 />
-                {c.title}
+                {variant === "scratch" && c.align === "inspo" ? "auto" : c.title}
               </label>
             ))}
           </div>
@@ -241,7 +251,7 @@ export function OptionsFields({
                   },
                 ]
               : []),
-            ...MUSIC_CHOICES,
+            ...MUSIC_CHOICES.filter((c) => variant !== "scratch" || c.mode !== "inspo"),
           ].map((c) => (
             <Choice
               key={c.mode}

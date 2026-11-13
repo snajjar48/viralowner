@@ -126,15 +126,24 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     captionScale: scale(p.captionScale),
     note: str(p.note) || null,
     effects: p.effects && typeof p.effects === "object" && !Array.isArray(p.effects) ? p.effects : undefined,
+    scratch:
+      p.scratch && Array.isArray(p.scratch.roles)
+        ? {
+            roles: p.scratch.roles.map((r) => (ROLES.includes(r) ? r : "build")),
+            descriptions: Array.isArray(p.scratch.descriptions) ? p.scratch.descriptions.map(str) : [],
+          }
+        : undefined,
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,
   };
 }
 
-/** Where a render's MP4 goes: next to the inspo, in the same user's project folder. */
-function outputKeyFor(inspoKey: string, version: number, renderId: string) {
-  return `${inspoKey.slice(0, inspoKey.lastIndexOf("/") + 1)}renders/v${version}-${renderId}.mp4`;
+/** Where a render's MP4 goes: in the same user's project folder as its inspo or clips. */
+function outputKeyFor(fileKey: string, version: number, renderId: string) {
+  const folder = /^u\/[^/]+\/p\/[^/]+\//.exec(fileKey)?.[0];
+  if (!folder) throw new Error("Unexpected storage key for a render");
+  return `${folder}renders/v${version}-${renderId}.mp4`;
 }
 
 const LOST = "we lost track of this analysis. please try again.";
@@ -171,8 +180,9 @@ export const modalEngine: ProcessingEngine = {
       method: "POST",
       timeoutMs: 30_000,
       body: {
-        outputKey: outputKeyFor(input.inspo.storageKey, input.version, input.renderId),
-        inspo: input.inspo,
+        outputKey: outputKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey, input.version, input.renderId),
+        ...(input.inspo ? { inspo: input.inspo } : {}),
+        ...(input.scratch ? { scratch: input.scratch } : {}),
         clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey })),
         shots: input.settings.shots,
         options: input.settings.options,

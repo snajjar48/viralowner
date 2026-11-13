@@ -84,9 +84,22 @@ async function Account() {
           )}
         </div>
       ) : (
-        <Link href="/new" className={`${buttonClass} flex max-w-sm items-center justify-center`}>
-          {can.as === "trial" ? "make my free video" : "make a new video"}
-        </Link>
+        <div className="flex w-full max-w-sm flex-col gap-2">
+          <Link href="/new" className={`${buttonClass} flex items-center justify-center`}>
+            {can.as === "trial" ? "make my free video" : "remake a viral video"}
+          </Link>
+          {(membership.plan || membership.unlimited) && (
+            <Link
+              href="/scratch"
+              className="flex h-12 items-center justify-center gap-2 rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral"
+            >
+              start from scratch
+              <span className="rounded-full bg-linear-to-r from-violet to-coral px-2 py-0.5 text-[11px] font-medium text-white">
+                Pro
+              </span>
+            </Link>
+          )}
+        </div>
       )}
       {membership.hasCustomer && membership.plan && <ManageBillingButton />}
       <Projects userId={user.id} />
@@ -165,9 +178,13 @@ async function Projects({ userId }: { userId: string }) {
               <span className="flex flex-col">
                 <span className="font-medium">
                   {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  {p.inspoDurationS !== null && ` · ${formatDuration(p.inspoDurationS)} inspo`}
+                  {p.kind === "scratch"
+                    ? " · from scratch"
+                    : p.inspoDurationS !== null && ` · ${formatDuration(p.inspoDurationS)} inspo`}
                 </span>
-                <span className="text-muted">{PROJECT_LABELS[p.status]}</span>
+                <span className="text-muted">
+                  {p.kind === "scratch" && p.status === "draft" ? "add your clips" : PROJECT_LABELS[p.status]}
+                </span>
               </span>
               <span aria-hidden="true" className="text-muted">→</span>
             </Link>

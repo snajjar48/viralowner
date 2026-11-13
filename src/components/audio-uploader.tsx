@@ -20,7 +20,18 @@ type Phase = { name: "idle" } | { name: "uploading"; percent: number } | { name:
  * Step 2, optional: the user's own audio file (a voiceover or music) to use as
  * the video's sound. They must accept the audio rights notice first.
  */
-export function AudioUploader({ projectId, initial }: { projectId: string; initial: UploadedAudio | null }) {
+export function AudioUploader({
+  projectId,
+  initial,
+  onChange,
+  switchNote = "you can switch back in the next step.",
+}: {
+  projectId: string;
+  initial: UploadedAudio | null;
+  /** Told when a file is added or removed. */
+  onChange?: (audio: UploadedAudio | null) => void;
+  switchNote?: string;
+}) {
   const [audio, setAudio] = useState(initial);
   const [confirmed, setConfirmed] = useState(initial !== null);
   const [phase, setPhase] = useState<Phase>({ name: "idle" });
@@ -50,6 +61,7 @@ export function AudioUploader({ projectId, initial }: { projectId: string; initi
       setPhase({ name: "checking" });
       const { audio: done } = await postJson<{ audio: UploadedAudio }>(`/api/projects/${projectId}/audio/complete`);
       setAudio(done);
+      onChange?.(done);
     } catch (e) {
       setError(e instanceof UploadError ? e.message : "the upload didn’t work. please try again.");
     } finally {
@@ -62,6 +74,7 @@ export function AudioUploader({ projectId, initial }: { projectId: string; initi
     const res = await fetch(`/api/projects/${projectId}/audio`, { method: "DELETE" }).catch(() => null);
     if (!res?.ok) return setError("couldn’t remove it. please try again.");
     setAudio(null);
+    onChange?.(null);
   }
 
   return (
@@ -76,8 +89,7 @@ export function AudioUploader({ projectId, initial }: { projectId: string; initi
         <span className="text-xs text-muted">optional</span>
       </div>
       <p className="text-sm text-muted">
-        add a voiceover or a song to use as your video’s sound. it replaces your clips’ audio, and you can switch back
-        in the next step.
+        add a voiceover or a song to use as your video’s sound. it replaces your clips’ audio, and {switchNote}
       </p>
 
       {audio ? (

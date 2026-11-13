@@ -1,6 +1,6 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
-import { claimRender } from "@/lib/membership";
-import { listRenders, saveSettings, type Project } from "@/lib/projects";
+import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "@/lib/membership";
+import { listClips, listRenders, saveSettings, type Project } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
   getStillActiveRender,
@@ -10,9 +10,10 @@ import {
   shotsFromAssignments,
   previousFor,
   startNewRender,
+  startScratchRender,
   textToReuse,
 } from "@/lib/renders";
-import { parseVideoOptions, REQUEST_MAX } from "@/lib/video-options";
+import { inspoOptions, parseVideoOptions, REQUEST_MAX, scratchOptions } from "@/lib/video-options";
 
 /**
  * Makes a new version of the video.
@@ -37,6 +38,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if (!(await checkRateLimit(`renders:${userId}`, 20))) {
       return jsonError("you’ve made a lot of versions in the last few minutes. please wait a bit and try again.", 429);
     }
+    if (project.kind === "scratch" && !canUseScratch(await getMembership(userId))) {
+      return Response.json({ error: SCRATCH_PRO_MESSAGE, reason: "pro" }, { status: 402 });
+    }
 
     // Counts the video against the trial or plan on its first version, and
     // checks this video still has changes left otherwise.
@@ -44,7 +48,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if ("reason" in claim) return Response.json({ error: claim.message, reason: claim.reason }, { status: claim.status });
 
     try {
-      const response = await makeVersion(userId, project, body);
+      const response = await (project.kind === "scratch" ? makeScratchVersion : makeVersion)(userId, project, body);
       if (!response.ok) await claim.release();
       return response;
     } catch (error) {
@@ -57,8 +61,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
 async function makeVersion(userId: string, project: Project, body: Record<string, unknown>) {
   let result;
   if (body.mode === "new" || body.mode === "edit") {
-    const options = parseVideoOptions(body.options);
-    if ("error" in options) return jsonError(options.error, 400);
+    const parsed = parseVideoOptions(body.options);
+    if ("error" in parsed) return jsonError(parsed.error, 400);
+    const options = inspoOptions(parsed);
     if (body.mode === "new") await saveSettings(project.id, options);
     const from =
       body.mode === "edit"
@@ -95,6 +100,49 @@ async function makeVersion(userId: string, project: Project, body: Record<string
     return jsonError("invalid request.", 400);
   }
 
+  if ("error" in result) return jsonError(result.error, result.status);
+  return Response.json({ renderId: result.render.id, version: result.render.version });
+}
+
+/**
+ * "Start from scratch" versions. Claude plans the edit from the prompt and clips:
+ *   new: the first version. edit: from a version, with the user's shot edits and/or a request
+ *   (the worker rebuilds that version, or asks Claude for the change). regenerate: a fresh take.
+ */
+async function makeScratchVersion(userId: string, project: Project, body: Record<string, unknown>) {
+  let result;
+  if (body.mode === "new" || body.mode === "edit") {
+    const parsed = parseVideoOptions(body.options);
+    if ("error" in parsed) return jsonError(parsed.error, 400);
+    const options = scratchOptions(parsed);
+    if (body.mode === "new") {
+      await saveSettings(project.id, options);
+      result = await startScratchRender(userId, project, settingsFor(options, []));
+    } else {
+      const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+      const previous = from && previousFor(from, options);
+      if (!from || !previous) return jsonError("we couldn’t find that version. tap regenerate to make a new one.", 400);
+      const request = typeof body.request === "string" ? body.request.trim() : "";
+      if (request.length > REQUEST_MAX) return jsonError(`your request can be up to ${REQUEST_MAX} characters.`, 400);
+      const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
+      const shots = parseShotEdits(body.shots, from.plan?.shots.length ?? 0, uploaded);
+      if ("error" in shots) return jsonError(shots.error, shots.status);
+      result = await startScratchRender(
+        userId,
+        project,
+        { ...settingsFor(options, shots), fromVersion: from.version, ...(request ? { request } : {}) },
+        { previous, ...(request ? { request } : {}) },
+      );
+    }
+  } else if (body.mode === "regenerate") {
+    const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion);
+    if (!from) return jsonError("we couldn’t find that version.", 404);
+    result = await startScratchRender(userId, project, settingsFor(scratchOptions(from.settings.options), []), {
+      fresh: true,
+    });
+  } else {
+    return jsonError("invalid request.", 400);
+  }
   if ("error" in result) return jsonError(result.error, result.status);
   return Response.json({ renderId: result.render.id, version: result.render.version });
 }
