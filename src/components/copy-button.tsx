@@ -4,7 +4,7 @@ import { useState } from "react";
 import { CheckIcon } from "./icons";
 
 /** Copies text to the clipboard and says so. */
-export function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label, display = "copy" }: { text: string; label: string; display?: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   async function copy() {
     try {
@@ -29,7 +29,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       ) : state === "failed" ? (
         "press and hold to copy"
       ) : (
-        "copy"
+        display
       )}
       <span className="sr-only" aria-live="polite">
         {state === "copied" ? "copied to clipboard" : ""}

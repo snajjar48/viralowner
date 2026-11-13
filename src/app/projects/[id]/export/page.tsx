@@ -4,25 +4,29 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { CopyButton } from "@/components/copy-button";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
-import { buttonClass } from "@/components/form";
 import { ArrowLeftIcon } from "@/components/icons";
 import { Section } from "@/components/options-fields";
 import { loadProject } from "@/lib/project-page";
 import { listRenders } from "@/lib/projects";
-import { createDownloadUrl } from "@/lib/storage";
+import type { MusicMode } from "@/lib/video-options";
+import { SaveVideo } from "./save-video";
 
 export const metadata: Metadata = {
   title: "viralowner — download",
   robots: { index: false, follow: false },
 };
 
+const SOUND_TIP =
+  "add the trending sound inside tiktok or instagram when you post, so you get the boost without copyright issues. (business accounts can only pick from the app’s commercial music library.)";
 const TIPS = [
-  "add the trending sound inside tiktok or instagram when you post, so you get the boost without copyright issues.",
   "post when your audience is online. your app’s insights show the best times.",
   "write a hook in the first line of your caption. it shows before “more”.",
   "reply to the first few comments quickly. it tells the app people care.",
   "post the same video to tiktok, reels and shorts. it’s free extra reach.",
 ];
+
+/** The sound tip only helps when the video doesn't already have its music. */
+const tipsFor = (music: MusicMode) => (music === "none" || music === "original" ? [SOUND_TIP, ...TIPS] : TIPS);
 
 export default function ExportPage({ params, searchParams }: PageProps<"/projects/[id]/export">) {
   return (
@@ -46,12 +50,9 @@ async function Export({ id, version }: { id: string; version: number | null }) {
   const render = done.find((r) => r.version === version) ?? done.at(-1);
   if (!render) redirect(`/projects/${id}/preview`);
 
-  const downloadUrl = await createDownloadUrl(render.storageKey!, {
-    expiresIn: 3600,
-    downloadName: `viralowner-video-v${render.version}.mp4`,
-  });
   const copy = render.postCopy ?? { caption: "", hashtags: [] };
   const hashtags = copy.hashtags.join(" ");
+  const post = [copy.caption, hashtags].filter(Boolean).join("\n\n");
 
   return (
     <FlowShell projectId={id}>
@@ -63,47 +64,43 @@ async function Export({ id, version }: { id: string; version: number | null }) {
       </Link>
       <PageTitle title="ready to post" subtitle={`version ${render.version} · 1080×1920 mp4, full hd for tiktok, reels and shorts.`} />
 
-      <a href={downloadUrl} download className={`${buttonClass} flex items-center justify-center`}>
-        download video
-      </a>
-      <p className="-mt-3 text-center text-xs text-muted">on iphone: tap download, then share → save video.</p>
+      <SaveVideo
+        fileUrl={`/api/projects/${id}/renders/${render.id}/file`}
+        fileName={`viralowner-video-v${render.version}.mp4`}
+      />
 
-      {copy.caption && (
-        <Section title="suggested caption" aside={<CopyButton text={copy.caption} label="copy caption" />}>
-          <p className="text-sm text-foreground/90">{copy.caption}</p>
-        </Section>
-      )}
-      {copy.hashtags.length > 0 && (
-        <Section title="hashtags" aside={<CopyButton text={hashtags} label="copy hashtags" />}>
-          <ul className="flex flex-wrap gap-2" aria-label="hashtags">
-            {copy.hashtags.map((h) => (
-              <li key={h} className="rounded-full bg-white/[0.06] px-3 py-1 text-sm">
-                {h}
-              </li>
-            ))}
-          </ul>
+      {post && (
+        <Section title="your post" aside={<CopyButton text={post} label="copy caption and hashtags" display="copy all" />}>
+          <div className="flex flex-col gap-3">
+            {copy.caption && (
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm text-foreground/90">{copy.caption}</p>
+                {hashtags && <CopyButton text={copy.caption} label="copy caption only" />}
+              </div>
+            )}
+            {copy.hashtags.length > 0 && (
+              <div className="flex items-start justify-between gap-3">
+                <ul className="flex flex-wrap gap-2" aria-label="hashtags">
+                  {copy.hashtags.map((h) => (
+                    <li key={h} className="rounded-full bg-white/[0.06] px-3 py-1 text-sm">
+                      {h}
+                    </li>
+                  ))}
+                </ul>
+                {copy.caption && <CopyButton text={hashtags} label="copy hashtags only" />}
+              </div>
+            )}
+          </div>
         </Section>
       )}
 
       <Section title="posting tips">
         <ul className="flex list-disc flex-col gap-2 pl-5 text-sm text-foreground/90 marker:text-coral">
-          {TIPS.map((t) => (
+          {tipsFor(render.settings.options.music.mode).map((t) => (
             <li key={t}>{t}</li>
           ))}
         </ul>
       </Section>
-
-      <button
-        type="button"
-        disabled
-        aria-describedby="share-soon"
-        className="flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.03] text-sm text-muted"
-      >
-        share to tiktok / instagram
-        <span id="share-soon" className="rounded-full bg-white/10 px-2 py-0.5 text-xs">
-          coming soon
-        </span>
-      </button>
     </FlowShell>
   );
 }
