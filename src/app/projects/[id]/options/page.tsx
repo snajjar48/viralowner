@@ -55,7 +55,12 @@ async function Options({ id }: { id: string }) {
       <PageTitle title="final touches" subtitle="all optional. the defaults work great, so you can go straight to the button." />
       <OptionsForm
         projectId={id}
-        initialOptions={project.settings}
+        initialOptions={
+          // Until the user picks, captions start in the style closest to the inspo's own.
+          !project.settingsSaved && inspo.breakdown.style?.captions?.look
+            ? { ...project.settings, captions: { enabled: true, style: inspo.breakdown.style.captions.look } }
+            : project.settings
+        }
         shots={inspo.breakdown.shots}
         clips={optionClips}
         oneTake={isOneTake(inspo.breakdown)}

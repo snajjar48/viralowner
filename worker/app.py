@@ -1233,7 +1233,7 @@ SFX_INFO = {
 SFX = list(SFX_INFO)
 EDIT_TYPES = ["shots", "jump_cut"]
 COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
-STYLE_VERSION = 3  # analyses older than this get their style worked out again on their next render
+STYLE_VERSION = 4  # analyses older than this get their style worked out again on their next render
 
 
 def catalog(info: dict[str, str]) -> str:
@@ -1362,7 +1362,25 @@ STYLE_SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["shots", "edit_type", "alternate_zoom", "color_filter", "looks", "text"],
+    "required": ["shots", "edit_type", "alternate_zoom", "color_filter", "looks", "text", "speech_captions"],
+    "additionalProperties": False,
+}
+STYLE_SCHEMA["properties"]["speech_captions"] = {
+    "type": "object",
+    "description": ("the burned-in captions of what's said (subtitles that follow the speech word by word or phrase by "
+                    "phrase), not the overlaid titles. ignore the platform's logo and @username watermark."),
+    "properties": {
+        "present": {"type": "boolean"},
+        "y": {"type": "number", "description": "their vertical center, 0 = top, 1 = bottom. -1 if there are none."},
+        "look": {"type": "string",
+                 "enum": ["none", "bold-pop", "clean", "outline", "bold-outline", "boxed", "karaoke"],
+                 "description": ("the closest of: bold-pop (big heavy capitals, a word or two at a time, the spoken "
+                                 "word highlighted in a color), clean (plain white sentences, soft shadow, no stroke), "
+                                 "outline (white sentences with a black stroke), bold-outline (heavier, bigger white "
+                                 "words with a thick stroke), boxed (text on a solid box), karaoke (all words shown, "
+                                 "the spoken one lit up). none if there are no captions.")},
+    },
+    "required": ["present", "y", "look"],
     "additionalProperties": False,
 }
 
@@ -1670,7 +1688,18 @@ def clean_style(data: dict, n: int, heard: dict | None = None) -> dict:
         },
         "textSpots": spots,
         "textLines": [((by_index.get(i + 1) or {}).get("text_lines") or "").strip() or None for i in range(n)],
+        "captions": inspo_captions(data.get("speech_captions")),
     }
+
+
+def inspo_captions(c) -> dict | None:
+    """Where the inspo's own speech captions sit and which of our caption looks is closest (None if none)."""
+    if not isinstance(c, dict) or not c.get("present"):
+        return None
+    y = c.get("y")
+    look = c.get("look") if c.get("look") in ("bold-pop", "clean", "outline", "bold-outline", "boxed", "karaoke") else None
+    return {"y": r2(min(0.85, max(0.15, float(y)))) if isinstance(y, (int, float)) and 0 <= y <= 1 else None,
+            "look": look}
 
 
 def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict | None = None) -> tuple[dict, float]:
@@ -4868,6 +4897,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 layout["captionYs"] = [rules["y"]] * len(layout["captionYs"])
             if "scale" in rules and abs(layout["captionScale"] - 1) < 0.01:
                 layout["captionScale"] = rules["scale"]
+        inspo_cap_y = ((inspo_style.get("captions") or {}).get("y")) if isinstance(inspo_style.get("captions"), dict) else None
+        if inspo_cap_y is not None and not keep and all(y is None for y in layout["captionYs"]):
+            # Captions where the inspo has its own (unless the user said where).
+            layout["captionYs"] = [inspo_cap_y] * len(layout["captionYs"])
 
     report("editing", 80)
     faces: list = [[] for _ in plan]

@@ -70,6 +70,8 @@ export interface InspoStyle {
   looks?: string[];
   /** Sound effects heard in the inspo, anchored to a cut or a shot. */
   sfx?: { anchor: "cut" | "shot"; index: number; name: string }[];
+  /** The inspo's own speech captions: where they sit (vertical center) and our closest caption style. */
+  captions?: { y: number | null; look: CaptionStyleId | null } | null;
   /** Analysis version (older ones are redone on their next render). */
   version?: number;
 }

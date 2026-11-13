@@ -17,6 +17,8 @@ export interface Project {
   prompt: string;
   status: ProjectStatus;
   settings: VideoOptions;
+  /** The user has saved their own options (otherwise `settings` are the defaults). */
+  settingsSaved: boolean;
   clipsRightsConfirmedAt: string | null;
   /** The user's own audio file, if they added one. */
   audio: ProjectAudio | null;
@@ -89,6 +91,7 @@ function toProject(r: Row): Project {
     prompt: typeof r.prompt === "string" ? r.prompt : "",
     status: r.status as ProjectStatus,
     settings: optionsFromJson(r.settings),
+    settingsSaved: !!r.settings && typeof r.settings === "object" && Object.keys(r.settings).length > 0,
     clipsRightsConfirmedAt: iso(r.clips_rights_confirmed_at),
     audio: (r.audio as ProjectAudio | null) ?? null,
     billing: r.billing === "trial" || r.billing === "plan" ? r.billing : null,
