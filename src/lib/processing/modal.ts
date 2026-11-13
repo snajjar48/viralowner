@@ -145,6 +145,9 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
           .map((f) => ({ wrong: f.wrong, right: f.right }))
       : undefined,
     captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
+    captionGroups: Array.isArray(p.captionGroups)
+      ? p.captionGroups.filter((g): g is string => typeof g === "string").slice(0, 30)
+      : undefined,
     captionStyle:
       p.captionStyle === "off" || CAPTION_STYLES.some((c) => c.id === p.captionStyle) ? p.captionStyle : undefined,
     jumpcut: Array.isArray(p.jumpcut)

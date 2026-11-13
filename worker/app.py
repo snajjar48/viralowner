@@ -486,6 +486,8 @@ CAPTION_RULES_PROPS = {
     "caption_y": {"type": "number", "description": "where the user wants the captions' vertical center (0 = top, 0.5 = the middle of the video, 1 = bottom), or -1 if they didn't say."},
     "caption_style": {"type": "string", "description": "a caption style the user asked for, or 'keep' if they didn't."},
     "caption_scale": {"type": "number", "description": "caption size the user asked for (1 = standard, 1.3 = bigger, 0.8 = smaller), or 0 if they didn't say."},
+    "keep_together": {"type": "array", "items": {"type": "string"},
+                      "description": "phrases the user wants to appear together in one caption (never split across two), written as they appear in the captions after your fixes. empty if none."},
 }
 
 
@@ -517,7 +519,7 @@ def proofread_words(words: list[dict], context: str, instructions: str = "") -> 
     if instructions:
         system += ("\n\nThe user also gave instructions for their video. Follow every one that's about the captions, "
                    "exactly, on every word it applies to (e.g. \"no hyphens\": write fat-free as two words, \"fat free\"; "
-                   "\"all caps\"; a word they want spelled their way). Ignore instructions that aren't about the captions. "
+                   "\"all caps\"; a word they want spelled their way; words they want shown together in one caption go in keep_together). Ignore instructions that aren't about the captions. "
                    "Caption styles: " + "; ".join(f"{k}: {v}" for k, v in CAPTION_STYLE_INFO.items()) + ".")
     text = (f"what the video is about: {context or '(no description)'}\n"
             + (f"the user's instructions: {json.dumps(instructions, ensure_ascii=False)}\n" if instructions else "")
@@ -552,6 +554,9 @@ def proofread_words(words: list[dict], context: str, instructions: str = "") -> 
             rules["style"] = style
         if isinstance(scale, (int, float)) and 0.5 <= scale <= 1.6 and abs(scale - 1) > 0.01:
             rules["scale"] = float(scale)
+        together = clean_caption_groups(data.get("keep_together"))
+        if together:
+            rules["together"] = together
         if rules:
             print(f"caption rules from the user's requests: {rules}")
     return out, rules
@@ -790,6 +795,47 @@ def write_post(video: Path, workdir: Path, texts: list[str], words: list[dict], 
             "hashtags": [h.replace(" ", "") for h in tags][:5]}
     print(f"post copy (${result['cost_usd']}): {post}")
     return (post if post["caption"] else None), result["cost_usd"]
+
+
+def clean_caption_groups(*lists) -> list[str]:
+    """Phrases the user wants shown together in one caption (earlier ones kept, no repeats)."""
+    import re
+
+    out: dict[str, str] = {}
+    for groups in lists:
+        for g in groups or []:
+            if isinstance(g, str) and len(g.split()) >= 2:
+                text = " ".join(g.split())[:80]
+                out.setdefault(re.sub(r"[^\w]", "", text.lower()), text)
+    return list(out.values())[-30:]
+
+
+def glue_phrases(words: list[dict], groups: list[str]) -> list[dict]:
+    """Marks each phrase the user wants together so the captions never split it: its first word
+    says how long the phrase is, the rest are glued on (see caption_chunks)."""
+    import re
+
+    out = [dict(w) for w in words]
+    keys = [re.sub(r"[^\w]", "", w["w"].lower()) for w in out]
+    for g in groups:
+        want = re.sub(r"[^\w]", "", g.lower())
+        if not want:
+            continue
+        i = 0
+        while i < len(out):
+            joined, k = "", i
+            while k < len(out) and len(joined) < len(want) and want.startswith(joined + keys[k]):
+                joined += keys[k]
+                k += 1
+            if joined == want and k - i >= 2:
+                out[i]["phrase"] = (k - i, len(" ".join(w["w"] for w in out[i:k])))
+                for w in out[i + 1:k]:
+                    w["glue"] = True
+                print(f"captions keep together: {g!r}")
+                i = k
+            else:
+                i += 1
+    return out
 
 
 def transcribe_take(path: Path) -> dict:
@@ -2705,9 +2751,11 @@ def caption_chunks(words: list[dict], max_words: int, max_chars: int) -> list[li
     chunks: list[list[dict]] = []
     for w in words:
         cur = chunks[-1] if chunks else None
+        n_words, n_chars = w.get("phrase") or (1, len(w["w"]))
         if cur is not None and w.get("glue"):
             cur.append(w)
-        elif (cur is None or len(cur) >= max_words
+        elif (cur is None or len(cur) + n_words > max(max_words, n_words)
+                or len(" ".join(x["w"] for x in cur)) + 1 + n_chars > max(max_chars, n_chars)
                 or len(" ".join(x["w"] for x in cur)) + 1 + len(w["w"]) > max_chars
                 or w["s"] - cur[-1]["e"] > 0.6
                 or cur[-1]["w"][-1:] in ".?!"):
@@ -3439,7 +3487,7 @@ You get the user's request, frames from every shot of the current version exactl
 
 Make the change the user asks for and keep everything else exactly as it is. A question or complaint ("why is the text covering her face?", "why is it not bold pop?") is a request to fix that thing: fix it, and say in the summary what you changed. The user's request always wins over matching the inspo: the inspo is only where the video started, so never refuse or water down a change because it makes the video differ from the inspo. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
-You can change: how long each shot lasts (length_s: when the user asks to extend, lengthen, shorten or trim a shot or clip, or to make a part longer or shorter, change those shots' lengths by what they ask, or by a clear amount like 1-2 seconds if they don't say; the shots after it simply move later or earlier); which clip and moment fills a shot (to show more of a moment when a shot gets longer, start it earlier in the clip if the clip runs out); the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the caption style (caption_style: when the user asks for a different look, like a stroke or outline, bolder, a box, or turning captions off or on, pick the style that gives it); the words in the captions (caption_fixes: when the user says a word in the captions is wrong, or tells you what a word should say or how to spell it, add it as wrong -> right exactly as they want it, using the current captions below to find the words as they appear now); the post caption and hashtags.
+You can change: how long each shot lasts (length_s: when the user asks to extend, lengthen, shorten or trim a shot or clip, or to make a part longer or shorter, change those shots' lengths by what they ask, or by a clear amount like 1-2 seconds if they don't say; the shots after it simply move later or earlier); which clip and moment fills a shot (to show more of a moment when a shot gets longer, start it earlier in the clip if the clip runs out); the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the caption style (caption_style: when the user asks for a different look, like a stroke or outline, bolder, a box, or turning captions off or on, pick the style that gives it); which words appear together in one caption (caption_together); the words in the captions (caption_fixes: when the user says a word in the captions is wrong, or tells you what a word should say or how to spell it, add it as wrong -> right exactly as they want it, using the current captions below to find the words as they appear now); the post caption and hashtags.
 You can't change: the number of shots, the music or audio (the user changes that in the options under the video), or add stickers.
 The picture quality, smoothness, glitches or blur aren't something to plan: every version is made at the best quality the clips allow, so for those just keep everything as it is and don't mention them. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
 Transitions, sound effects, speed (slow motion, sped up), zooms, shakes, filters, looks and other video effects are handled by a separate step: never call them impossible and leave them out of your summary. If the request is only about those, change nothing and return an empty summary.
@@ -3478,6 +3526,10 @@ REVISE_SCHEMA = {
         "caption": {"type": "string", "description": "the post caption (keep it unless asked)."},
         "hashtags": {"type": "array", "items": {"type": "string"}},
         "caption_fixes": CAPTION_FIXES_FIELD,
+        "caption_together": {"type": "array", "items": {"type": "string"},
+                             "description": ("phrases the user wants to appear together in one caption, never split "
+                                             "across two (e.g. 'keep fat free milk together'), as the captions spell "
+                                             "them. keep every earlier one listed. empty if none.")},
         "take_cut": {"type": "string", "enum": ["keep", "keep_pauses", "whole_take"],
                      "description": ("one-take videos only (otherwise 'keep'). keep_pauses: put the cut-out pauses and "
                                      "ums back between the cuts. whole_take: play the take from its very start to its "
@@ -3495,7 +3547,7 @@ REVISE_SCHEMA = {
         },
     },
     "required": ["shots", "text_scale", "caption_scale", "font", "text_color", "text_look", "text_align",
-                 "text_animation", "caption", "hashtags", "caption_fixes", "take_cut", "caption_style", "summary"],
+                 "text_animation", "caption", "hashtags", "caption_fixes", "caption_together", "take_cut", "caption_style", "summary"],
     "additionalProperties": False,
 }
 
@@ -4371,7 +4423,10 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "options": {**options, "notes": "", "music": {**options["music"], "mode": sound},
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
-        "speechHint": prompt[:600], "carry": {"captionFixes": caption_fixes},
+        "speechHint": prompt[:600],
+        "carry": {"captionFixes": caption_fixes,
+                  "captionGroups": clean_caption_groups(((base or {}).get("plan") or {}).get("captionGroups") if base else None,
+                                                        carry.get("captionGroups"))},
         # The prompt (and any change request) can say how the captions should look and read.
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
         "preferences": prefs,
@@ -4491,6 +4546,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     jump = inspo_style.get("editType") == "jump_cut"
     carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
     caption_fixes = clean_caption_fixes(((previous or {}).get("plan") or {}).get("captionFixes"), carry.get("captionFixes"))
+    caption_groups = clean_caption_groups(((previous or {}).get("plan") or {}).get("captionGroups"), carry.get("captionGroups"))
     inspo_lengths = [s["durationS"] for s in shots]
     lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
     if (not jump and isinstance(lengths, list) and len(lengths) == n
@@ -4653,6 +4709,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         cost += result["cost_usd"]
         data = result["data"]
         caption_fixes = clean_caption_fixes(caption_fixes, data.get("caption_fixes"))
+        caption_groups = clean_caption_groups(caption_groups, data.get("caption_together"))
         if data.get("caption_style") == "off":
             caption_style = None
         elif data.get("caption_style") in CAPTION_LOOKS:
@@ -4800,6 +4857,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         words, rules = proofread_words(words, speech_hint,
                                        with_preferences(notes or (req.get("captionInstructions") or "").strip()[:1500], prefs))
         words = apply_caption_fixes(words, caption_fixes)
+        caption_groups = clean_caption_groups(caption_groups, rules.get("together"))
+        words = glue_phrases(words, caption_groups)
         if not previous:  # a change request already did what was asked
             if rules.get("style") == "off":
                 words, caption_style = [], None
@@ -4925,6 +4984,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "note": " ".join(x for x in (note, effects_note if request else "") if x) or None,
             "effects": effects,
             **({"captionFixes": caption_fixes} if caption_fixes else {}),
+            **({"captionGroups": caption_groups} if caption_groups else {}),
             # The caption style used, when it isn't the one chosen in the options (a request changed it).
             **({"captionStyle": caption_style or "off"}
                if (caption_style or "off") != (options["captions"]["style"] if options["captions"]["enabled"] else "off")

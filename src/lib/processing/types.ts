@@ -151,6 +151,8 @@ export interface Carry {
   /** Inspo videos: each shot's length, when the user asked for different lengths than the inspo's. */
   shotLengths?: number[];
   captionFixes?: CaptionFix[];
+  /** Phrases the user wants shown together in one caption. */
+  captionGroups?: string[];
 }
 
 /** The words chosen for a version, reused by later versions that don't change the text options. */
@@ -234,6 +236,7 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   /** Shot lengths the user asked for (inspo videos), the caption fixes in effect and the captions shown. */
   shotLengths?: number[];
   captionFixes?: CaptionFix[];
+  captionGroups?: string[];
   captionText?: string;
   /** The caption style this version used, when a request changed it from the one in the options. */
   captionStyle?: CaptionStyleId | "off";
