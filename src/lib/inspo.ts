@@ -10,7 +10,15 @@ import {
   setInspirationJob,
   type Inspiration,
 } from "./projects";
-import { createUploadUrl, deleteObject, headObject, readRange } from "./storage";
+import {
+  completeMultipartUpload,
+  createMultipartUpload,
+  createUploadUrl,
+  deleteObject,
+  headObject,
+  MULTIPART_MIN_BYTES,
+  readRange,
+} from "./storage";
 import { readMp4Duration } from "./mp4";
 import {
   checkInspo,
@@ -32,7 +40,13 @@ export async function startInspoUpload(
   userId: string,
   projectId: string,
   body: Record<string, unknown>,
-): Promise<{ upload: { url: string; headers: Record<string, string> } } | Fail> {
+): Promise<
+  | {
+      upload: { url: string; headers: Record<string, string> };
+      multipart: { uploadId: string; partBytes: number; urls: string[] } | null;
+    }
+  | Fail
+> {
   if (body.styleReferenceConfirmed !== true) {
     return { status: 400, error: "please confirm you’re using this video only as a style reference." };
   }
@@ -50,7 +64,17 @@ export async function startInspoUpload(
   const oldKey = await replaceInspiration(projectId, { storageKey, fileName, contentType, sizeBytes, durationS });
   if (oldKey) await deleteObject(oldKey).catch((e) => console.error("Deleting old inspo failed:", e));
 
-  return { upload: await createUploadUrl(storageKey, { contentType, sizeBytes }) };
+  // Big files also get a URL per part, so the browser can upload several parts at once.
+  const [upload, multipart] = await Promise.all([
+    createUploadUrl(storageKey, { contentType, sizeBytes }),
+    sizeBytes >= MULTIPART_MIN_BYTES && body.single !== true
+      ? createMultipartUpload(storageKey, { contentType, sizeBytes }).catch((error) => {
+          console.error("Starting multipart upload failed (using one upload):", error);
+          return null;
+        })
+      : null,
+  ]);
+  return { upload, multipart };
 }
 
 type CompleteResult = { status: number; body: Record<string, unknown> };
@@ -65,9 +89,18 @@ const ANALYSIS_FAILED = "we couldn’t analyze that video. please try again.";
  *     read from the file itself) and starts the analysis job
  *   - running: checks on the job, and saves the breakdown when it's done
  */
-export async function completeInspo(userId: string, projectId: string): Promise<CompleteResult> {
+export async function completeInspo(userId: string, projectId: string, uploadId?: string): Promise<CompleteResult> {
   const current = await getInspiration(userId, projectId);
   if (!current) return { status: 404, body: { error: "upload a video first." } };
+  if (uploadId && current.status === "uploading") {
+    // Uploaded in parts: join them into the file first.
+    try {
+      await completeMultipartUpload(current.storageKey, uploadId);
+    } catch (error) {
+      console.error("Finishing multipart inspo upload failed:", error);
+      return { status: 409, body: { error: "the upload didn’t finish. please try again.", code: "upload_missing" } };
+    }
+  }
   if (current.status === "ready") return { status: 200, body: { status: "ready" } };
   if (current.status === "analyzing" && current.analysisJobId) return checkAnalysis(projectId, current);
 

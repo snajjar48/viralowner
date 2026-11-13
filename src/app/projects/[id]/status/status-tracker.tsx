@@ -18,7 +18,7 @@ const STAGE_COPY: Record<JobStage, { title: string; detail: string }> = {
 // "Start from scratch": Claude watches the clips and plans the edit from the prompt.
 const SCRATCH_STAGE_COPY: Record<JobStage, { title: string; detail: string }> = {
   analyzing: { title: "watching", detail: "watching your clips and listening to what’s said" },
-  matching: { title: "planning", detail: "claude is planning your edit from your description" },
+  matching: { title: "planning", detail: "planning your edit from your description" },
   editing: { title: "editing", detail: "cutting it together with text, effects and sounds" },
   finishing: { title: "finishing", detail: "exporting in full hd, 1080×1920" },
 };

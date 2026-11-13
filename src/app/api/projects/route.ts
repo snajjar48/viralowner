@@ -39,7 +39,7 @@ export async function POST(request: Request) {
     const project = await createProject(userId);
     const result = await startInspoUpload(userId, project.id, body);
     if ("error" in result) return jsonError(result.error, result.status);
-    return Response.json({ projectId: project.id, upload: result.upload });
+    return Response.json({ projectId: project.id, upload: result.upload, multipart: result.multipart });
   } catch (error) {
     console.error("Creating project failed:", error);
     return serverError();

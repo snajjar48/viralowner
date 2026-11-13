@@ -54,6 +54,69 @@ export async function createUploadUrl(
   return { url: signed.url, headers: { "content-type": contentType } };
 }
 
+// ---- Big files upload in parts, several at once (much faster than one long upload).
+
+/** Every part but the last is this size (R2 needs them equal, and at least 5 MB). */
+export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
+/** Files at least this big upload in parts; smaller ones in one go. */
+export const MULTIPART_MIN_BYTES = 16 * 1024 * 1024;
+
+const xmlValue = (xml: string, tag: string) => new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1] ?? null;
+
+/**
+ * Starts a multipart upload and signs a PUT URL for every part. The browser uploads the parts
+ * (any order, several at once), then the server finishes it (completeMultipartUpload).
+ */
+export async function createMultipartUpload(
+  key: string,
+  { contentType, sizeBytes, expiresIn = 4 * 3600 }: { contentType: string; sizeBytes: number; expiresIn?: number },
+) {
+  const res = await r2().client.fetch(`${objectUrl(key)}?uploads=`, {
+    method: "POST",
+    headers: { "content-type": contentType },
+  });
+  const xml = await res.text();
+  const uploadId = xmlValue(xml, "UploadId");
+  if (!res.ok || !uploadId) throw new Error(`Storage multipart start failed (${res.status})`);
+  const count = Math.max(1, Math.ceil(sizeBytes / UPLOAD_PART_BYTES));
+  const urls = await Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const url = new URL(objectUrl(key));
+      url.searchParams.set("partNumber", String(i + 1));
+      url.searchParams.set("uploadId", uploadId);
+      url.searchParams.set("X-Amz-Expires", String(expiresIn));
+      return (await r2().client.sign(url.toString(), { method: "PUT", aws: { signQuery: true } })).url;
+    }),
+  );
+  return { uploadId, partBytes: UPLOAD_PART_BYTES, urls };
+}
+
+/** Joins the uploaded parts into the file. The parts' ETags come from storage, not the browser. */
+export async function completeMultipartUpload(key: string, uploadId: string) {
+  const list = await r2().client.fetch(`${objectUrl(key)}?uploadId=${encodeURIComponent(uploadId)}&max-parts=1000`);
+  const xml = await list.text();
+  // Already joined (a retry after it worked): the file is there.
+  if (list.status === 404 && (await headObject(key))) return;
+  if (!list.ok) throw new Error(`Storage list parts failed (${list.status})`);
+  const parts = [...xml.matchAll(/<Part>([\s\S]*?)<\/Part>/g)].map((m) => ({
+    n: Number(xmlValue(m[1], "PartNumber")),
+    etag: xmlValue(m[1], "ETag") ?? "",
+  }));
+  if (!parts.length) throw new Error("No parts were uploaded");
+  parts.sort((a, b) => a.n - b.n);
+  const body =
+    "<CompleteMultipartUpload>" +
+    parts.map((p) => `<Part><PartNumber>${p.n}</PartNumber><ETag>${p.etag}</ETag></Part>`).join("") +
+    "</CompleteMultipartUpload>";
+  const res = await r2().client.fetch(`${objectUrl(key)}?uploadId=${encodeURIComponent(uploadId)}`, {
+    method: "POST",
+    headers: { "content-type": "application/xml" },
+    body,
+  });
+  const out = await res.text();
+  if (!res.ok || out.includes("<Error>")) throw new Error(`Storage multipart complete failed (${res.status}): ${out.slice(0, 200)}`);
+}
+
 /** A URL to view or download a file. `downloadName` makes browsers save it. */
 export async function createDownloadUrl(
   key: string,

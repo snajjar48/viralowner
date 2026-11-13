@@ -7,7 +7,7 @@ import { DropZone } from "@/components/drop-zone";
 import { buttonClass } from "@/components/form";
 import { AlertIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { ProgressBar } from "@/components/progress-bar";
-import { postJson, readVideoDuration, uploadToSignedUrl, UploadError } from "@/lib/upload-client";
+import { postJson, readVideoDuration, uploadInParts, uploadToSignedUrl, UploadError } from "@/lib/upload-client";
 import { checkInspo, formatBytes, VIDEO_ACCEPT } from "@/lib/video-files";
 import { formatDuration } from "@/lib/video-options";
 
@@ -34,6 +34,8 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
   const [phase, setPhase] = useState<Phase>({ name: "pick" });
   const projectId = useRef(existingProjectId ?? null);
   const abort = useRef<AbortController | null>(null);
+  // A parts upload still to be joined by the server (kept for "try again").
+  const partsUploadId = useRef<string | undefined>(undefined);
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => () => {
@@ -63,13 +65,32 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
     setPhase({ name: "ready" });
   }
 
-  async function analyze() {
+  async function analyze(uploadId?: string) {
     setPhase({ name: "analyzing" });
     try {
-      await postJson(`/api/projects/${projectId.current}/inspo/complete`);
+      await postJson(`/api/projects/${projectId.current}/inspo/complete`, uploadId ? { uploadId } : undefined);
       router.push(`/projects/${projectId.current}/breakdown`);
     } catch (error) {
       const code = (error as { data?: { code?: string } }).data?.code;
+      if (uploadId && code === "upload_missing" && picked && projectId.current) {
+        // The parts couldn't be joined: send the file in one go, then try once more.
+        partsUploadId.current = undefined;
+        try {
+          const { upload: target } = await postJson<{ upload: Upload }>(`/api/projects/${projectId.current}/inspo`, {
+            fileName: picked.file.name,
+            contentType: picked.file.type,
+            sizeBytes: picked.file.size,
+            durationS: picked.durationS,
+            styleReferenceConfirmed: true,
+            single: true,
+          });
+          setPhase({ name: "uploading", percent: 0 });
+          await uploadToSignedUrl(picked.file, target, (percent) => setPhase({ name: "uploading", percent }));
+          return analyze();
+        } catch {
+          // fall through to the usual message
+        }
+      }
       setPhase({
         name: "failed",
         message: error instanceof UploadError ? error.message : "something went wrong. please try again.",
@@ -90,16 +111,33 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
     };
     setPhase({ name: "uploading", percent: 0 });
     abort.current = new AbortController();
+    let uploadId: string | undefined;
+    partsUploadId.current = undefined;
     try {
-      let target: Upload;
+      type Started = { upload: Upload; multipart: { uploadId: string; partBytes: number; urls: string[] } | null };
+      let started: Started;
       if (projectId.current) {
-        ({ upload: target } = await postJson<{ upload: Upload }>(`/api/projects/${projectId.current}/inspo`, details));
+        started = await postJson<Started>(`/api/projects/${projectId.current}/inspo`, details);
       } else {
-        const res = await postJson<{ projectId: string; upload: Upload }>("/api/projects", details);
+        const res = await postJson<Started & { projectId: string }>("/api/projects", details);
         projectId.current = res.projectId;
-        target = res.upload;
+        started = res;
       }
-      await uploadToSignedUrl(file, target, (percent) => setPhase({ name: "uploading", percent }), abort.current.signal);
+      const onProgress = (percent: number) => setPhase({ name: "uploading", percent });
+      if (started.multipart) {
+        try {
+          // Big file: several parts at once.
+          await uploadInParts(file, started.multipart, onProgress, abort.current.signal);
+          uploadId = started.multipart.uploadId;
+          partsUploadId.current = uploadId;
+        } catch (e) {
+          if (abort.current.signal.aborted) throw e;
+          onProgress(0);
+          await uploadToSignedUrl(file, started.upload, onProgress, abort.current.signal);
+        }
+      } else {
+        await uploadToSignedUrl(file, started.upload, onProgress, abort.current.signal);
+      }
     } catch (error) {
       if (abort.current?.signal.aborted) {
         setPhase({ name: "ready" });
@@ -112,7 +150,7 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
       });
       return;
     }
-    await analyze();
+    await analyze(uploadId);
   }
 
   function startOver() {
@@ -223,7 +261,7 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
             {phase.retry !== "pick" && picked && (
               <button
                 type="button"
-                onClick={phase.retry === "analyze" ? analyze : upload}
+                onClick={phase.retry === "analyze" ? () => analyze(partsUploadId.current) : upload}
                 className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-full bg-white/10 px-4 text-sm font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
               >
                 <RefreshIcon className="size-4" /> try again

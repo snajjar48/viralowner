@@ -5,6 +5,7 @@ import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
 import { isOneTake } from "@/lib/processing/types";
+import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import { AudioUploader } from "@/components/audio-uploader";
 import { audioView } from "@/lib/audio";
@@ -46,6 +47,7 @@ async function Clips({ id }: { id: string }) {
       shotIndex: c.shotIndex,
       status: c.status,
       previewUrl: c.status === "uploaded" ? await createDownloadUrl(c.storageKey, { expiresIn: 6 * 3600 }) : null,
+      thumbUrl: c.status === "uploaded" ? await clipThumbUrl(c.storageKey) : null,
     })),
   );
 

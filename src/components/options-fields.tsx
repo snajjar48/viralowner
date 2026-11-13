@@ -99,7 +99,7 @@ const TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
 
 // "Start from scratch": there's no inspo to match.
 const SCRATCH_TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
-  { mode: "adapt", title: "claude writes it", description: "short, punchy text from your prompt and clips" },
+  { mode: "adapt", title: "we write it", description: "short, punchy text from your prompt and clips" },
   { mode: "custom", title: "write my own", description: "your exact words and lines" },
   { mode: "none", title: "no on-screen text", description: "just the video (captions are separate, below)" },
 ];

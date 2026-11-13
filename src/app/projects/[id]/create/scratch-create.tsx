@@ -115,7 +115,7 @@ export function ScratchCreate({
       <div className="flex min-w-0 flex-col gap-5">
         <Section title="your video" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="prompt" className="text-sm text-muted">
-            tell claude what you want, like you would an editor. the more you say, the closer it gets.
+            tell us what you want, like you would an editor. the more you say, the closer we get.
           </label>
           <textarea
             id="prompt"

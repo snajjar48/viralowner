@@ -17,6 +17,7 @@ export interface OptionClip {
   durationS: number | null;
   shotIndex: number | null;
   previewUrl: string | null;
+  thumbUrl?: string | null;
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -122,7 +123,13 @@ export function OptionsForm({
             const clip = clips.find((c) => c.shotIndex === shot.index);
             return (
               <li key={shot.index} className="flex items-center gap-3 rounded-xl border border-white/10 p-2">
-                <ClipThumb src={clip?.previewUrl ?? null} durationS={null} label="" className="w-10 shrink-0 rounded-lg" />
+                <ClipThumb
+                  src={clip?.previewUrl ?? null}
+                  image={clip?.thumbUrl ?? null}
+                  durationS={null}
+                  label=""
+                  className="w-10 shrink-0 rounded-lg"
+                />
                 <label htmlFor={`assign-${shot.index}`} className="flex min-w-0 flex-1 flex-col text-sm">
                   <span className="font-medium">
                     shot {shot.index + 1}: {ROLE_LABELS[shot.role]}

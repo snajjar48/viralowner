@@ -1,11 +1,16 @@
-import { withProject } from "@/lib/api";
+import { readJson, withProject } from "@/lib/api";
 import { completeClip } from "@/lib/clips";
 
-/** Called when the browser finishes uploading a clip; verifies it on the server. */
-export async function POST(_request: Request, ctx: RouteContext<"/api/projects/[id]/clips/[clipId]/complete">) {
+/**
+ * Called when the browser finishes uploading a clip; verifies it on the server.
+ * `{ uploadId }` when it was uploaded in parts.
+ */
+export async function POST(request: Request, ctx: RouteContext<"/api/projects/[id]/clips/[clipId]/complete">) {
   return withProject(ctx.params, "Completing clip", async (_userId, project) => {
     const { clipId } = await ctx.params;
-    const result = await completeClip(project.id, clipId);
+    const body = await readJson(request);
+    const uploadId = typeof body?.uploadId === "string" && body.uploadId.length < 1024 ? body.uploadId : undefined;
+    const result = await completeClip(project.id, clipId, uploadId);
     return Response.json(result.body, { status: result.status });
   });
 }

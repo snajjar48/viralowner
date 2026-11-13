@@ -19,7 +19,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
 
     const result = await startInspoUpload(userId, id, body);
     if ("error" in result) return jsonError(result.error, result.status);
-    return Response.json({ upload: result.upload });
+    return Response.json({ upload: result.upload, multipart: result.multipart });
   } catch (error) {
     console.error("Starting inspo upload failed:", error);
     return serverError();

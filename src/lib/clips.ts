@@ -2,7 +2,16 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { readMp4Duration } from "./mp4";
 import { createClip, getClip, markClipFailed, markClipUploaded, type Clip } from "./projects";
-import { createUploadUrl, deleteObject, headObject, readRange } from "./storage";
+import {
+  completeMultipartUpload,
+  createDownloadUrl,
+  createMultipartUpload,
+  createUploadUrl,
+  deleteObject,
+  headObject,
+  MULTIPART_MIN_BYTES,
+  readRange,
+} from "./storage";
 import {
   checkClip,
   CLIP_MAX_BYTES,
@@ -14,13 +23,31 @@ import {
 } from "./video-files";
 
 type Fail = { error: string; status: number };
+type SignedPut = { url: string; headers: Record<string, string> };
 
-/** Validates a clip's details, records it, and returns where to upload it. */
+/** Where a clip's still (a JPEG the browser makes when the clip is picked) is kept. */
+export const thumbKeyFor = (clipKey: string) => `${clipKey}.jpg`;
+
+/** A clip's still, to show instead of loading the video itself. The page falls back to the video if it's missing. */
+export const clipThumbUrl = (clipKey: string) => createDownloadUrl(thumbKeyFor(clipKey), { expiresIn: 6 * 3600 });
+
+/**
+ * Validates a clip's details, records it, and returns where to upload it: one URL, plus, for big
+ * files, a URL per part so they upload several parts at once (much faster). Also where to put its still.
+ */
 export async function startClipUpload(
   userId: string,
   projectId: string,
   body: Record<string, unknown>,
-): Promise<{ clip: Clip; upload: { url: string; headers: Record<string, string> } } | Fail> {
+): Promise<
+  | {
+      clip: Clip;
+      upload: SignedPut;
+      multipart: { uploadId: string; partBytes: number; urls: string[] } | null;
+      thumb: SignedPut;
+    }
+  | Fail
+> {
   const fileName = typeof body.fileName === "string" ? body.fileName.slice(0, 200) : "";
   const sizeBytes = typeof body.sizeBytes === "number" && Number.isInteger(body.sizeBytes) ? body.sizeBytes : -1;
   const durationS =
@@ -33,14 +60,33 @@ export async function startClipUpload(
   const storageKey = `u/${userId}/p/${projectId}/clips/${randomUUID()}.${extensionFor(contentType)}`;
   const clip = await createClip(projectId, { storageKey, fileName, contentType, sizeBytes, durationS }, MAX_CLIPS);
   if (!clip) return { status: 409, error: `you can add up to ${MAX_CLIPS} clips. remove one to add another.` };
-  return { clip, upload: await createUploadUrl(storageKey, { contentType, sizeBytes }) };
+  const [upload, multipart, thumb] = await Promise.all([
+    createUploadUrl(storageKey, { contentType, sizeBytes }),
+    sizeBytes >= MULTIPART_MIN_BYTES
+      ? createMultipartUpload(storageKey, { contentType, sizeBytes }).catch((error) => {
+          console.error("Starting multipart upload failed (using one upload):", error);
+          return null;
+        })
+      : null,
+    createUploadUrl(thumbKeyFor(storageKey), { contentType: "image/jpeg", sizeBytes: 0 }),
+  ]);
+  return { clip, upload, multipart, thumb };
 }
 
 /** After upload: checks the stored file for real, then marks the clip ready. */
-export async function completeClip(projectId: string, clipId: string) {
+export async function completeClip(projectId: string, clipId: string, uploadId?: string) {
   const clip = await getClip(projectId, clipId);
   if (!clip) return { status: 404, body: { error: "we couldn’t find that clip." } };
   if (clip.status === "uploaded") return { status: 200, body: { clip } };
+  if (uploadId) {
+    // Uploaded in parts: join them into the file first.
+    try {
+      await completeMultipartUpload(clip.storageKey, uploadId);
+    } catch (error) {
+      console.error("Finishing multipart upload failed:", error);
+      return { status: 409, body: { error: "the upload didn’t finish. please try again." } };
+    }
+  }
 
   const reject = async (error: string) => {
     await markClipFailed(clip.id);

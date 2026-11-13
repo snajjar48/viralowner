@@ -1,4 +1,5 @@
 import { notFound, withProject } from "@/lib/api";
+import { thumbKeyFor } from "@/lib/clips";
 import { deleteClip } from "@/lib/projects";
 import { deleteObject } from "@/lib/storage";
 
@@ -8,7 +9,10 @@ export async function DELETE(_request: Request, ctx: RouteContext<"/api/projects
     const { clipId } = await ctx.params;
     const key = await deleteClip(project.id, clipId);
     if (!key) return notFound();
-    await deleteObject(key).catch((e) => console.error("Deleting clip file failed:", e));
+    await Promise.all([
+      deleteObject(key).catch((e) => console.error("Deleting clip file failed:", e)),
+      deleteObject(thumbKeyFor(key)).catch(() => {}),
+    ]);
     return Response.json({ ok: true });
   });
 }

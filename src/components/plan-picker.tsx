@@ -108,6 +108,17 @@ export function PlanPicker({
                 {TIER_VIDEOS[tier]}, {CHANGES_PER_VIDEO} changes per video
                 {monthly && ` · about ${monthly}/month, billed yearly`}
               </span>
+              {tier === "pro" && (
+                <span className="flex items-start gap-1.5 text-sm text-pretty">
+                  <span aria-hidden="true" className="text-coral">
+                    ✦
+                  </span>
+                  <span>
+                    <span className="font-medium">start from scratch:</span>{" "}
+                    <span className="text-muted">upload your clips, describe the video you want, and we edit it for you. no inspo needed.</span>
+                  </span>
+                </span>
+              )}
             </Option>
           );
         })}

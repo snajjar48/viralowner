@@ -29,7 +29,14 @@ import { AlertIcon, CameraIcon, FilmIcon, GripIcon, RefreshIcon, XIcon } from "@
 import { ProgressBar } from "@/components/progress-bar";
 import { ROLE_LABELS, ShotList } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
-import { postJson, readVideoDuration, uploadToSignedUrl, UploadError } from "@/lib/upload-client";
+import {
+  makeVideoThumbnail,
+  postJson,
+  readVideoDuration,
+  uploadInParts,
+  uploadToSignedUrl,
+  UploadError,
+} from "@/lib/upload-client";
 import { checkClip, MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
 
 export interface InitialClip {
@@ -39,6 +46,8 @@ export interface InitialClip {
   shotIndex: number | null;
   status: "uploading" | "uploaded" | "failed";
   previewUrl: string | null;
+  /** The clip's saved still, if it has one. */
+  thumbUrl?: string | null;
 }
 
 type ItemStatus = "queued" | "uploading" | "verifying" | "uploaded" | "failed";
@@ -48,6 +57,8 @@ interface Item {
   fileName: string;
   durationS: number | null;
   previewUrl: string | null;
+  /** A still of the clip: made in this browser when it's picked, or the saved one. */
+  thumbUrl: string | null;
   shotIndex: number | null;
   status: ItemStatus;
   percent: number;
@@ -56,7 +67,9 @@ interface Item {
   canRetry: boolean;
 }
 
-const CONCURRENCY = 3;
+// Clips uploading at once. Big clips upload several parts at once too (uploadInParts).
+const CONCURRENCY = 2;
+type SignedPut = { url: string; headers: Record<string, string> };
 const inFlight = (s: ItemStatus) => s === "queued" || s === "uploading" || s === "verifying";
 
 export function ClipsManager({
@@ -94,6 +107,7 @@ export function ClipsManager({
       fileName: c.fileName ?? "clip",
       durationS: c.durationS,
       previewUrl: c.previewUrl,
+      thumbUrl: c.thumbUrl ?? null,
       shotIndex: c.shotIndex,
       status: c.status === "uploaded" ? "uploaded" : "failed",
       percent: c.status === "uploaded" ? 100 : 0,
@@ -108,6 +122,9 @@ export function ClipsManager({
   const [error, setError] = useState("");
 
   const files = useRef(new Map<string, File>());
+  // Each clip's still is saved next to it once both the still and its upload URL are ready.
+  const thumbs = useRef(new Map<string, Blob>());
+  const thumbTargets = useRef(new Map<string, SignedPut>());
   const aborts = useRef(new Map<string, AbortController>());
   const queue = useRef<string[]>([]);
   const active = useRef(0);
@@ -131,9 +148,11 @@ export function ClipsManager({
     aborts.current.set(key, controller);
     patch(key, { status: "uploading", percent: 0, error: null });
     try {
-      const { clip, upload } = await postJson<{
+      const { clip, upload, multipart, thumb } = await postJson<{
         clip: { id: string };
-        upload: { url: string; headers: Record<string, string> };
+        upload: SignedPut;
+        multipart: { uploadId: string; partBytes: number; urls: string[] } | null;
+        thumb: SignedPut;
       }>(`/api/projects/${projectId}/clips`, {
         fileName: file.name,
         contentType: file.type,
@@ -141,11 +160,40 @@ export function ClipsManager({
         durationS: item.durationS,
       });
       patch(key, { clipId: clip.id });
-      await uploadToSignedUrl(file, upload, (percent) => patch(key, { percent }), controller.signal);
+      thumbTargets.current.set(key, thumb);
+      saveThumb(key);
+      const onProgress = (percent: number) => patch(key, { percent });
+      let uploadId: string | undefined;
+      if (multipart) {
+        try {
+          await uploadInParts(file, multipart, onProgress, controller.signal);
+          uploadId = multipart.uploadId;
+        } catch (e) {
+          if (controller.signal.aborted) throw e;
+          // Parts didn't work on this connection: send it in one go instead.
+          onProgress(0);
+          await uploadToSignedUrl(file, upload, onProgress, controller.signal);
+        }
+      } else {
+        await uploadToSignedUrl(file, upload, onProgress, controller.signal);
+      }
       patch(key, { status: "verifying" });
-      const done = await postJson<{ clip: { durationS: number } }>(
-        `/api/projects/${projectId}/clips/${clip.id}/complete`,
-      );
+      const complete = (id?: string) =>
+        postJson<{ clip: { durationS: number } }>(
+          `/api/projects/${projectId}/clips/${clip.id}/complete`,
+          id ? { uploadId: id } : undefined,
+        );
+      let done;
+      try {
+        done = await complete(uploadId);
+      } catch (e) {
+        if (!uploadId) throw e;
+        // The parts couldn't be joined: send it in one go instead.
+        patch(key, { status: "uploading", percent: 0 });
+        await uploadToSignedUrl(file, upload, onProgress, controller.signal);
+        patch(key, { status: "verifying" });
+        done = await complete();
+      }
       patch(key, { status: "uploaded", percent: 100, durationS: done.clip.durationS });
     } catch (e) {
       if (controller.signal.aborted) return; // removed by the user
@@ -155,6 +203,28 @@ export function ClipsManager({
       });
     } finally {
       aborts.current.delete(key);
+    }
+  }
+
+  /** Saves a clip's still to storage once both it and the clip's upload URL are ready (best effort). */
+  function saveThumb(key: string) {
+    const blob = thumbs.current.get(key);
+    const target = thumbTargets.current.get(key);
+    if (!blob || !target) return;
+    thumbs.current.delete(key);
+    void fetch(target.url, { method: "PUT", headers: target.headers, body: blob }).catch(() => {});
+  }
+
+  /** Makes stills for newly picked clips, one at a time (each decodes a bit of video). */
+  async function makeThumbs(keys: string[]) {
+    for (const key of keys) {
+      const file = files.current.get(key);
+      if (!file) continue;
+      const blob = await makeVideoThumbnail(file);
+      if (!blob || !files.current.has(key)) continue;
+      thumbs.current.set(key, blob);
+      patch(key, { thumbUrl: URL.createObjectURL(blob) });
+      saveThumb(key);
     }
   }
 
@@ -177,8 +247,10 @@ export function ClipsManager({
       picked = picked.slice(0, Math.max(0, room));
     }
     const added: Item[] = [];
-    for (const file of picked) {
-      const durationS = checkClip(file, null) ? null : await readVideoDuration(file);
+    // Read every picked file's length at once (one at a time made picking 20 clips slow).
+    const durations = await Promise.all(picked.map((f) => (checkClip(f, null) ? null : readVideoDuration(f))));
+    for (const [i, file] of picked.entries()) {
+      const durationS = durations[i];
       const problem = checkClip(file, durationS);
       if (problem) {
         problems.push(`${file.name}: ${problem}`);
@@ -192,6 +264,7 @@ export function ClipsManager({
         fileName: file.name,
         durationS,
         previewUrl: URL.createObjectURL(file),
+        thumbUrl: null,
         shotIndex: null,
         status: "queued",
         percent: 0,
@@ -205,6 +278,7 @@ export function ClipsManager({
     itemsRef.current = [...itemsRef.current, ...added];
     queue.current.push(...added.map((a) => a.key));
     pump();
+    void makeThumbs(added.map((a) => a.key));
   }
 
   async function retry(item: Item) {
@@ -223,7 +297,10 @@ export function ClipsManager({
     setItems((list) => list.filter((i) => i.key !== item.key));
     if (selected === item.key) setSelected(null);
     if (item.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
+    if (item.thumbUrl?.startsWith("blob:")) URL.revokeObjectURL(item.thumbUrl);
     files.current.delete(item.key);
+    thumbs.current.delete(item.key);
+    thumbTargets.current.delete(item.key);
     if (item.clipId) {
       const res = await fetch(`/api/projects/${projectId}/clips/${item.clipId}`, { method: "DELETE" }).catch(() => null);
       if (!res?.ok && res?.status !== 404) setError("couldn’t remove that clip. refresh and try again.");
@@ -379,7 +456,7 @@ export function ClipsManager({
         {items.length === 0 ? (
           <p className="text-center text-sm text-muted">
             {freeform
-              ? "no clips yet. add everything you filmed for this video, in any order. claude watches all of it."
+              ? "no clips yet. add everything you filmed for this video, in any order. we watch all of it."
               : oneTake
                 ? "no take yet. film yourself saying your version in one go, then add it here."
                 : "no clips yet. film one clip for each shot in your shot list, then add them here."}
@@ -507,7 +584,7 @@ function ClipTile({
         aria-label={`clip ${index + 1}, ${item.fileName}${ready && !oneTake ? ". tap to assign it to a shot" : ""}`}
         className="relative block cursor-pointer rounded-xl focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-default"
       >
-        <ClipThumb src={item.previewUrl} durationS={item.durationS} label="" />
+        <ClipThumb src={item.previewUrl} image={item.thumbUrl} durationS={item.durationS} label="" />
         <span className="absolute top-1.5 left-1.5 flex size-6 items-center justify-center rounded-full bg-black/70 text-xs">
           {index + 1}
         </span>

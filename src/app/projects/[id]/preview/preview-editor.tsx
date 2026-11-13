@@ -205,7 +205,7 @@ export function PreviewEditor({
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">
             {variant === "scratch"
-              ? "tell claude what to change, in your own words: anything from the cuts and order to the words, effects and sounds. it makes a new version."
+              ? "tell us what to change, in your own words: anything from the cuts and order to the words, effects and sounds. we’ll make a new version."
               : "tell us what to change, in your own words. we’ll make a new version."}
           </label>
           <textarea

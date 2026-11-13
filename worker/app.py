@@ -381,11 +381,23 @@ def extract_frames(path: Path, shots: list[tuple[float, float]], workdir: Path) 
 
 
 _whisper = None
+_whisper_lock = __import__("threading").Lock()
+
+
+def whisper_model():
+    """The speech model, loaded once. Two threads loading it at the same moment crash it (seen when a
+    clip and an audio file were transcribed side by side), hence the lock."""
+    global _whisper
+    with _whisper_lock:
+        if _whisper is None:
+            from faster_whisper import WhisperModel
+
+            _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
+    return _whisper
 
 
 def transcribe(path: Path) -> dict:
     """What's said, with timings. Empty if there's no audio or no speech."""
-    global _whisper
     import numpy as np
 
     # Decode with ffmpeg to 16 kHz mono samples and hand Whisper the array
@@ -397,10 +409,8 @@ def transcribe(path: Path) -> dict:
     if len(pcm) < 16000:  # under half a second of audio
         return {"language": None, "segments": []}
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    from faster_whisper import WhisperModel
-
-    _whisper = _whisper or WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
-    segments, info = _whisper.transcribe(audio, vad_filter=True, word_timestamps=True)
+    model = whisper_model()
+    segments, info = model.transcribe(audio, vad_filter=True, word_timestamps=True)
     out = []
     for s in segments:
         text = s.text.strip()
@@ -418,7 +428,6 @@ def transcribe_take(path: Path) -> dict:
     """Like transcribe(), for takes where the same line may be said several times. Whisper, given
     the whole recording, tends to drop a sentence that repeats the one before it, so each stretch
     of speech (found from the audio level, which also catches quiet takes) is transcribed on its own."""
-    global _whisper
     import numpy as np
 
     pcm = subprocess.run(
@@ -428,9 +437,7 @@ def transcribe_take(path: Path) -> dict:
     if len(pcm) < 16000:
         return {"language": None, "segments": []}
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    from faster_whisper import WhisperModel
-
-    _whisper = _whisper or WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
+    model = whisper_model()
 
     # Speech = 20ms frames louder than -45 dB; join stretches less than 0.5s apart.
     hop = 320
@@ -449,7 +456,7 @@ def transcribe_take(path: Path) -> dict:
             continue
         a0, b0 = max(0.0, a - 0.2), min(len(audio) / 16000, b + 0.2)
         chunk = audio[int(a0 * 16000): int(b0 * 16000)]
-        segments, info = _whisper.transcribe(chunk, vad_filter=False, word_timestamps=True,
+        segments, info = model.transcribe(chunk, vad_filter=False, word_timestamps=True,
                                              condition_on_previous_text=False)
         for sg in segments:
             text = sg.text.strip()
@@ -715,7 +722,6 @@ SPEED_INFO = {"normal": "normal speed", "slow_motion": "slow motion", "fast": "s
 SPEEDS = list(SPEED_INFO)
 SPEED_RATES = {"normal": 1.0, "slow_motion": 0.5, "fast": 1.6}
 SHOT_EFFECT_INFO = {
-    "freeze_end": "the last moment of the shot freezes on a still frame",
     "zoom_pulse": "a quick zoom pulse in and back out as the shot starts (often on a beat)",
     "flash_in": "the shot starts with a bright white flash",
     "rgb_split": "the colors are split into offset red/blue copies for the whole shot",
@@ -1242,7 +1248,8 @@ OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
 MATCH_FRAME_WIDTH = 384
 MAX_CLIP_FRAMES = 72  # frames of the user's clips sent to Claude
 MAX_CLIP_SPEECH_S = 150  # transcribe the clips for matching only if they're this short in total
-MAX_SLOWDOWN = 2.0  # a clip shorter than its shot is slowed down up to this much, then held
+MAX_SLOWDOWN = 2.0  # a clip shorter than its shot is slowed down up to this much
+MAX_STRETCH = 4.0  # ...and further, up to this, before it plays forward-then-backward. never a held frame
 FONT = "Montserrat"
 FONT_DIR = "/usr/share/fonts/opentype/montserrat"
 KEY_PREFIX_RE = r"^u/[A-Za-z0-9_-]+/p/[A-Za-z0-9_-]+/"
@@ -1587,11 +1594,7 @@ def effect_windows(effect: str, duration: float) -> list[tuple[float, float, str
         f = round(0.3 * OUT_FPS) - 1
         return [(0.0, 0.3, f"zoompan=z='1+0.12*sin(PI*on/{f})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                            f":d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS}")]
-    if effect == "freeze_end" and duration > 1.2:
-        hold = min(0.6, duration * 0.3)
-        return [(duration - hold, duration,
-                 f"trim=end_frame=1,tpad=stop_mode=clone:stop_duration={hold:.3f}")]
-    return []
+    return []  # (no freeze frames: a video must never stop moving)
 
 
 WHOLE_SHOT_EFFECTS = {"rgb_split": "rgbashift=rh=-10:bh=10", "black_and_white": "hue=s=0"}
@@ -1605,6 +1608,8 @@ def windowed(base: str, windows: list[tuple[float, float, str]], total: float) -
         a, b = snap(a), snap(b)
         if b - a >= 1 / OUT_FPS and all(b <= x or a >= y for x, y, _ in kept):
             kept.append((a, b, f))
+    # Motions like shake scale the frame, which can leave non-square pixels; every piece must match.
+    base = f"{base},setsar=1"
     if not kept:
         return f"[0:v]{base}[v]"
     pieces, t = [], 0.0
@@ -1623,6 +1628,45 @@ def windowed(base: str, windows: list[tuple[float, float, str]], total: float) -
     return ";".join(graph)
 
 
+def atempo_chain(rate: float) -> str:
+    """atempo filters for any speed (each one only goes down to 0.5x), with a trailing comma; "" for 1x."""
+    if abs(rate - 1) < 1e-3:
+        return ""
+    parts = []
+    while rate < 0.5:
+        parts.append("atempo=0.5")
+        rate /= 0.5
+    parts.append(f"atempo={rate:.4f}")
+    return ",".join(parts) + ","
+
+
+def boomerang(clip: dict, start: float, need: float, dest: Path) -> dict:
+    """The clip from `start`, played forward then backward (and again) until it lasts `need` seconds:
+    a shot longer than its footage keeps moving instead of freezing. The sound plays once, then silence."""
+    seg = max(0.1, clip["duration"] - start)
+    reps = int(need / (2 * seg)) + 1
+    vf = ",".join([
+        *([tonemap_filter()] if clip["hdr"] else []),
+        f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
+        f"crop={OUT_W}:{OUT_H}", "setsar=1", f"fps={OUT_FPS}", "format=yuv420p",
+    ])
+    frames = max(1, round(2 * seg * OUT_FPS))
+    graph = (f"[0:v]{vf},split=2[f][r];[r]reverse[b];[f][b]concat=n=2:v=1:a=0,"
+             f"loop=loop={reps}:size={frames}:start=0,setpts=N/{OUT_FPS}/TB[v]")
+    cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{seg:.3f}", "-i", str(clip["path"])]
+    if clip["has_audio"]:
+        audio = ["-map", "0:a:0", "-af", "aresample=48000,apad"]
+    else:
+        cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        audio = ["-map", "1:a:0"]
+    cmd += ["-filter_complex", graph, "-map", "[v]", *audio, "-t", f"{need + 0.1:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-r", str(OUT_FPS),
+            "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(dest)]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    print(f"boomerang: {seg:.2f}s of footage played back and forth to fill {need:.2f}s")
+    return {**clip, "path": dest, "duration": need + 0.1, "hdr": False, "has_audio": True}
+
+
 def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
              tail: float = 0.0, motion: str = "none", color: str = "none",
              t_in: dict | None = None, t_out: dict | None = None, speed: float = 1.0,
@@ -1637,8 +1681,20 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     stretch = duration / take if abs(take - duration) > 0.02 else 1.0
     stretch = min(MAX_SLOWDOWN, max(0.55, stretch))
     total = duration + tail
-    # Use real footage for the tail when the clip has it; otherwise the last frame holds.
-    extra = max(0.0, min(tail / stretch, clip["duration"] - start - take))
+    # Never hold a frame: the picture keeps moving to the very end of the shot (and its blend tail).
+    # Not enough footage after `start`: start earlier in the clip; then slow it down a bit more;
+    # and if the whole clip is still too short, play it forward then backward.
+    need = total / stretch
+    if start + need > clip["duration"]:
+        start = max(0.0, clip["duration"] - need)
+    avail = clip["duration"] - start
+    if avail < need:
+        stretch = min(MAX_STRETCH, total / max(avail, 0.05))
+        need = total / stretch
+    if avail < need - 0.02:
+        clip = boomerang(clip, start, need, dest.with_name(dest.stem + "-loop.mkv"))
+        start, avail = 0.0, clip["duration"]
+    take, extra = min(avail, need), 0.0
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
@@ -1658,7 +1714,7 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     graph = windowed(",".join(vf), windows, total)
     cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-t", f"{take + extra:.3f}", "-i", str(clip["path"])]
     if clip["has_audio"]:
-        af = f"aresample=48000,{f'atempo={1 / stretch:.4f},' if stretch != 1 else ''}apad"
+        af = f"aresample=48000,{atempo_chain(1 / stretch)}apad"
         audio = ["-map", "0:a:0", "-af", af]
     else:
         cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
@@ -1727,7 +1783,8 @@ def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | 
         if len(members) == 1:
             labels.append(f"v{members[0]}")
         else:
-            parts.append("".join(f"[v{m}]" for m in members) + f"concat=n={len(members)}:v=1:a=0[g{g}]")
+            # concat outputs a 1/1000000 timebase; xfade needs both sides on the same one (1/30).
+            parts.append("".join(f"[v{m}]" for m in members) + f"concat=n={len(members)}:v=1:a=0,fps={OUT_FPS}[g{g}]")
             labels.append(f"g{g}")
     current, elapsed = labels[0], sum(durations[m] for m in groups[0])
     for g in range(1, len(groups)):
@@ -1744,7 +1801,8 @@ def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | 
            "-c:a", "pcm_s16le", dest.name]
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"transitions failed, joining with hard cuts: {result.stderr[-400:]}")
+        print(f"transitions failed, joining with hard cuts: {result.stderr[:700]} ... {result.stderr[-300:]}\n"
+              f"graph: {';'.join(parts)[:1500]}")
         # Shots before a transition are longer than their slot: trim them back first.
         parts = [f"[{i}:v]trim=0:{durations[i]:.3f},setpts=PTS-STARTPTS[v{i}];"
                  f"[{i}:a]atrim=0:{durations[i]:.3f},asetpts=PTS-STARTPTS[a{i}]" for i in range(n)]
@@ -3025,7 +3083,7 @@ Editing craft:
 - Text style: pick the font, color, look, size, animation and position that fit the video's vibe (a bold condensed or heavy font for hype, a serif or script for aesthetic, a typewriter for storytelling). position: top (the upper safe area, the usual place for a hook), middle, or bottom (just above where the app's caption sits).
 - Never invent facts, prices, results or claims the clips or the prompt don't support.
 - Write the post caption (one or two lines, in the user's voice, with a hook) and 3-8 hashtags.
-- summary: one or two short sentences to the user, all lowercase, saying what you made (or, for a change, what you changed), including anything you couldn't do.
+- summary: one or two short sentences to the user, all lowercase, saying what you made (or, for a change, what you changed), including anything you couldn't do. Write as "we" ("we cut it down to..."), never "i", and never mention claude, ai or a model.
 
 Transitions (transition_in is how the video gets into that shot; shot 1 is always 'cut'):
 """ + catalog(TRANSITION_INFO) + """
@@ -3054,7 +3112,7 @@ DIRECTOR_TEXT_RULES = {
 DIRECTOR_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "description": "one or two short sentences to the user, all lowercase."},
+        "summary": {"type": "string", "description": "one or two short sentences to the user, all lowercase, written as \"we\"."},
         "shots": {
             "type": "array",
             "description": "the video's shots, in the order they play.",
@@ -3896,6 +3954,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
+    # Watch for frozen picture (there should never be any): logged so it can be fixed at the source.
+    frozen = subprocess.run(["ffmpeg", "-v", "info", "-i", out.name, "-map", "0:v", "-vf",
+                             "freezedetect=n=0.0005:d=0.4", "-f", "null", "-"], cwd=workdir, capture_output=True, text=True)
+    spans = [ln.split("] ")[-1] for ln in frozen.stderr.splitlines() if "freeze_start" in ln or "freeze_duration" in ln]
+    if spans:
+        print(f"WARNING frozen picture in the finished video: {spans[:10]}")
 
     # ---- finishing
     report("finishing", 92)
@@ -4100,7 +4164,7 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
     """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
     With --request, also makes a second version with that change (saved as <dest>-changed.mp4).
     To test the edit, override the inspo's: --transitions whip_left,zoom_in (cycled over the cuts),
-    --sfx whoosh@1,pop@s2 (at cut 1, in shot 2), --speeds normal,slow_motion, --effects ,freeze_end, --looks grain.
+    --sfx whoosh@1,pop@s2 (at cut 1, in shot 2), --speeds normal,slow_motion, --effects ,zoom_pulse, --looks grain.
     --breakdown-json reuses a saved analysis instead of analyzing the inspo again."""
     files = {"u/test/p/test/inspo": Path(inspo).read_bytes()}
     if breakdown_json and Path(breakdown_json).exists():

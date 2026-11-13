@@ -6,6 +6,7 @@ import { audioView } from "@/lib/audio";
 import { canUseScratch, getMembership } from "@/lib/membership";
 import { loadProject } from "@/lib/project-page";
 import { listClips, listRenders } from "@/lib/projects";
+import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import { scratchOptions } from "@/lib/video-options";
 import { ScratchCreate } from "./scratch-create";
@@ -53,6 +54,7 @@ async function Create({ id }: { id: string }) {
       shotIndex: null,
       status: c.status,
       previewUrl: c.status === "uploaded" ? await createDownloadUrl(c.storageKey, { expiresIn: 6 * 3600 }) : null,
+      thumbUrl: c.status === "uploaded" ? await clipThumbUrl(c.storageKey) : null,
     })),
   );
   const audio = await audioView(project.audio);
@@ -61,7 +63,7 @@ async function Create({ id }: { id: string }) {
     <FlowShell projectId={id} width="wide">
       <PageTitle
         title="start from scratch"
-        subtitle="add your clips and tell claude what you want. it watches everything and edits the whole video for you."
+        subtitle="add your clips and tell us what you want. we watch everything and edit the whole video for you."
       />
       <ScratchCreate
         projectId={id}

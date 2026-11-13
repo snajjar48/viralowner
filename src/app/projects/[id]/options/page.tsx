@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
+import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import { isOneTake } from "@/lib/processing/types";
 import { OptionsForm } from "./options-form";
@@ -45,6 +46,7 @@ async function Options({ id }: { id: string }) {
       durationS: c.durationS,
       shotIndex: c.shotIndex,
       previewUrl: await createDownloadUrl(c.storageKey, { expiresIn: 6 * 3600 }),
+      thumbUrl: await clipThumbUrl(c.storageKey),
     })),
   );
 

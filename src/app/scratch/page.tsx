@@ -38,7 +38,7 @@ async function Start() {
         </span>
         <PageTitle
           title="start from scratch is part of Pro"
-          subtitle="upload your clips, describe the video you want in your own words, and claude edits the whole thing for you. no inspo needed."
+          subtitle="upload your clips, describe the video you want in your own words, and we edit the whole thing for you. no inspo needed."
         />
         {m.plan?.tier === "basic" ? (
           <ManageBillingButton label="upgrade to Pro" />
@@ -70,7 +70,7 @@ async function Start() {
     <>
       <PageTitle
         title="what video do you have in mind?"
-        subtitle="tell claude like you’d tell an editor: what it’s for, what to show, the vibe, any words or effects you want. next you’ll add your clips."
+        subtitle="tell us like you’d tell an editor: what it’s for, what to show, the vibe, any words or effects you want. next you’ll add your clips."
       />
       <PromptStart />
     </>
