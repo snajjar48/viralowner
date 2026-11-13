@@ -634,13 +634,73 @@ def pacing_label(avg: float) -> str:
     return "fast" if avg < 1.6 else "medium" if avg < 3 else "slow"
 
 
+END_SCREEN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "end_screen": {"type": "boolean", "description": "true if the video ends with a platform end screen."},
+        "starts_at": {"type": "number", "description": "the time (s) of the first frame of the end screen, from the labels; -1 if none."},
+    },
+    "required": ["end_screen", "starts_at"],
+    "additionalProperties": False,
+}
+
+
+def content_end(path: Path, duration: float, workdir: Path) -> float | None:
+    """Where a platform's end screen starts, if the video has one (None if not). Videos saved from
+    Instagram or TikTok end with one: Instagram dims the last frame and shows its logo and the
+    creator's @handle; TikTok cuts to black with its logo and @handle. It isn't part of the video."""
+    span = min(8.0, duration)
+    times = [round(duration - span + k * 0.5, 2) for k in range(int(span / 0.5))]
+    content: list[dict] = [{"type": "text", "text": f"the last {span:.1f}s of a {duration:.1f}s video, every half second:"}]
+    for k, t in enumerate(times):
+        p = grab_frame(path, t, workdir / f"end{k:02d}.jpg", 256)
+        if p:
+            content += [{"type": "text", "text": f"{t:.2f}s"},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}}]
+    content.append({"type": "text", "text": (
+        "does this video end with a platform end screen, added by the app it was saved from? Instagram's: the last "
+        "frame of the video gets dimmed (darker) and the Instagram logo and the creator's @username appear in the "
+        "middle. TikTok's: a black screen with the TikTok logo and the @username, sometimes animated. Other apps "
+        "(YouTube Shorts, CapCut, Snapchat) add similar logo cards. Give the time of the first frame that's part of "
+        "the end screen (where the dimming or the cut to the logo begins). A logo or @handle watermark sitting in a "
+        "corner while the video plays is not an end screen.")})
+    try:
+        result = ask_claude("You check short videos for app-added end screens.", content, END_SCREEN_SCHEMA,
+                            "end screen", effort="medium")
+    except Exception as e:  # noqa: BLE001
+        print(f"end screen check failed: {type(e).__name__}: {e}")
+        return None
+    d = result["data"]
+    start = float(d.get("starts_at") or -1)
+    if not d.get("end_screen") or start <= 0.5 or start >= duration - 0.1:
+        return None
+    print(f"end screen from {start:.2f}s of {duration:.2f}s (${result['cost_usd']})")
+    return start
+
+
+def drop_end_screen(path: Path, duration: float, workdir: Path) -> float:
+    """Trims a platform end screen off the inspo, in place, so nothing after it (shots, speech, style,
+    the inspo's own audio) is ever used. Returns the video's length without it."""
+    end = content_end(path, duration, workdir)
+    if end is None:
+        return duration
+    trimmed = workdir / "trimmed.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(path), "-t", f"{end:.3f}", "-map", "0:v:0", "-map", "0:a?",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-c:a", "aac", "-b:a", "192k",
+                    str(trimmed)], check=True, capture_output=True)
+    trimmed.replace(path)
+    return probe(path)["duration"]
+
+
 def analyze_path(path: Path) -> dict:
     """Everything after the file is on disk. Returns the website's Breakdown shape."""
     started = time.time()
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         info = probe(path)
-        duration = info["duration"]
+        report("finding every cut", 10)
+        full = info["duration"]
+        duration = drop_end_screen(path, full, workdir)
 
         report("finding every cut", 15)
         shots = detect_shots(path, duration)
@@ -678,6 +738,8 @@ def analyze_path(path: Path) -> dict:
         "model": result["model"],
         "usage": result["usage"],
         "costUsd": result["cost_usd"],
+        # The app's end screen (Instagram / TikTok), trimmed off before anything else.
+        "contentEndS": r2(duration), "endScreenS": r2(full - duration),
         "frames": sum(len(f) for f in frames),
         "seconds": round(time.time() - started, 1),
     }
@@ -3808,6 +3870,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     shots = breakdown["shots"]
     for s in shots:  # analyses from before watermarks were left out
         s["onScreenText"] = edit_text(s.get("onScreenText")) or None
+    check_end_screen = bool(req["inspo"].get("storageKey")) and "contentEndS" not in (breakdown.get("meta") or {})
     n = len(shots)
     options = req["options"]
     text_opts = options["text"]
@@ -3838,6 +3901,19 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         downloads.append((req["audio"]["storageKey"], own_audio))
     with ThreadPoolExecutor(6) as pool:
         list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
+
+    if check_end_screen:
+        # Analyzed before end screens were trimmed: leave out any shots of the app's end screen.
+        end = content_end(inspo_path, probe(inspo_path)["duration"], workdir)
+        if end is not None:
+            kept = [s for s in shots if s["startS"] < end - 0.3]
+            if kept:
+                last = kept[-1]
+                last["durationS"] = r2(min(last["durationS"], end - last["startS"]))
+                print(f"left out the end screen: {len(shots) - len(kept)} shot(s) after {end:.2f}s")
+                shots = kept
+                breakdown = {**breakdown, "shots": shots, "shotCount": len(shots), "durationS": r2(end)}
+                n = len(shots)
 
     clips = []
     for i, c in enumerate(req["clips"]):
