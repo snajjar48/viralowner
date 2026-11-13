@@ -186,45 +186,56 @@ export function makeVideoThumbnail(file: File, width = 360, timeoutMs = 8_000): 
     const url = URL.createObjectURL(file);
     const video = document.createElement("video");
     let done = false;
+    let grabTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (blob: Blob | null) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      clearTimeout(grabTimer);
+      video.pause();
       video.removeAttribute("src");
       video.load();
+      video.remove();
       URL.revokeObjectURL(url);
       resolve(blob);
     };
     const timer = setTimeout(() => finish(null), timeoutMs);
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-    video.onloadedmetadata = () => {
-      // A moment in, past any black first frame.
-      video.currentTime = Math.min(0.5, (video.duration || 1) / 3);
-    };
-    video.onseeked = () => {
+    const grab = () => {
       try {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) return;
         const height = Math.round((width * 16) / 9);
         const canvas = document.createElement("canvas");
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext("2d");
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        if (!ctx || !vw || !vh) return finish(null);
+        if (!ctx) return finish(null);
         // Cover the 9:16 frame, like the finished video.
         const scale = Math.max(width / vw, height / vh);
-        const dw = vw * scale;
-        const dh = vh * scale;
-        ctx.drawImage(video, (width - dw) / 2, (height - dh) / 2, dw, dh);
+        ctx.drawImage(video, (width - vw * scale) / 2, (height - vh * scale) / 2, vw * scale, vh * scale);
         canvas.toBlob((b) => finish(b), "image/jpeg", 0.78);
       } catch {
         finish(null);
       }
     };
+    // Some browsers only decode a video that's on the page, and some never finish a seek on a
+    // video that hasn't played: keep it on the page (invisible), nudge it to play, and if the seek
+    // doesn't land, take whatever frame is showing.
+    video.style.cssText = "position:fixed;left:-9999px;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.preload = "auto";
+    video.onloadeddata = () => {
+      video.currentTime = Math.min(0.5, (video.duration || 1) / 3); // past any black first frame
+      grabTimer = setTimeout(grab, 2_000);
+    };
+    video.onseeked = grab;
     video.onerror = () => finish(null);
+    document.body.appendChild(video);
     video.src = url;
+    video.play().then(() => video.pause()).catch(() => {});
   });
 }
 

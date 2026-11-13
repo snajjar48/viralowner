@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { readMp4Duration } from "./mp4";
 import { createClip, getClip, markClipFailed, markClipUploaded, type Clip } from "./projects";
+import { workerFetch } from "./worker";
 import {
   completeMultipartUpload,
   createDownloadUrl,
@@ -73,8 +74,20 @@ export async function startClipUpload(
   return { clip, upload, multipart, thumb };
 }
 
+/**
+ * Asks the worker to make a clip's still from the uploaded file (when the browser couldn't).
+ * Best effort: the page falls back to the video itself.
+ */
+async function requestThumb(clipKey: string) {
+  try {
+    await workerFetch("/jobs/thumb", { method: "POST", body: { storageKey: clipKey }, timeoutMs: 15_000 });
+  } catch (error) {
+    console.error("Requesting a clip still failed:", error);
+  }
+}
+
 /** After upload: checks the stored file for real, then marks the clip ready. */
-export async function completeClip(projectId: string, clipId: string, uploadId?: string) {
+export async function completeClip(projectId: string, clipId: string, uploadId?: string, hasThumb = true) {
   const clip = await getClip(projectId, clipId);
   if (!clip) return { status: 404, body: { error: "we couldn’t find that clip." } };
   if (clip.status === "uploaded") return { status: 200, body: { clip } };
@@ -104,5 +117,12 @@ export async function completeClip(projectId: string, clipId: string, uploadId?:
 
   const rounded = Math.round(durationS * 100) / 100;
   await markClipUploaded(clip.id, rounded, head.sizeBytes);
-  return { status: 200, body: { clip: { ...clip, status: "uploaded", durationS: rounded, sizeBytes: head.sizeBytes } } };
+  if (!hasThumb) await requestThumb(clip.storageKey);
+  return {
+    status: 200,
+    body: {
+      clip: { ...clip, status: "uploaded", durationS: rounded, sizeBytes: head.sizeBytes },
+      thumbUrl: await clipThumbUrl(clip.storageKey),
+    },
+  };
 }

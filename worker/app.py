@@ -1500,6 +1500,12 @@ def avoid_reused_footage(plan: list[dict], clips: list[dict], pinned: list[bool]
     for p, pin in zip(plan, pinned):
         if pin:
             continue
+        if used[p["clip"]]:
+            # This clip already fills a shot: give this one a clip nobody uses yet, if there is one.
+            fresh = [ci for ci in range(len(clips)) if not used[ci] and clips[ci]["duration"] >= min(p["take"], 1.0)]
+            if fresh:
+                ci = max(fresh, key=lambda c: clips[c]["duration"])
+                p["clip"], p["start"] = ci, min(0.3, max(0.0, clips[ci]["duration"] - p["take"]))
         span = (p["start"], p["start"] + p["take"])
         if overlaps(span, used[p["clip"]]):
             start = unused_start(used[p["clip"]], clips[p["clip"]]["duration"], p["take"], p["start"])
@@ -3146,7 +3152,7 @@ How the video is built: a list of shots, played in the order you give them. Each
 
 Editing craft:
 - The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
-- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Never show the same thing twice: use each clip once, as one shot or a run of shots in a row (cutting within one action is fine), and never come back to a clip after cutting away from it (no teaser of the ending at the start that then plays again later). No two shots may use overlapping parts of a clip. The one exception is someone talking to the camera: the edit can cut away from their clip and back to it. If the footage runs out before the length the user asked for, make the video shorter and say so.
+- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Use each clip for exactly one shot: never two shots from the same clip, whether in a row or later on (no teaser of the ending at the start that plays again later), because viewers see it as the same footage twice. Pick the single best stretch of each clip; a shot can run longer to hold a moment. The one exception is a clip of someone talking to the camera: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
 - Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
 - Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
@@ -3425,9 +3431,8 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
     used: dict[int, list[tuple[float, float]]] = {}
     kept_shots = []
     for sh in shots:
-        if (talking is not None and sh["clip"] in used and sh["clip"] not in talking and kept_shots
-                and kept_shots[-1]["clip"] != sh["clip"]):
-            print(f"scratch: left out a shot going back to clip {sh['clip'] + 1}")
+        if talking is not None and sh["clip"] in used and sh["clip"] not in talking:
+            print(f"scratch: left out a second shot from clip {sh['clip'] + 1}")
             continue
         spans = used.setdefault(sh["clip"], [])
         length = sh["end"] - sh["start"]
@@ -3491,15 +3496,15 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
 
 
 def reuse_problems(shots: list[dict], talking: set[int]) -> list[str]:
-    """Where a plan shows the same thing twice: overlapping parts of a clip, or going back to a clip
-    after cutting away (fine only for a clip of someone talking)."""
+    """Where a plan shows the same thing twice: overlapping parts of a clip, or a clip used for more
+    than one shot (fine only for a clip of someone talking)."""
     problems, last, spans = [], {}, {}
     for i, sh in enumerate(shots):
         c = sh["clip"]
         if overlaps((sh["start"], sh["end"]), spans.get(c, [])):
             problems.append(f"shot {i + 1} repeats part of clip {c + 1} that's already used")
-        elif c in last and last[c] != i - 1 and c not in talking:
-            problems.append(f"shot {i + 1} goes back to clip {c + 1}, already shown in shot {last[c] + 1}")
+        elif c in last and c not in talking:
+            problems.append(f"shot {i + 1} uses clip {c + 1} again (already shot {last[c] + 1}); each clip gets one shot")
         spans.setdefault(c, []).append((sh["start"], sh["end"]))
         last[c] = i
     return problems
@@ -4425,6 +4430,29 @@ def download(key: str, dest: str):
     print(f"saved {dest}")
 
 
+CLIP_KEY_RE = r"^u/[A-Za-z0-9_-]+/p/[A-Za-z0-9_-]+/clips/[A-Za-z0-9_-]+\.(mp4|mov|m4v|webm)$"
+
+
+@app.function(image=image, secrets=secrets, timeout=120)
+def thumb_job(key: str) -> dict:
+    """A clip's still (<key>.jpg), for when the browser couldn't make one. ffmpeg reads the clip
+    straight from storage, only the parts it needs (no full download)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        url = r2_client().generate_presigned_url(
+            "get_object", Params={"Bucket": os.environ["R2_BUCKET"], "Key": key}, ExpiresIn=600)
+        info = json.loads(run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                               "stream=color_transfer:format=duration", "-of", "json", url]))
+        hdr = (info.get("streams") or [{}])[0].get("color_transfer") in ("arib-std-b67", "smpte2084")
+        t = min(0.5, float(info.get("format", {}).get("duration") or 1) / 3)
+        out = Path(tmp) / "thumb.jpg"
+        vf = ",".join([*([tonemap_filter()] if hdr else []),
+                       "scale=360:640:force_original_aspect_ratio=increase", "crop=360:640"])
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.2f}", "-i", url, "-frames:v", "1", "-vf", vf,
+                        "-q:v", "4", str(out)], check=True, capture_output=True)
+        r2_client().upload_file(str(out), os.environ["R2_BUCKET"], f"{key}.jpg", ExtraArgs={"ContentType": "image/jpeg"})
+    return {"ok": True}
+
+
 @app.function(image=image, secrets=secrets, timeout=120)
 def ping_job() -> dict:
     """Test job: walks through the stages so the website can follow along."""
@@ -4509,6 +4537,14 @@ def api():
         if problem:
             raise HTTPException(status_code=400, detail=problem)
         return started(render_job.spawn(req))
+
+    @web.post("/jobs/thumb", dependencies=[Depends(require_token)])
+    def start_thumb(storage_key: str = Body(embed=True, alias="storageKey")) -> dict:
+        import re
+
+        if not re.match(CLIP_KEY_RE, storage_key) or ".." in storage_key:
+            raise HTTPException(status_code=400, detail="invalid storage key")
+        return started(thumb_job.spawn(storage_key))
 
     @web.post("/jobs/ping", dependencies=[Depends(require_token)])
     def start_ping() -> dict:

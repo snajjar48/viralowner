@@ -178,10 +178,12 @@ export function ClipsManager({
         await uploadToSignedUrl(file, upload, onProgress, controller.signal);
       }
       patch(key, { status: "verifying" });
+      // Without a still made here, the server has one made from the uploaded file.
+      const hasThumb = () => !!itemsRef.current.find((i) => i.key === key)?.thumbUrl || thumbs.current.has(key);
       const complete = (id?: string) =>
-        postJson<{ clip: { durationS: number } }>(
+        postJson<{ clip: { durationS: number }; thumbUrl?: string }>(
           `/api/projects/${projectId}/clips/${clip.id}/complete`,
-          id ? { uploadId: id } : undefined,
+          { ...(id ? { uploadId: id } : {}), hasThumb: hasThumb() },
         );
       let done;
       try {
@@ -195,6 +197,7 @@ export function ClipsManager({
         done = await complete();
       }
       patch(key, { status: "uploaded", percent: 100, durationS: done.clip.durationS });
+      if (!hasThumb() && done.thumbUrl) void waitForThumb(key, done.thumbUrl);
     } catch (e) {
       if (controller.signal.aborted) return; // removed by the user
       patch(key, {
@@ -217,14 +220,34 @@ export function ClipsManager({
 
   /** Makes stills for newly picked clips, one at a time (each decodes a bit of video). */
   async function makeThumbs(keys: string[]) {
-    for (const key of keys) {
+    const missed: string[] = [];
+    const make = async (key: string, timeoutMs: number) => {
       const file = files.current.get(key);
-      if (!file) continue;
-      const blob = await makeVideoThumbnail(file);
-      if (!blob || !files.current.has(key)) continue;
+      if (!file) return true;
+      const blob = await makeVideoThumbnail(file, 360, timeoutMs);
+      if (!blob || !files.current.has(key)) return false;
       thumbs.current.set(key, blob);
       patch(key, { thumbUrl: URL.createObjectURL(blob) });
       saveThumb(key);
+      return true;
+    };
+    for (const key of keys) if (!(await make(key, 8_000))) missed.push(key);
+    // A second try for any that didn't work (the first often loses out to everything starting at once).
+    for (const key of missed) await make(key, 15_000);
+  }
+
+  /** Shows the still the server is making once it's ready (checks every couple of seconds for a while). */
+  async function waitForThumb(key: string, url: string) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise((r) => setTimeout(r, attempt ? 2500 : 1500));
+      if (!itemsRef.current.some((i) => i.key === key) || itemsRef.current.find((i) => i.key === key)?.thumbUrl) return;
+      const ok = await new Promise<boolean>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = url; // (a signed link: adding anything to it would break the signature)
+      });
+      if (ok) return patch(key, { thumbUrl: url });
     }
   }
 

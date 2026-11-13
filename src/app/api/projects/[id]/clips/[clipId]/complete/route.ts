@@ -10,7 +10,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     const { clipId } = await ctx.params;
     const body = await readJson(request);
     const uploadId = typeof body?.uploadId === "string" && body.uploadId.length < 1024 ? body.uploadId : undefined;
-    const result = await completeClip(project.id, clipId, uploadId);
+    // hasThumb: false when the browser couldn't make the clip's still (the worker makes it instead).
+    const result = await completeClip(project.id, clipId, uploadId, body?.hasThumb !== false);
     return Response.json(result.body, { status: result.status });
   });
 }
