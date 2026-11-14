@@ -15,7 +15,7 @@ const PUBLIC_PATHS = new Set([
 ]);
 
 // Pages that also need a signed-in account (on top of the site password).
-const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/scratch", "/projects", "/plans", "/reset-password"];
+const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/scratch", "/projects", "/plans", "/business", "/reset-password"];
 
 function needsAccount(pathname: string) {
   return ACCOUNT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));

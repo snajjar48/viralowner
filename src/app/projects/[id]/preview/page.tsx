@@ -85,6 +85,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           settings: current.settings,
           shots: current.plan?.jumpcut ? [] : (current.plan?.shots ?? current.settings.shots ?? []),
           note: current.plan?.note ?? null,
+          captionText: current.settings.options.captions.enabled ? (current.plan?.captionText ?? null) : null,
         }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}

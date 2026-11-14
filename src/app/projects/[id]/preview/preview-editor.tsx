@@ -40,7 +40,15 @@ export function PreviewEditor({
   projectId: string;
   versions: number[];
   /** `shots`: what this version actually used (the engine's picks filled in). */
-  current: { version: number; videoUrl: string; settings: RenderSettings; shots: ShotEdit[]; note: string | null };
+  current: {
+    version: number;
+    videoUrl: string;
+    settings: RenderSettings;
+    shots: ShotEdit[];
+    note: string | null;
+    /** The captions as shown in this version (null if it has none). */
+    captionText: string | null;
+  };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
   shots: Shot[];
@@ -201,6 +209,10 @@ export function PreviewEditor({
         )}
 
         <ChangesLeft changes={changes} />
+
+        {current.captionText && (
+          <CaptionWords key={current.version} projectId={projectId} version={current.version} text={current.captionText} />
+        )}
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">
@@ -382,5 +394,65 @@ function TrimInput({
         className={`${inputClass} h-10 px-3 text-sm`}
       />
     </div>
+  );
+}
+
+/**
+ * The captions as plain text: fix any word and we remake the same edit with the new words
+ * (same clips, cuts and text). Doesn't use up a change.
+ */
+function CaptionWords({ projectId, version, text }: { projectId: string; version: number; text: string }) {
+  const router = useRouter();
+  const [value, setValue] = useState(text);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const changed = value.trim() !== text.trim();
+
+  async function save() {
+    setBusy(true);
+    setError("");
+    try {
+      const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
+        mode: "captions",
+        fromVersion: version,
+        text: value,
+      });
+      router.push(`/projects/${projectId}/status?render=${renderId}`);
+    } catch (e) {
+      const activeId = activeRenderIdFrom(e);
+      if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
+      setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section title="caption words" aside={<span className="text-xs text-muted">free fix</span>}>
+      <label htmlFor="caption-words" className="text-sm text-muted">
+        a word wrong? fix it here and we’ll remake this version with your words. everything else stays the same, and
+        it doesn’t use up a change.
+      </label>
+      <textarea
+        id="caption-words"
+        value={value}
+        rows={4}
+        maxLength={5000}
+        onChange={(e) => setValue(e.target.value)}
+        className={`${inputClass} h-auto py-3 leading-relaxed`}
+      />
+      {error && (
+        <p role="alert" className="text-sm text-coral">
+          {error}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={save}
+        disabled={!changed || busy}
+        className="h-11 cursor-pointer rounded-full bg-white/10 px-5 text-sm font-medium transition hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {busy ? "starting…" : "fix the captions"}
+      </button>
+    </Section>
   );
 }

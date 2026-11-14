@@ -599,6 +599,29 @@ def clean_caption_fixes(*lists) -> list[dict]:
     return list(out.values())[-40:]
 
 
+def fixes_from_edit(before: str, after: str) -> list[dict]:
+    """The user retyped the captions: each changed stretch as a fix (wrong -> right). A word added or
+    taken out takes its neighbor along, so the fix still has something to find in the captions."""
+    from difflib import SequenceMatcher
+
+    a, b = before.split(), after.split()
+    fixes = []
+    for op, i1, i2, j1, j2 in SequenceMatcher(a=[w.lower() for w in a], b=[w.lower() for w in b], autojunk=False).get_opcodes():
+        if op == "equal":
+            # Same words, different capitals or punctuation (e.g. "fat-free" vs "fat free" is a replace).
+            for k in range(i2 - i1):
+                if a[i1 + k] != b[j1 + k]:
+                    fixes.append({"wrong": a[i1 + k], "right": b[j1 + k]})
+            continue
+        if i1 == i2 or j1 == j2:  # added or taken out: attach the word before (or after)
+            if i1 > 0:
+                i1, j1 = i1 - 1, j1 - 1
+            elif i2 < len(a):
+                i2, j2 = i2 + 1, j2 + 1
+        fixes.append({"wrong": " ".join(a[i1:i2]), "right": " ".join(b[j1:j2])})
+    return [f for f in fixes if f["wrong"].strip()][:40]
+
+
 def apply_caption_fixes(words: list[dict], fixes: list[dict]) -> list[dict]:
     """Swaps each wrong word (or run of words) in the captions for what the user says it should be.
     The new words share the old ones' time, so the captions stay in sync."""
@@ -620,8 +643,9 @@ def apply_caption_fixes(words: list[dict], fixes: list[dict]) -> list[dict]:
             span = words[i:k] if joined == want and k > i else []
             if span:
                 s0, e1 = span[0]["s"], span[-1]["e"]
-                lead = re.match(r"^[^\w']*", span[0]["w"]).group()
-                trail = re.search(r"[^\w']*$", span[-1]["w"]).group()
+                # The old punctuation stays only when the fix didn't include it ("-free" -> "free" drops the dash).
+                lead = "" if re.match(r"^[^\w']", f["wrong"]) else re.match(r"^[^\w']*", span[0]["w"]).group()
+                trail = "" if re.search(r"[^\w']$", f["wrong"]) else re.search(r"[^\w']*$", span[-1]["w"]).group()
                 step = (e1 - s0) / max(1, len(right))
                 for k, t in enumerate(right):
                     text = (lead if k == 0 else "") + t
@@ -3801,7 +3825,8 @@ def r2_fetch(key: str, dest: Path) -> None:
 
 
 def r2_store(path: Path, key: str) -> None:
-    r2_client().upload_file(str(path), os.environ["R2_BUCKET"], key, ExtraArgs={"ContentType": "video/mp4"})
+    kind = "image/jpeg" if path.suffix.lower() in (".jpg", ".jpeg") else "video/mp4"
+    r2_client().upload_file(str(path), os.environ["R2_BUCKET"], key, ExtraArgs={"ContentType": kind})
 
 
 def layout_from(src: dict | None, n: int) -> dict:
@@ -4315,6 +4340,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     base = req.get("previous") if isinstance(req.get("previous"), dict) else None
     cost = 0.0
     prefs = standing_preferences(req.get("history"))  # what this user has asked for before
+    business = (req.get("business") or "").strip()[:900] if isinstance(req.get("business"), str) else ""
+    director_context = prefs + (("\n\nabout the user's business:\n" + business) if business else "")
 
     report("analyzing", 3)
     prev_path = workdir / "previous.mp4"
@@ -4405,7 +4432,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         report("matching", 20)
         result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                              prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")),
-                             prefs=prefs)
+                             prefs=director_context)
         cost += result["cost_usd"]
         # Checked before clean_director's own fix-up, which can only move or drop shots.
         talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
@@ -4418,7 +4445,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             again = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                                 prev_frames, request, bool(req.get("fresh")),
                                 bool((options.get("captions") or {}).get("enabled")), fix=(result["data"], problems),
-                                prefs=prefs)
+                                prefs=director_context)
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
@@ -4497,11 +4524,15 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     notes = (options.get("notes") or "").strip()[:600]
     # What this user has asked for before, applied without them having to ask again.
     prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
-    guide = with_preferences(notes, prefs)
+    # The user's business profile (name, what they sell, words to always spell their way).
+    business = (req.get("business") or "").strip()[:900] if isinstance(req.get("business"), str) else ""
+    effects_guide = with_preferences(notes, prefs)
+    guide = effects_guide + (("\n\nabout the user's business:\n" + business) if business else "")
     music = options["music"]["mode"]
     caption_style = options["captions"]["style"] if options["captions"]["enabled"] else None
     # What the video is about, so captions spell the business, products and names right.
-    speech_hint = (req.get("speechHint") or notes or "").strip()[:600]
+    speech_hint = "\n".join(x for x in ((req.get("business") or "") if isinstance(req.get("business"), str) else "",
+                                         (req.get("speechHint") or notes or "")) if x.strip()).strip()[:900]
     request = (req.get("request") or "").strip()[:600]
     previous = req.get("previous") if request else None
     cost = 0.0
@@ -4574,7 +4605,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # One take, pauses cut out: the cuts come from the user's take, not the inspo's timing.
     jump = inspo_style.get("editType") == "jump_cut"
     carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
-    caption_fixes = clean_caption_fixes(((previous or {}).get("plan") or {}).get("captionFixes"), carry.get("captionFixes"))
+    edit = carry.get("captionEdit") if isinstance(carry.get("captionEdit"), dict) else None
+    caption_fixes = clean_caption_fixes(
+        ((previous or {}).get("plan") or {}).get("captionFixes"), carry.get("captionFixes"),
+        fixes_from_edit(str(edit.get("before") or ""), str(edit.get("after") or "")) if edit else None)
     caption_groups = clean_caption_groups(((previous or {}).get("plan") or {}).get("captionGroups"), carry.get("captionGroups"))
     inspo_lengths = [s["durationS"] for s in shots]
     lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
@@ -4637,7 +4671,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     given = clean_effects(req.get("effects") or ((previous or {}).get("plan") or {}).get("effects"), n)
     effects = given or effects_from(inspo_style, n, jump)
     effects_note = ""
-    words = request or ("" if given else guide)
+    words = request or ("" if given else effects_guide)
     if words.strip():  # Claude reads every request; it changes nothing when none of it is about effects
         report("analyzing", 6)
         try:
@@ -4668,6 +4702,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         # The number of cuts changed (a jump-cut take was cut again): keep the look, not the per-cut layout.
         keep = {k: v for k, v in keep.items() if k not in ("texts", "textXs", "textYs", "captionYs")}
     layout = layout_from(keep, n)
+    # Captions where the inspo has its own, unless the user says where (their words win later).
+    inspo_cap_y = (inspo_style.get("captions") or {}).get("y") if isinstance(inspo_style.get("captions"), dict) else None
+    cap_y_auto = bool(caption_style and inspo_cap_y is not None and not keep
+                      and all(y is None for y in layout["captionYs"]))
+    if cap_y_auto:
+        layout["captionYs"] = [inspo_cap_y] * n
     style = clean_text_style((keep or {}).get("textStyle") or inspo_text)
     if align_choice:
         style["align"] = align_choice
@@ -4844,6 +4884,21 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     motions = effects["motions"]
     color = effects["colorFilter"]
 
+    if req.get("storyboard"):
+        if caption_style and guide:
+            # What the user said about the captions' place, size and look (the render does the same).
+            _w, rules = proofread_words([{"w": "captions", "s": 0.0, "e": 1.0}], speech_hint, guide)
+            if rules.get("style") == "off":
+                caption_style = None
+            elif rules.get("style"):
+                caption_style = rules["style"]
+            if "y" in rules and (cap_y_auto or all(y is None for y in layout["captionYs"])):
+                layout["captionYs"] = [rules["y"]] * len(layout["captionYs"])
+            if "scale" in rules and abs(layout["captionScale"] - 1) < 0.01:
+                layout["captionScale"] = rules["scale"]
+        return storyboard(req, workdir, store, plan, clips, plan_texts, layout, style, inspo_text, spots, position,
+                          caption_style, keep_lines, effects, post, preset, jump, cost, started)
+
     # ---- editing: cut every shot (with the inspo's motion and color), join them with its transitions
     report("editing", 45)
     seg_paths = [workdir / f"shot{i:02d}.mkv" for i in range(len(plan))]
@@ -4883,8 +4938,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         for seg in segments:
             words += [w for w in seg.get("words") or [] if w.get("w") and w["e"] <= total + 0.5]
         # The additional requests also steer the captions (their words, place, size and look).
-        words, rules = proofread_words(words, speech_hint,
-                                       with_preferences(notes or (req.get("captionInstructions") or "").strip()[:1500], prefs))
+        words, rules = proofread_words(
+            words, speech_hint,
+            with_preferences(notes or (req.get("captionInstructions") or "").strip()[:1500], prefs)
+            + (("\n\nabout the user's business (spell its names and products exactly like this):\n" + business)
+               if business else ""))
         words = apply_caption_fixes(words, caption_fixes)
         caption_groups = clean_caption_groups(caption_groups, rules.get("together"))
         words = glue_phrases(words, caption_groups)
@@ -4893,14 +4951,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 words, caption_style = [], None
             elif rules.get("style"):
                 caption_style = rules["style"]
-            if "y" in rules and all(y is None for y in layout["captionYs"]):
+            if "y" in rules and (cap_y_auto or all(y is None for y in layout["captionYs"])):
                 layout["captionYs"] = [rules["y"]] * len(layout["captionYs"])
             if "scale" in rules and abs(layout["captionScale"] - 1) < 0.01:
                 layout["captionScale"] = rules["scale"]
-        inspo_cap_y = ((inspo_style.get("captions") or {}).get("y")) if isinstance(inspo_style.get("captions"), dict) else None
-        if inspo_cap_y is not None and not keep and all(y is None for y in layout["captionYs"]):
-            # Captions where the inspo has its own (unless the user said where).
-            layout["captionYs"] = [inspo_cap_y] * len(layout["captionYs"])
 
     report("editing", 80)
     faces: list = [[] for _ in plan]
@@ -5035,6 +5089,68 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     }
     # Plain JSON types only (Whisper's timings are numpy numbers).
     return json.loads(json.dumps(out, default=float))
+
+
+def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[dict], plan_texts: list[str],
+               layout: dict, style: dict, inspo_text: dict, spots: list, position: str, caption_style: str | None,
+               keep_lines: bool, effects: dict, post: dict, preset: str | None, jump: bool, cost: float,
+               started: float) -> dict:
+    """The planned edit without making the video: one frame per shot with its on-screen text and a
+    sample of the captions where they'll sit, plus the plan (the real render can reuse it exactly)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    report("editing", 60)
+    with ThreadPoolExecutor(6) as pool:
+        faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), plan))
+    lays, cap_ys = place_text(plan, plan_texts, layout, style, inspo_text["align"], spots, position,
+                              caption_style, faces, keep_lines)
+    folder = req["outputKey"].rsplit("/", 1)[0]
+    sample = [{"w": w, "s": 0.0, "e": 30.0} for w in "your captions show up here".split()]
+    frames = []
+
+    def frame(i: int) -> dict:
+        p = plan[i]
+        clip = clips[p["clip"]]
+        raw = workdir / f"sb{i:02d}.png"
+        vf = ",".join([*([tonemap_filter()] if clip["hdr"] else []),
+                       f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
+                       f"crop={OUT_W}:{OUT_H}", "setsar=1"])
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{p['start'] + p['take'] * 0.4:.3f}", "-i", str(clip["path"]),
+                        "-frames:v", "1", "-vf", vf, str(raw)], capture_output=True)
+        out = workdir / f"sb{i:02d}.jpg"
+        text = (plan_texts[i] or "").strip()
+        timeline = [(0.0, 30.0, text, lays[i])] if text and lays[i] else []
+        ass = build_ass(timeline, style, layout, sample if caption_style else [], caption_style,
+                        lambda _t, y=cap_ys[i]: y)
+        if ass:
+            (workdir / f"sb{i:02d}.ass").write_text(ass, encoding="utf-8")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-i", raw.name, "-vf",
+                        (f"ass=sb{i:02d}.ass," if ass else "") + "scale=540:-2", "-ss", "1.0", "-frames:v", "1",
+                        "-q:v", "3", out.name], cwd=workdir, capture_output=True)
+        key = f"{folder}/shot{i:02d}.jpg"
+        if out.exists():
+            store(out, key)
+        return {"key": key, "durationS": r2(p["duration"]), "text": text}
+
+    with ThreadPoolExecutor(4) as pool:
+        frames = list(pool.map(frame, range(len(plan))))
+    report("finishing", 100)
+    print(f"storyboard: {len(plan)} shots, ${round(cost, 4)}, {round(time.time() - started, 1)}s")
+    return json.loads(json.dumps({
+        "storyboard": frames,
+        "postCopy": post,
+        "plan": {
+            "shots": [{"shotIndex": i, "clipId": clips[p["clip"]]["id"], "trimStartS": r2(p["start"]),
+                       "trimEndS": r2(p["start"] + p["take"])} for i, p in enumerate(plan)],
+            "texts": plan_texts, "textPosition": position, "textLook": look_name(style), "textStyle": style,
+            **({"textPreset": preset} if preset else {}), "keepLines": keep_lines,
+            "textXs": layout["textXs"], "textYs": layout["textYs"], "captionYs": layout["captionYs"],
+            "textScale": layout["textScale"], "captionScale": layout["captionScale"], "effects": effects,
+            **({"jumpcut": [{"clipId": clips[p["clip"]]["id"], "startS": r2(p["start"]), "endS": r2(p["start"] + p["take"])}
+                            for p in plan]} if jump else {}),
+        },
+        "meta": {"costUsd": round(cost, 4), "seconds": round(time.time() - started, 1)},
+    }, default=float))
 
 
 def check_render_request(req: dict) -> str | None:

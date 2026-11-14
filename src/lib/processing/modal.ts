@@ -10,6 +10,8 @@ import {
   type TextStyle,
   type JobStage,
   type JobStatus,
+  type PostCopy,
+  type RenderInput,
   type ProcessingEngine,
   type RenderOutput,
   type RenderPlan,
@@ -157,6 +159,76 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
 }
 
 /** Where a render's MP4 goes: in the same user's project folder as its inspo or clips. */
+/** What the worker needs to plan and make a version (everything but where it goes and who to tell). */
+function renderFields(input: RenderInput) {
+  return {
+    ...(input.inspo ? { inspo: input.inspo } : {}),
+    ...(input.scratch ? { scratch: input.scratch } : {}),
+    clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey })),
+    shots: input.settings.shots,
+    options: input.settings.options,
+    reuse: input.reuseText ?? null,
+    fresh: !!input.fresh,
+    request: input.request ?? null,
+    previous: input.previous ?? null,
+    cuts: input.cuts ?? null,
+    audio: input.audio ?? null,
+    effects: input.effects ?? null,
+    carry: input.settings.carry ?? null,
+    history: input.history ?? [],
+    business: input.business ?? "",
+    ...(input.writePost ? { writePost: true } : {}),
+  };
+}
+
+/**
+ * The storyboard: the planned edit without the video (a frame per shot with its text and the
+ * captions' place). Frames are saved next to the project's other files.
+ */
+export async function startStoryboardJob(input: RenderInput, storyboardId: string) {
+  const folder = /^u\/[^/]+\/p\/[^/]+\//.exec(input.inspo?.storageKey ?? input.clips[0].storageKey)?.[0];
+  if (!folder) throw new Error("Unexpected storage key for a storyboard");
+  return workerFetch<{ jobId: string }>("/jobs/render", {
+    method: "POST",
+    timeoutMs: 30_000,
+    body: { outputKey: `${folder}storyboards/${storyboardId}/plan.mp4`, ...renderFields(input), storyboard: true },
+  });
+}
+
+export interface StoryboardResult {
+  frames: { key: string; durationS: number; text: string }[];
+  plan: RenderPlan;
+  postCopy: PostCopy;
+}
+
+/** How a storyboard job is going; its frames and plan when done. */
+export async function getStoryboardJob(
+  jobId: string,
+): Promise<{ state: "queued" | "processing" | "done" | "failed"; progress: number; result?: StoryboardResult; error?: string }> {
+  let job: WorkerJob;
+  try {
+    job = await workerFetch<WorkerJob>(`/jobs/${encodeURIComponent(jobId)}`);
+  } catch (error) {
+    if (error instanceof WorkerError && error.status === 404) return { state: "failed", progress: 0, error: LOST_RENDER };
+    throw error;
+  }
+  if (job.state !== "done") return { state: job.state, progress: job.progress, error: job.error };
+  const o = job.output as { storyboard?: unknown; plan?: unknown; postCopy?: PostCopy } | undefined;
+  const plan = parsePlan(o?.plan);
+  const frames = Array.isArray(o?.storyboard)
+    ? (o.storyboard as { key?: unknown; durationS?: unknown; text?: unknown }[]).filter(
+        (f): f is { key: string; durationS: number; text: string } =>
+          typeof f?.key === "string" && f.key.startsWith("u/") && isNum(f.durationS),
+      )
+    : [];
+  if (!plan || !frames.length) return { state: "failed", progress: 0, error: "we couldn’t plan this video. please try again." };
+  return {
+    state: "done",
+    progress: 100,
+    result: { frames: frames.map((f) => ({ ...f, text: str(f.text) })), plan, postCopy: o?.postCopy ?? { caption: "", hashtags: [] } },
+  };
+}
+
 function outputKeyFor(fileKey: string, version: number, renderId: string) {
   const folder = /^u\/[^/]+\/p\/[^/]+\//.exec(fileKey)?.[0];
   if (!folder) throw new Error("Unexpected storage key for a render");
@@ -198,21 +270,7 @@ export const modalEngine: ProcessingEngine = {
       timeoutMs: 30_000,
       body: {
         outputKey: outputKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey, input.version, input.renderId),
-        ...(input.inspo ? { inspo: input.inspo } : {}),
-        ...(input.scratch ? { scratch: input.scratch } : {}),
-        clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey })),
-        shots: input.settings.shots,
-        options: input.settings.options,
-        reuse: input.reuseText ?? null,
-        fresh: !!input.fresh,
-        request: input.request ?? null,
-        previous: input.previous ?? null,
-        cuts: input.cuts ?? null,
-        audio: input.audio ?? null,
-        effects: input.effects ?? null,
-        carry: input.settings.carry ?? null,
-        history: input.history ?? [],
-        // The worker calls this when the video is done, so we can email the user.
+        ...renderFields(input),
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
     });

@@ -101,6 +101,9 @@ async function Account() {
           )}
         </div>
       )}
+      <Link href="/business" className="text-sm text-muted underline underline-offset-4 hover:text-foreground">
+        your business
+      </Link>
       {membership.hasCustomer && membership.plan && <ManageBillingButton />}
       <Projects userId={user.id} />
     </>

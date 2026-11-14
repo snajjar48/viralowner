@@ -4,7 +4,9 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageTitle } from "@/components/flow-shell";
 import { buttonClass } from "@/components/form";
+import { BusinessPrompt } from "@/components/business-prompt";
 import { getUserId } from "@/lib/auth";
+import { getBusiness, hasBusiness } from "@/lib/business";
 import { canStartVideo, canUseScratch, getMembership } from "@/lib/membership";
 import { ManageBillingButton } from "../dashboard/manage-billing-button";
 import { PromptStart } from "./prompt-start";
@@ -72,6 +74,7 @@ async function Start() {
         title="what video do you have in mind?"
         subtitle="tell us like you’d tell an editor: what it’s for, what to show, the vibe, any words or effects you want. next you’ll add your clips."
       />
+      {!hasBusiness(await getBusiness(userId)) && <BusinessPrompt />}
       <PromptStart />
     </>
   );

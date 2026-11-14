@@ -10,6 +10,7 @@ import { ROLE_LABELS } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import type { VideoOptions } from "@/lib/video-options";
+import { Storyboard } from "./storyboard";
 
 export interface OptionClip {
   id: string;
@@ -46,6 +47,9 @@ export function OptionsForm({
   const [making, setMaking] = useState(false);
   const [error, setError] = useState("");
   const first = useRef(true);
+  // A storyboard made from these exact options and clips: "make my video" makes that plan.
+  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string } | null>(null);
+  const madeFrom = JSON.stringify([options, clips.map((c) => [c.id, c.shotIndex])]);
 
   // Save a moment after each change, so going back or refreshing keeps it.
   useEffect(() => {
@@ -91,9 +95,11 @@ export function OptionsForm({
     setMaking(true);
     setError("");
     try {
+      const usePlan = plan && plan.madeFrom === madeFrom ? plan.jobId : undefined;
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
         mode: "new",
         options,
+        ...(usePlan ? { storyboard: usePlan } : {}),
       });
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
@@ -154,6 +160,15 @@ export function OptionsForm({
           })}
         </ul>
       </details>
+
+      <Storyboard
+        projectId={projectId}
+        options={options}
+        madeFrom={madeFrom}
+        stale={!!plan && plan.madeFrom !== madeFrom}
+        disabled={making || !!problem}
+        onPlan={setPlan}
+      />
 
       <p className="min-h-5 text-center text-xs text-muted" aria-live="polite">
         {save === "saving" ? "saving…" : save === "saved" ? "all changes saved" : save === "error" ? "couldn’t save. check your connection." : ""}

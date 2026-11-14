@@ -4,7 +4,9 @@ import { Suspense } from "react";
 import { FlowShell, PageTitle } from "@/components/flow-shell";
 import { buttonClass } from "@/components/form";
 import { InspoUploader } from "@/components/inspo-uploader";
+import { BusinessPrompt } from "@/components/business-prompt";
 import { getUserId } from "@/lib/auth";
+import { getBusiness, hasBusiness } from "@/lib/business";
 import { canStartVideo, getMembership } from "@/lib/membership";
 
 export const metadata: Metadata = {
@@ -42,6 +44,7 @@ async function Start() {
         title={can?.as === "trial" ? "let’s make your free video" : "which video do you want to recreate?"}
         subtitle="upload a video you love. we’ll break down every shot so you can film your own spin on it."
       />
+      {userId && !hasBusiness(await getBusiness(userId)) && <BusinessPrompt />}
       <InspoUploader />
     </>
   );

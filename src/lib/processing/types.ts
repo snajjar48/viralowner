@@ -155,6 +155,8 @@ export interface Carry {
   captionFixes?: CaptionFix[];
   /** Phrases the user wants shown together in one caption. */
   captionGroups?: string[];
+  /** The captions' words as the user retyped them (one time: the worker turns it into captionFixes). */
+  captionEdit?: { before: string; after: string };
 }
 
 /** The words chosen for a version, reused by later versions that don't change the text options. */
@@ -202,6 +204,10 @@ export interface RenderInput {
   effects?: Record<string, unknown>;
   /** Everything the user asked for in earlier videos, oldest first (their standing preferences are learned from it). */
   history?: string[];
+  /** The user's business (name, what they sell, words to spell their way), for every video. */
+  business?: string;
+  /** Write the post caption from the finished video even though the words are reused (made from a storyboard). */
+  writePost?: boolean;
 }
 
 export type JobStage = "analyzing" | "matching" | "editing" | "finishing";

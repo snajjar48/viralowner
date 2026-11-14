@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AudioUploader, type UploadedAudio } from "@/components/audio-uploader";
 import { ConsentCheckbox } from "@/components/consent-checkbox";
+import { QuickAdd } from "@/components/quick-add";
 import { buttonClass, inputClass } from "@/components/form";
 import { SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem, Section } from "@/components/options-fields";
@@ -125,9 +126,17 @@ export function ScratchCreate({
             onChange={(e) => setPrompt(e.target.value)}
             className={`${inputClass} h-auto py-3 leading-relaxed`}
           />
-          <span className="self-end text-xs text-muted tabular-nums">
-            {prompt.length}/{PROMPT_MAX}
-          </span>
+          <div className="flex items-start justify-between gap-3">
+            <QuickAdd
+              value={prompt}
+              onChange={setPrompt}
+              max={PROMPT_MAX}
+              options={["no slow motion", "all lowercase text", "center the captions", "no emoji", "cut it to the beat", "keep it under 15 seconds"]}
+            />
+            <span className="shrink-0 text-xs text-muted tabular-nums">
+              {prompt.length}/{PROMPT_MAX}
+            </span>
+          </div>
         </Section>
 
         <ClipsManager

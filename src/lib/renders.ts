@@ -1,6 +1,8 @@
 import "server-only";
+import { businessText, getBusinessForProject } from "./business";
 import { resetRenderEmail } from "./notify";
 import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit } from "./processing";
+import { startStoryboardJob } from "./processing/modal";
 import {
   createRender,
   getActiveRender,
@@ -66,7 +68,7 @@ export const newSeed = () => Math.floor(Math.random() * 2 ** 31);
  * Creates the next version and hands it to the processing engine.
  * Requirements are re-checked here (the browser can't be trusted).
  */
-type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts" | "audio" | "effects">;
+type Extras = Pick<RenderInput, "reuseText" | "fresh" | "request" | "previous" | "cuts" | "audio" | "effects" | "writePost">;
 
 /** The user's own audio file, when this version uses it. */
 function audioFor(project: Project, settings: RenderSettings): Extras {
@@ -130,6 +132,52 @@ export async function startScratchRender(
   return { render };
 }
 
+/**
+ * The storyboard for a first version: the edit planned from the step 2 assignments and these
+ * options, without making the video. Returns the worker's job id.
+ */
+export async function startStoryboard(
+  userId: string,
+  project: Project,
+  options: VideoOptions,
+): Promise<{ jobId: string } | Fail> {
+  const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
+  if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "your inspo isn’t analyzed yet." };
+  const uploaded = clips.filter((c) => c.status === "uploaded");
+  if (!uploaded.length) return { status: 400, error: "upload at least one clip first." };
+  if (!project.clipsRightsConfirmedAt) {
+    return { status: 400, error: "please confirm you have permission to use your clips (step 2)." };
+  }
+  const settings = settingsFor(options, shotsFromAssignments(inspo.breakdown.shotCount, uploaded));
+  if (options.music.mode === "upload" && project.audio?.status !== "uploaded") return { status: 400, error: NO_AUDIO_FILE_ERROR };
+  const [history, business] = await Promise.all([
+    requestHistory(project.id).catch(() => []),
+    getBusinessForProject(project.id),
+  ]);
+  const id = crypto.randomUUID();
+  const { jobId } = await startStoryboardJob(
+    {
+      projectId: project.id,
+      renderId: id,
+      version: 0,
+      inspo: { storageKey: inspo.storageKey, breakdown: inspo.breakdown },
+      clips: uploaded.map((c) => ({
+        id: c.id,
+        storageKey: c.storageKey,
+        durationS: c.durationS ?? 0,
+        position: c.position,
+        shotIndex: c.shotIndex,
+      })),
+      settings,
+      history,
+      business: businessText(business),
+      ...audioFor(project, settings),
+    },
+    id,
+  );
+  return { jobId };
+}
+
 /** Sends a render to the engine (also used by "try again"). */
 export async function submit(
   projectId: string,
@@ -141,7 +189,10 @@ export async function submit(
 ) {
   try {
     // Earlier requests teach the editor this user's taste; a video can still be made without them.
-    const history = await requestHistory(projectId).catch(() => []);
+    const [history, business] = await Promise.all([
+      requestHistory(projectId).catch(() => []),
+      getBusinessForProject(projectId),
+    ]);
     const { jobId } = await startRender({
       projectId,
       renderId: render.id,
@@ -157,6 +208,7 @@ export async function submit(
       settings,
       ...extras,
       history,
+      business: businessText(business),
     });
     await setRenderJob(projectId, render.id, jobId);
   } catch (error) {

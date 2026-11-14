@@ -654,6 +654,8 @@ function ClipTile({
         </select>
       )}
 
+      {ready && !oneTake && <ShortClipNote item={item} shots={shots} />}
+
       <div className="flex items-center justify-between gap-1">
         <button
           type="button"
@@ -684,5 +686,20 @@ function ClipTile({
         </button>
       </div>
     </li>
+  );
+}
+
+/** A clip shorter than the shot it's on makes that shot shorter than the inspo's: say so before the render. */
+function ShortClipNote({ item, shots }: { item: Item; shots: Shot[] }) {
+  const shot = item.shotIndex !== null ? shots.find((s) => s.index === item.shotIndex) : undefined;
+  if (!shot || item.durationS === null || item.durationS >= shot.durationS - 0.3) return null;
+  return (
+    <p className="flex items-start gap-1.5 text-xs text-amber-300/90">
+      <AlertIcon className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        this clip is {item.durationS.toFixed(1)}s but shot {shot.index + 1} is {shot.durationS.toFixed(1)}s, so that
+        shot will be a little shorter. a longer clip matches the inspo better.
+      </span>
+    </p>
   );
 }

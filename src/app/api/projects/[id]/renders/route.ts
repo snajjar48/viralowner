@@ -1,6 +1,7 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "@/lib/membership";
 import { listClips, listRenders, saveSettings, type Project } from "@/lib/projects";
+import { getStoryboardJob } from "@/lib/processing/modal";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
   carryFrom,
@@ -42,6 +43,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if (project.kind === "scratch" && !canUseScratch(await getMembership(userId))) {
       return Response.json({ error: SCRATCH_PRO_MESSAGE, reason: "pro" }, { status: 402 });
     }
+    // Fixing caption words remakes the same edit: it doesn't use up a change.
+    if (body.mode === "captions") return fixCaptions(userId, project, body);
 
     // Counts the video against the trial or plan on its first version, and
     // checks this video still has changes left otherwise.
@@ -61,7 +64,44 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
 
 async function makeVersion(userId: string, project: Project, body: Record<string, unknown>) {
   let result;
-  if (body.mode === "new" || body.mode === "edit") {
+  if (body.mode === "new" && typeof body.storyboard === "string") {
+    // The first version, exactly as the storyboard showed it.
+    const parsed = parseVideoOptions(body.options);
+    if ("error" in parsed) return jsonError(parsed.error, 400);
+    const options = inspoOptions(parsed);
+    const job = /^[A-Za-z0-9_-]{1,100}$/.test(body.storyboard) ? await getStoryboardJob(body.storyboard) : null;
+    if (job?.state !== "done" || !job.result) return jsonError("that preview expired. make a new one, or just make your video.", 400);
+    const { plan, postCopy } = job.result;
+    await saveSettings(project.id, options);
+    result = await startNewRender(
+      userId,
+      project,
+      ({ shotCount, clips }) => {
+        const shots = parseShotEdits(plan.shots, shotCount, clips);
+        if ("error" in shots) return shots;
+        return settingsFor(options, shots);
+      },
+      {
+        reuseText: {
+          texts: plan.texts,
+          textPosition: plan.textPosition,
+          textLook: plan.textLook,
+          textXs: plan.textXs,
+          textYs: plan.textYs,
+          captionYs: plan.captionYs,
+          textScale: plan.textScale,
+          captionScale: plan.captionScale,
+          textStyle: plan.textStyle,
+          textPreset: plan.textPreset,
+          keepLines: plan.keepLines,
+          postCopy,
+        },
+        cuts: plan.jumpcut,
+        effects: plan.effects,
+        writePost: true,
+      },
+    );
+  } else if (body.mode === "new" || body.mode === "edit") {
     const parsed = parseVideoOptions(body.options);
     if ("error" in parsed) return jsonError(parsed.error, 400);
     const options = inspoOptions(parsed);
@@ -107,6 +147,46 @@ async function makeVersion(userId: string, project: Project, body: Record<string
     return jsonError("invalid request.", 400);
   }
 
+  if ("error" in result) return jsonError(result.error, result.status);
+  return Response.json({ renderId: result.render.id, version: result.render.version });
+}
+
+function captionEditFrom(body: Record<string, unknown>, from: { plan: { captionText?: string } | null }) {
+  const after = typeof body.text === "string" ? body.text.replace(/\s+/g, " ").trim() : "";
+  const before = (from.plan?.captionText ?? "").replace(/\s+/g, " ").trim();
+  if (!after || !before) return { error: "there are no captions to fix in this version." };
+  if (after.length > 5000) return { error: "that’s too long." };
+  if (after === before) return { error: "change a word first." };
+  return { before, after };
+}
+
+/** { mode: "captions", fromVersion, text }: the same version again, with the captions' words as the user typed them. */
+async function fixCaptions(userId: string, project: Project, body: Record<string, unknown>) {
+  const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+  if (!from?.plan) return jsonError("we couldn’t find that version.", 404);
+  const edit = captionEditFrom(body, from);
+  if ("error" in edit) return jsonError(edit.error!, 400);
+  const carried = carryFrom(from).carry ?? {};
+  const carry = { carry: { ...carried, captionEdit: edit } };
+  const shots = from.plan.shots;
+  let result;
+  if (project.kind === "scratch") {
+    const previous = previousFor(from, from.settings.options);
+    if (!previous) return jsonError("we couldn’t find that version.", 404);
+    result = await startScratchRender(
+      userId,
+      project,
+      { ...settingsFor(from.settings.options, shots), ...carry, fromVersion: from.version },
+      { previous },
+    );
+  } else {
+    const options = from.settings.options;
+    result = await startNewRender(userId, project, () => ({ ...settingsFor(options, shots), ...carry }), {
+      reuseText: textToReuse(from, options),
+      cuts: from.plan.jumpcut,
+      effects: from.plan.effects,
+    });
+  }
   if ("error" in result) return jsonError(result.error, result.status);
   return Response.json({ renderId: result.render.id, version: result.render.version });
 }

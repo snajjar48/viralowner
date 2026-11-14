@@ -13,6 +13,7 @@ import {
 } from "@/lib/video-options";
 import { AudioRightsNotice } from "./audio-rights";
 import { CaptionStylePicker, TextStylePicker, Toggle } from "./caption-styles";
+import { QuickAdd } from "./quick-add";
 import { MusicIcon, SparkleIcon, TextIcon } from "./icons";
 import { inputClass } from "./form";
 
@@ -172,9 +173,12 @@ export function OptionsFields({
             onChange={(e) => set({ notes: e.target.value })}
             className={`${inputClass} h-auto py-3`}
           />
-          <span className="self-end text-xs text-muted tabular-nums">
-            {value.notes.length}/{NOTES_MAX}
-          </span>
+          <div className="flex items-start justify-between gap-3">
+            <QuickAdd value={value.notes} onChange={(notes) => set({ notes })} max={NOTES_MAX} />
+            <span className="shrink-0 text-xs text-muted tabular-nums">
+              {value.notes.length}/{NOTES_MAX}
+            </span>
+          </div>
         </Section>
       )}
 
