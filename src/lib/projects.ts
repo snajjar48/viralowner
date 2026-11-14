@@ -233,34 +233,66 @@ export interface ProjectSummary {
   id: string;
   kind: ProjectKind;
   status: ProjectStatus;
+  /** The name the user gave it ("" if none: see projectTitle). */
+  name: string;
+  /** "Start from scratch": the start of the prompt. */
+  prompt: string;
+  /** The first clip (its still is the project's cover). */
+  coverClipKey: string | null;
   createdAt: string;
+  updatedAt: string;
   inspoDurationS: number | null;
   shotCount: number | null;
   clipCount: number;
   latestVersion: number | null;
 }
 
-export async function listProjects(userId: string, limit = 20): Promise<ProjectSummary[]> {
+export async function listProjects(userId: string, limit = 60): Promise<ProjectSummary[]> {
   const rows = await getSql()`
-    SELECT p.id, p.status, p.created_at, to_jsonb(p) ->> 'kind' AS kind,
+    SELECT p.id, p.status, p.created_at, p.updated_at, to_jsonb(p) ->> 'kind' AS kind,
+           coalesce(to_jsonb(p) ->> 'name', '') AS name, left(coalesce(to_jsonb(p) ->> 'prompt', ''), 120) AS prompt,
+           (SELECT c.storage_key FROM clips c WHERE c.project_id = p.id AND c.status = 'uploaded'
+             ORDER BY c.position LIMIT 1) AS cover_clip_key,
            i.duration_s AS inspo_duration_s,
            (i.breakdown_json ->> 'shotCount')::int AS shot_count,
            (SELECT count(*) FROM clips c WHERE c.project_id = p.id AND c.status = 'uploaded')::int AS clip_count,
            (SELECT max(version) FROM renders r WHERE r.project_id = p.id) AS latest_version
     FROM projects p LEFT JOIN inspirations i ON i.project_id = p.id
     WHERE p.user_id = ${userId}
-    ORDER BY p.created_at DESC
+    ORDER BY p.updated_at DESC
     LIMIT ${limit}`;
   return rows.map((r) => ({
     id: String(r.id),
     kind: r.kind === "scratch" ? "scratch" : "inspo",
     status: r.status as ProjectStatus,
+    name: String(r.name ?? ""),
+    prompt: String(r.prompt ?? ""),
+    coverClipKey: r.cover_clip_key ? String(r.cover_clip_key) : null,
     createdAt: iso(r.created_at)!,
+    updatedAt: iso(r.updated_at) ?? iso(r.created_at)!,
     inspoDurationS: num(r.inspo_duration_s),
     shotCount: num(r.shot_count),
     clipCount: Number(r.clip_count),
     latestVersion: num(r.latest_version),
   }));
+}
+
+export const PROJECT_NAME_MAX = 60;
+
+/** What a project is called: its name, or one made from its prompt or date. */
+export function projectTitle(p: Pick<ProjectSummary, "name" | "kind" | "prompt" | "createdAt">) {
+  if (p.name.trim()) return p.name.trim();
+  const prompt = p.prompt.replace(/\s+/g, " ").trim();
+  if (p.kind === "scratch" && prompt) {
+    const cut = prompt.length > 42 ? `${prompt.slice(0, 42).replace(/\s+\S*$/, "")}…` : prompt;
+    return cut.charAt(0).toUpperCase() + cut.slice(1);
+  }
+  const day = new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return p.kind === "scratch" ? `New video · ${day}` : `Remake · ${day}`;
+}
+
+export async function renameProject(projectId: string, name: string) {
+  await getSql()`UPDATE projects SET name = ${name} WHERE id = ${projectId}`;
 }
 
 /** Where "continue" should take the user for a project. */

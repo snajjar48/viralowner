@@ -1,10 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
-import { BusinessForm, type BusinessValues } from "@/components/business-form";
+import { BusinessForm, EMPTY_PROFILE } from "@/components/business-form";
 import { XIcon } from "@/components/icons";
-
-const EMPTY: BusinessValues = { name: "", about: "", city: "", words: "" };
 
 /** Asked once, before the first video: the business, so every video gets its names and products right. */
 export function BusinessPrompt() {
@@ -15,7 +14,7 @@ export function BusinessPrompt() {
     <section className="flex flex-col gap-3 rounded-2xl border border-coral/30 bg-coral/[0.05] p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <p className="text-sm font-medium">tell us about your business (once)</p>
+          <p className="text-sm font-medium">tell us about you and your business (once)</p>
           <p className="text-sm text-muted">
             your business name and the words you use, so every video spells your products right the first time.
           </p>
@@ -30,14 +29,28 @@ export function BusinessPrompt() {
         </button>
       </div>
       {open ? (
-        <BusinessForm initial={EMPTY} onSaved={() => setTimeout(() => setHidden(true), 900)} submitLabel="save my business" />
+        <>
+          <BusinessForm
+            initial={EMPTY_PROFILE}
+            short
+            onSaved={() => setTimeout(() => setHidden(true), 900)}
+            submitLabel="save my profile"
+          />
+          <p className="text-xs text-muted">
+            add more any time (your tone, things to always say, what to avoid) under{" "}
+            <Link href="/profile" className="underline underline-offset-4 hover:text-foreground">
+              your profile
+            </Link>
+            .
+          </p>
+        </>
       ) : (
         <button
           type="button"
           onClick={() => setOpen(true)}
           className="h-10 w-fit cursor-pointer rounded-full bg-white/10 px-4 text-sm font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
         >
-          add my business
+          add my details
         </button>
       )}
     </section>

@@ -1,199 +1,122 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
-import { BackgroundGlow } from "@/components/auth-layout";
-import Link from "next/link";
-import { buttonClass } from "@/components/form";
-import { canStartVideo, formatResetDate, getMembership, type Membership } from "@/lib/membership";
-import { CHANGES_PER_VIDEO, TIER_NAMES, TRIAL_CHANGES } from "@/lib/plan-format";
-import { listProjects, resumeHref, type ProjectStatus } from "@/lib/projects";
+import { BackgroundGlow, Logo } from "@/components/auth-layout";
+import { getBusiness } from "@/lib/business";
+import { clipThumbUrl } from "@/lib/clips";
+import { getMembership } from "@/lib/membership";
+import { listProjects, projectTitle, resumeHref, type ProjectStatus, type ProjectSummary } from "@/lib/projects";
 import { createClient } from "@/lib/supabase/server";
-import { formatDuration } from "@/lib/video-options";
-import { ManageBillingButton } from "./manage-billing-button";
-import { SignOutButton } from "./sign-out-button";
+import type { ProjectCardData } from "./project-card";
+import { Account, CreateCards, PlanPill, ProfileCard, VideoGrid } from "./sections";
 
 export const metadata: Metadata = {
   title: "viralowner — dashboard",
   robots: { index: false, follow: false },
 };
 
-const STATUS_LABELS: Record<string, string> = {
-  active: "Active",
-  trialing: "Free trial",
-  past_due: "Payment overdue: please update your card",
-  incomplete: "Payment not completed",
-  incomplete_expired: "Payment not completed",
-  canceled: "Canceled",
-  unpaid: "Unpaid",
-  paused: "Paused",
-};
-
-const PROJECT_LABELS: Record<ProjectStatus, string> = {
-  draft: "inspo not analyzed yet",
-  analyzing: "analyzing your inspo",
-  ready_for_clips: "ready for your clips",
-  processing: "editing your video",
-  done: "ready to post",
-  failed: "needs another try",
+const PROJECT_STATUS: Record<ProjectStatus, { label: string; tone: ProjectCardData["tone"] }> = {
+  draft: { label: "inspo not analyzed", tone: "draft" },
+  analyzing: { label: "analyzing inspo", tone: "working" },
+  ready_for_clips: { label: "add your clips", tone: "draft" },
+  processing: { label: "editing", tone: "working" },
+  done: { label: "ready to post", tone: "ready" },
+  failed: { label: "needs another try", tone: "attention" },
 };
 
 // Requires the site password AND a signed-in account (see src/proxy.ts).
 export default function DashboardPage() {
   return (
-    <div className="relative isolate flex min-h-dvh flex-col items-center justify-center gap-6 px-6 text-center">
+    <div className="relative isolate min-h-dvh">
       <BackgroundGlow />
-      <Suspense fallback={<p className="text-muted">Loading…</p>}>
-        <Account />
+      <Suspense fallback={<p className="pt-32 text-center text-muted">Loading…</p>}>
+        <Dashboard />
       </Suspense>
-      <SignOutButton />
     </div>
   );
 }
 
-async function Account() {
+async function Dashboard() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login?next=/dashboard");
 
-  const [{ data: profile }, membership] = await Promise.all([
+  const [{ data: account }, membership, profile] = await Promise.all([
     supabase.from("profiles").select("first_name").eq("id", user.id).maybeSingle(),
     getMembership(user.id),
+    getBusiness(user.id),
   ]);
-  const can = canStartVideo(membership);
+  const firstName = typeof account?.first_name === "string" ? account.first_name.trim() : "";
 
   return (
     <>
-      <h1 className="text-3xl font-semibold tracking-tight">
-        You’re in{profile?.first_name ? `, ${profile.first_name}` : ""}.
-      </h1>
-      <p className="text-muted">Signed in as {user.email}.</p>
-
-      <MembershipCard m={membership} />
-
-      {"reason" in can ? (
-        <div className="flex w-full max-w-sm flex-col gap-3">
-          <p className="text-sm text-muted text-pretty">{can.message}</p>
-          {can.reason === "subscribe" ? (
-            <Link href="/plans" className={`${buttonClass} flex items-center justify-center`}>
-              choose a plan
-            </Link>
-          ) : (
-            membership.plan?.tier === "basic" && <ManageBillingButton label="upgrade to Pro" />
-          )}
-        </div>
-      ) : (
-        <div className="flex w-full max-w-sm flex-col gap-2">
-          <Link href="/new" className={`${buttonClass} flex items-center justify-center`}>
-            {can.as === "trial" ? "make my free video" : "remake a viral video"}
+      <header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 pt-4 sm:px-6 sm:pt-6">
+        <Logo className="h-7 w-auto" />
+        <nav className="flex items-center gap-1 text-sm" aria-label="account">
+          <PlanPill m={membership} />
+          <Link
+            href="/profile"
+            className="rounded-full px-3 py-1.5 text-muted transition hover:bg-white/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral"
+          >
+            profile
           </Link>
-          {(membership.plan || membership.unlimited) && (
-            <Link
-              href="/scratch"
-              className="flex h-12 items-center justify-center gap-2 rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral"
-            >
-              start from scratch
-              <span className="rounded-full bg-linear-to-r from-violet to-coral px-2 py-0.5 text-[11px] font-medium text-white">
-                Pro
-              </span>
-            </Link>
-          )}
-        </div>
-      )}
-      <Link href="/business" className="text-sm text-muted underline underline-offset-4 hover:text-foreground">
-        your business
-      </Link>
-      {membership.hasCustomer && membership.plan && <ManageBillingButton />}
-      <Projects userId={user.id} />
+        </nav>
+      </header>
+
+      <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 pt-8 pb-20 sm:px-6 sm:pt-12">
+        <section className="flex flex-col gap-1.5">
+          <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
+            {firstName ? `hey, ${firstName}` : "welcome back"}
+          </h1>
+          <p className="text-muted text-pretty">what are we making today?</p>
+        </section>
+
+        <CreateCards m={membership} />
+
+        <ProfileCard profile={profile} />
+
+        <Videos userId={user.id} />
+
+        <Account m={membership} email={user.email ?? ""} />
+      </main>
     </>
   );
 }
 
-function MembershipCard({ m }: { m: Membership }) {
-  const rows: [string, string][] = [];
-  if (m.unlimited) {
-    rows.push(["Plan", "Owner · unlimited"]);
-    rows.push(["Videos", "unlimited"]);
-    rows.push(["Changes", "unlimited"]);
-  } else if (m.plan) {
-    rows.push(["Plan", `${TIER_NAMES[m.plan.tier]} · ${m.plan.interval}`]);
-    rows.push(["Status", STATUS_LABELS[m.plan.status] ?? m.plan.status]);
-    if (m.videos) {
-      rows.push(["This month", `${m.videos.used} of ${m.videos.limit} videos used`]);
-      rows.push(["Resets", formatResetDate(m.videos.resetsAt)]);
-    }
-    if (m.plan.periodEnd) {
-      rows.push([
-        m.plan.cancelAtPeriodEnd ? "Ends" : "Renews",
-        new Date(m.plan.periodEnd).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
-      ]);
-    }
-    rows.push(["Changes", `${CHANGES_PER_VIDEO} per video`]);
-  } else if (m.trial !== "none") {
-    rows.push(["Plan", "Free trial"]);
-    rows.push(["Free video", m.trial === "available" ? "ready to use" : "used"]);
-    rows.push(["Changes", `${TRIAL_CHANGES} on your free video`]);
-    rows.push(["Charges", "none. you’re never charged unless you choose a plan"]);
-  } else if (m.lapsedStatus) {
-    rows.push(["Status", STATUS_LABELS[m.lapsedStatus] ?? m.lapsedStatus]);
-  }
-
-  return (
-    <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-sm">
-      {rows.length ? (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-left">
-          {rows.map(([k, v]) => (
-            <div key={k} className="contents">
-              <dt className="text-muted">{k}</dt>
-              <dd>{v}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : (
-        <p className="text-muted">No membership yet.</p>
-      )}
-    </div>
-  );
+function when(iso: string) {
+  const d = new Date(iso);
+  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000);
+  if (days < 1 && new Date().getDate() === d.getDate()) return "today";
+  if (days < 2) return "yesterday";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-async function Projects({ userId }: { userId: string }) {
+async function cardFor(p: ProjectSummary): Promise<ProjectCardData> {
+  const status =
+    p.kind === "scratch" && (p.status === "draft" || p.status === "ready_for_clips")
+      ? { label: "add your clips", tone: "draft" as const }
+      : PROJECT_STATUS[p.status];
+  return {
+    id: p.id,
+    href: resumeHref(p),
+    name: p.name,
+    fallbackName: projectTitle({ ...p, name: "" }),
+    kind: p.kind,
+    status: status.label,
+    tone: status.tone,
+    when: when(p.updatedAt),
+    version: p.latestVersion,
+    cover: p.coverClipKey ? await clipThumbUrl(p.coverClipKey).catch(() => null) : null,
+  };
+}
+
+async function Videos({ userId }: { userId: string }) {
   const projects = await listProjects(userId).catch((error) => {
     console.error("Listing projects failed:", error);
     return null;
   });
-  if (!projects) return <p className="text-sm text-coral">couldn’t load your videos. refresh to try again.</p>;
-  if (projects.length === 0) {
-    return <p className="text-sm text-muted">your videos will show up here.</p>;
-  }
-  return (
-    <section aria-labelledby="videos-heading" className="flex w-full max-w-sm flex-col gap-2 text-left">
-      <h2 id="videos-heading" className="text-sm text-muted">
-        your videos
-      </h2>
-      <ul className="flex flex-col gap-2">
-        {projects.map((p) => (
-          <li key={p.id}>
-            <Link
-              href={resumeHref(p)}
-              className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm transition hover:border-white/25 focus-visible:outline-2 focus-visible:outline-coral"
-            >
-              <span className="flex flex-col">
-                <span className="font-medium">
-                  {new Date(p.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  {p.kind === "scratch"
-                    ? " · from scratch"
-                    : p.inspoDurationS !== null && ` · ${formatDuration(p.inspoDurationS)} inspo`}
-                </span>
-                <span className="text-muted">
-                  {p.kind === "scratch" && p.status === "draft" ? "add your clips" : PROJECT_LABELS[p.status]}
-                </span>
-              </span>
-              <span aria-hidden="true" className="text-muted">→</span>
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
+  return <VideoGrid cards={projects && (await Promise.all(projects.map(cardFor)))} />;
 }

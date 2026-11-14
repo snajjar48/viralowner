@@ -4396,7 +4396,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     directed = sc.get("directed") if isinstance(sc.get("directed"), dict) and not base else None
     cost = 0.0
     prefs = standing_preferences(req.get("history"))  # what this user has asked for before
-    business = (req.get("business") or "").strip()[:900] if isinstance(req.get("business"), str) else ""
+    business = (req.get("business") or "").strip()[:2200] if isinstance(req.get("business"), str) else ""
     director_context = prefs + (("\n\nabout the user's business:\n" + business) if business else "")
 
     report("analyzing", 3)
@@ -4589,7 +4589,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # What this user has asked for before, applied without them having to ask again.
     prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
     # The user's business profile (name, what they sell, words to always spell their way).
-    business = (req.get("business") or "").strip()[:900] if isinstance(req.get("business"), str) else ""
+    business = (req.get("business") or "").strip()[:2200] if isinstance(req.get("business"), str) else ""
     effects_guide = with_preferences(notes, prefs)
     guide = effects_guide + (("\n\nabout the user's business:\n" + business) if business else "")
     music = options["music"]["mode"]
