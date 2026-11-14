@@ -25,6 +25,7 @@ export function Storyboard({
   stale,
   disabled,
   onPlan,
+  prepare,
 }: {
   projectId: string;
   options: VideoOptions;
@@ -34,6 +35,8 @@ export function Storyboard({
   stale: boolean;
   disabled: boolean;
   onPlan: (plan: { jobId: string; madeFrom: string } | null) => void;
+  /** Saves what the plan is made from first (the prompt, for start from scratch). */
+  prepare?: () => Promise<void>;
 }) {
   const [state, setState] = useState<State>({ name: "idle" });
   const alive = useRef(true);
@@ -44,6 +47,7 @@ export function Storyboard({
     setState({ name: "planning", jobId: null, progress: 3 });
     onPlan(null);
     try {
+      await prepare?.();
       const { jobId } = await postJson<{ jobId: string }>(`/api/projects/${projectId}/storyboard`, { options });
       for (let tries = 0; tries < 120 && alive.current; tries++) {
         await new Promise((r) => setTimeout(r, 2500));
@@ -119,7 +123,7 @@ export function Storyboard({
         </ol>
         <p className="text-xs text-muted">
           this is the plan: each shot’s moment, its text, and where your captions go (“your captions show up here” stands in
-          for your words). not right? change an option or a clip above and plan it again. it’s free.
+          for your words). not right? change something above and plan it again. it’s free.
         </p>
       </section>
     );

@@ -11,6 +11,7 @@ import { OptionsFields, optionsProblem, Section } from "@/components/options-fie
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
 import { ClipsManager, type InitialClip } from "../clips/clips-manager";
+import { Storyboard } from "../options/storyboard";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -44,6 +45,9 @@ export function ScratchCreate({
   const [making, setMaking] = useState(false);
   const [error, setError] = useState("");
   const first = useRef(true);
+  // A storyboard made from this exact prompt, options and clips: "make my video" makes that plan.
+  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string } | null>(null);
+  const madeFrom = JSON.stringify([prompt.trim(), options, clips.uploaded]);
 
   // Save the prompt and options a moment after each change, so leaving or refreshing keeps them.
   useEffect(() => {
@@ -77,20 +81,27 @@ export function ScratchCreate({
     }));
   }
 
+  /** The prompt and clip permission, saved before anything is planned or made. */
+  async function prepare() {
+    const saved = await fetch(`/api/projects/${projectId}/prompt`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    }).catch(() => null);
+    if (!saved?.ok) throw new UploadError("couldn’t save your description. check your connection and try again.");
+    await postJson(`/api/projects/${projectId}/clips/confirm`, { rightsConfirmed: true });
+  }
+
   async function make() {
     setMaking(true);
     setError("");
     try {
-      const saved = await fetch(`/api/projects/${projectId}/prompt`, {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      }).catch(() => null);
-      if (!saved?.ok) throw new UploadError("couldn’t save your description. check your connection and try again.");
-      await postJson(`/api/projects/${projectId}/clips/confirm`, { rightsConfirmed: true });
+      await prepare();
+      const usePlan = plan && plan.madeFrom === madeFrom ? plan.jobId : undefined;
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
         mode: "new",
         options,
+        ...(usePlan ? { storyboard: usePlan } : {}),
       });
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
@@ -165,6 +176,16 @@ export function ScratchCreate({
           showNotes={false}
           uploadedAudio={audio}
           variant="scratch"
+        />
+
+        <Storyboard
+          projectId={projectId}
+          options={options}
+          madeFrom={madeFrom}
+          stale={!!plan && plan.madeFrom !== madeFrom}
+          disabled={making || !!problem}
+          onPlan={setPlan}
+          prepare={prepare}
         />
 
         <p className="min-h-5 text-center text-xs text-muted" aria-live="polite">

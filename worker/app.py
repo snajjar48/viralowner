@@ -4277,6 +4277,60 @@ def reuse_problems(shots: list[dict], talking: set[int], clip_count: int) -> lis
     return problems
 
 
+def directed_out(cleaned: dict, clips: list[dict], caption_fixes: list) -> dict:
+    """The director's plan in a form that survives the round trip through the site (clips by id), so
+    "make my video" after a storyboard makes exactly what it showed."""
+    return {**{k: v for k, v in cleaned.items() if k != "shots"},
+            "shots": [{**{k: v for k, v in s.items() if k != "clip"}, "clipId": clips[s["clip"]]["id"]}
+                      for s in cleaned["shots"]],
+            "captionFixes": caption_fixes}
+
+
+def directed_in(data: dict, clips: list[dict], text_mode: str) -> dict | None:
+    """A storyboard's plan (from directed_out), checked against the clips again. None when a clip it
+    uses is gone or it doesn't read, so the director plans it fresh."""
+    index_of = {c["id"]: i for i, c in enumerate(clips)}
+    shots = []
+    for s in data.get("shots") or []:
+        ci = index_of.get(s.get("clipId")) if isinstance(s, dict) else None
+        if ci is None:
+            return None
+        d = clips[ci]["duration"]
+        try:
+            a, b = float(s["start"]), float(s["end"])
+        except (TypeError, ValueError, KeyError):
+            return None
+        a = min(max(0.0, a), max(0.0, d - SCRATCH_MIN_SHOT_S))
+        b = min(max(b, a + SCRATCH_MIN_SHOT_S), d)
+        y = s.get("text_y")
+        shots.append({
+            "clip": ci, "start": r2(a), "end": r2(b),
+            "speed": s.get("speed") if s.get("speed") in SPEEDS else "normal",
+            "transition_in": s.get("transition_in") if s.get("transition_in") in TRANSITIONS else "cut",
+            "motion": s.get("motion") if s.get("motion") in MOTIONS else "none",
+            "effects": [x for x in s.get("effects") or [] if x in SHOT_EFFECTS],
+            "text": "" if text_mode == "none" else str(s.get("text") or ""),
+            "text_y": r2(min(0.75, max(0.15, float(y)))) if isinstance(y, (int, float)) and y >= 0 else None,
+            "role": s.get("role") if s.get("role") in SHOT_ROLES else "build",
+            "description": str(s.get("description") or "")[:120],
+        })
+    if not shots or not isinstance(data.get("style"), dict):
+        return None
+    shots[0]["transition_in"] = "cut"
+    return {
+        "summary": str(data.get("summary") or ""),
+        "shots": shots[:SCRATCH_MAX_SHOTS],
+        "style": clean_text_style(data["style"]),
+        "position": data.get("position") if data.get("position") in POSITIONS else "top",
+        "looks": [x for x in data.get("looks") or [] if x in LOOKS],
+        "colorFilter": data.get("colorFilter") if data.get("colorFilter") in COLOR_FILTERS else "none",
+        "sfx": [e for e in data.get("sfx") or [] if isinstance(e, dict) and e.get("name") in SFX
+                and isinstance(e.get("index"), int) and 0 <= e["index"] < len(shots)],
+        "caption": str(data.get("caption") or ""),
+        "hashtags": [h for h in data.get("hashtags") or [] if isinstance(h, str)],
+    }
+
+
 def custom_lines_kept(shots: list[dict], custom: str) -> bool:
     """The user's own lines all appear, word for word and in order, with nothing added."""
     want = [ln.strip() for ln in custom.replace("\r", "").split("\n") if ln.strip()]
@@ -4338,6 +4392,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     sound = options["music"]["mode"] if options["music"]["mode"] in ("upload", "none") else "original"
     request = (req.get("request") or "").strip()[:1500]
     base = req.get("previous") if isinstance(req.get("previous"), dict) else None
+    # The plan a storyboard showed: the first version makes exactly that (no second directing).
+    directed = sc.get("directed") if isinstance(sc.get("directed"), dict) and not base else None
     cost = 0.0
     prefs = standing_preferences(req.get("history"))  # what this user has asked for before
     business = (req.get("business") or "").strip()[:900] if isinstance(req.get("business"), str) else ""
@@ -4403,7 +4459,13 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             s.update(clip=ci, start=r2(a), end=r2(b))
         cleaned["summary"] = ""
         print("scratch: rebuilt from the earlier version with the user's shot edits")
+    elif directed and (reused := directed_in(directed, clips, text_mode)):
+        cleaned = reused
+        caption_fixes = clean_caption_fixes(caption_fixes, directed.get("captionFixes"))
+        print(f"scratch: made the storyboard's plan ({len(cleaned['shots'])} shots)")
     else:
+        if directed:
+            print("scratch: the storyboard's plan didn't fit the clips any more, directing again")
         report("analyzing", 8)
         sample_clip_frames(clips, workdir, limit=SCRATCH_CLIP_FRAMES)
         report("analyzing", 12)
@@ -4494,6 +4556,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             fetch(key, dest)
 
     out = render_video(req2, workdir, fetch=fetch_once, store=store)
+    if req.get("storyboard"):
+        out["directed"] = directed_out(cleaned, clips, caption_fixes)
     out["plan"]["note"] = cleaned["summary"] or None
     out["plan"]["scratch"] = {"roles": [s["role"] for s in cleaned["shots"]],
                               "descriptions": [s["description"] for s in cleaned["shots"]]}

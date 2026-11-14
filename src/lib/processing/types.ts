@@ -186,7 +186,7 @@ export interface RenderInput {
   /** The inspo being remade; absent for "start from scratch" videos, which have `scratch` instead. */
   inspo?: { storageKey: string; breakdown: Breakdown };
   /** "Start from scratch": the user's prompt. Claude plans the whole edit from it and the clips. */
-  scratch?: { prompt: string };
+  scratch?: { prompt: string; /** The plan a storyboard showed, made as is (opaque to the site). */ directed?: unknown };
   clips: { id: string; storageKey: string; durationS: number; position: number; shotIndex: number | null }[];
   settings: RenderSettings;
   /** Keep an earlier version's words instead of writing new ones. */

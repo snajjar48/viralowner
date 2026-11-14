@@ -2,7 +2,7 @@ import "server-only";
 import { businessText, getBusinessForProject } from "./business";
 import { resetRenderEmail } from "./notify";
 import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit } from "./processing";
-import { startStoryboardJob } from "./processing/modal";
+import { getStoryboardJob, startStoryboardJob, type StoryboardResult } from "./processing/modal";
 import {
   createRender,
   getActiveRender,
@@ -114,6 +114,8 @@ export async function startScratchRender(
   project: Project,
   settings: RenderSettings,
   extras: Extras = {},
+  /** The plan a storyboard showed (its `directed`), to make exactly that. */
+  directed?: unknown,
 ): Promise<{ render: Render } | Fail> {
   if (!project.prompt.trim()) return { status: 400, error: "describe the video you want first." };
   const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
@@ -125,11 +127,64 @@ export async function startScratchRender(
     return { status: 400, error: NO_AUDIO_FILE_ERROR };
   }
   const render = await createRender(project.id, settings);
-  await submit(project.id, render, { scratch: { prompt: project.prompt } }, uploaded, settings, {
+  const scratch = { prompt: project.prompt, ...(directed ? { directed } : {}) };
+  await submit(project.id, render, { scratch }, uploaded, settings, {
     ...extras,
     ...audioFor(project, settings),
   });
   return { render };
+}
+
+/** A finished storyboard of this project (null if it's gone, failed or belongs to another project). */
+export async function projectStoryboard(projectId: string, jobId: unknown): Promise<StoryboardResult | null> {
+  if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(jobId)) return null;
+  const job = await getStoryboardJob(jobId).catch(() => null);
+  if (job?.state !== "done" || !job.result) return null;
+  return /^u\/[^/]+\/p\/([^/]+)\//.exec(job.result.frames[0].key)?.[1] === projectId ? job.result : null;
+}
+
+/**
+ * "Start from scratch" storyboard: the director plans the first version from the prompt, clips
+ * and options, and we draw a frame per shot without making the video. Returns the worker's job id.
+ */
+export async function startScratchStoryboard(
+  userId: string,
+  project: Project,
+  options: VideoOptions,
+): Promise<{ jobId: string } | Fail> {
+  if (!project.prompt.trim()) return { status: 400, error: "describe the video you want first." };
+  const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
+  if (!uploaded.length) return { status: 400, error: "upload at least one clip first." };
+  if (!project.clipsRightsConfirmedAt) {
+    return { status: 400, error: "please confirm you have permission to use your clips." };
+  }
+  const settings = settingsFor(options, []);
+  if (options.music.mode === "upload" && project.audio?.status !== "uploaded") return { status: 400, error: NO_AUDIO_FILE_ERROR };
+  const [history, business] = await Promise.all([
+    requestHistory(project.id).catch(() => []),
+    getBusinessForProject(project.id),
+  ]);
+  const id = crypto.randomUUID();
+  return startStoryboardJob(
+    {
+      projectId: project.id,
+      renderId: id,
+      version: 0,
+      scratch: { prompt: project.prompt },
+      clips: uploaded.map((c) => ({
+        id: c.id,
+        storageKey: c.storageKey,
+        durationS: c.durationS ?? 0,
+        position: c.position,
+        shotIndex: c.shotIndex,
+      })),
+      settings,
+      history,
+      business: businessText(business),
+      ...audioFor(project, settings),
+    },
+    id,
+  );
 }
 
 /**

@@ -1,7 +1,6 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "@/lib/membership";
 import { listClips, listRenders, saveSettings, type Project } from "@/lib/projects";
-import { getStoryboardJob } from "@/lib/processing/modal";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
   carryFrom,
@@ -11,6 +10,7 @@ import {
   settingsFor,
   shotsFromAssignments,
   previousFor,
+  projectStoryboard,
   startNewRender,
   startScratchRender,
   textToReuse,
@@ -69,9 +69,9 @@ async function makeVersion(userId: string, project: Project, body: Record<string
     const parsed = parseVideoOptions(body.options);
     if ("error" in parsed) return jsonError(parsed.error, 400);
     const options = inspoOptions(parsed);
-    const job = /^[A-Za-z0-9_-]{1,100}$/.test(body.storyboard) ? await getStoryboardJob(body.storyboard) : null;
-    if (job?.state !== "done" || !job.result) return jsonError("that preview expired. make a new one, or just make your video.", 400);
-    const { plan, postCopy } = job.result;
+    const board = await projectStoryboard(project.id, body.storyboard);
+    if (!board) return jsonError("that preview expired. make a new one, or just make your video.", 400);
+    const { plan, postCopy } = board;
     await saveSettings(project.id, options);
     result = await startNewRender(
       userId,
@@ -203,8 +203,13 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
     if ("error" in parsed) return jsonError(parsed.error, 400);
     const options = scratchOptions(parsed);
     if (body.mode === "new") {
+      // Made from a storyboard: exactly the plan it showed.
+      const board = typeof body.storyboard === "string" ? await projectStoryboard(project.id, body.storyboard) : null;
+      if (typeof body.storyboard === "string" && !board?.directed) {
+        return jsonError("that preview expired. make a new one, or just make your video.", 400);
+      }
       await saveSettings(project.id, options);
-      result = await startScratchRender(userId, project, settingsFor(options, []));
+      result = await startScratchRender(userId, project, settingsFor(options, []), {}, board?.directed);
     } else {
       const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
       const previous = from && previousFor(from, options);

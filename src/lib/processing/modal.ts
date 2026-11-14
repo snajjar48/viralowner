@@ -199,6 +199,8 @@ export interface StoryboardResult {
   frames: { key: string; durationS: number; text: string }[];
   plan: RenderPlan;
   postCopy: PostCopy;
+  /** "Start from scratch": the director's plan, passed back to the worker to make it as shown. */
+  directed?: unknown;
 }
 
 /** How a storyboard job is going; its frames and plan when done. */
@@ -213,7 +215,7 @@ export async function getStoryboardJob(
     throw error;
   }
   if (job.state !== "done") return { state: job.state, progress: job.progress, error: job.error };
-  const o = job.output as { storyboard?: unknown; plan?: unknown; postCopy?: PostCopy } | undefined;
+  const o = job.output as { storyboard?: unknown; plan?: unknown; postCopy?: PostCopy; directed?: unknown } | undefined;
   const plan = parsePlan(o?.plan);
   const frames = Array.isArray(o?.storyboard)
     ? (o.storyboard as { key?: unknown; durationS?: unknown; text?: unknown }[]).filter(
@@ -225,7 +227,12 @@ export async function getStoryboardJob(
   return {
     state: "done",
     progress: 100,
-    result: { frames: frames.map((f) => ({ ...f, text: str(f.text) })), plan, postCopy: o?.postCopy ?? { caption: "", hashtags: [] } },
+    result: {
+      frames: frames.map((f) => ({ ...f, text: str(f.text) })),
+      plan,
+      postCopy: o?.postCopy ?? { caption: "", hashtags: [] },
+      ...(o?.directed && typeof o.directed === "object" ? { directed: o.directed } : {}),
+    },
   };
 }
 
