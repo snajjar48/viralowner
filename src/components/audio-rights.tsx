@@ -17,9 +17,11 @@ export function AudioRightsNotice({
     <div className="flex flex-col gap-3 rounded-xl border border-amber-300/30 bg-amber-300/[0.06] p-3 text-sm">
       <p className="text-muted">
         <span className="font-medium text-foreground">heads up:</span>{" "}
-        {source === "inspo" ? "this sound usually belongs to someone else." : "this audio may belong to someone else."} viralowner
-        doesn’t own or license it, and it could get your video muted or taken down. safest: pick “no music” and add the
-        sound in tiktok or instagram.
+        {source === "inspo"
+          ? "the inspo’s sound usually belongs to someone else, like a song or another creator’s voice."
+          : "unless you made this audio yourself, it probably belongs to someone else, like a song, a sound from another video or another person’s voice."}{" "}
+        viralowner doesn’t own or license it. posting it can get your video muted, taken down or hit with a copyright
+        claim.
       </p>
       <label className="flex cursor-pointer items-start gap-3">
         <input
@@ -29,7 +31,8 @@ export function AudioRightsNotice({
           className="mt-0.5 size-4 shrink-0 accent-coral"
         />
         <span>
-          i own this audio or have permission to use it, and i’m responsible for how i use it.
+          i own this audio or have permission to use it, and i take full responsibility for how i use it. i understand
+          viralowner isn’t responsible for any claims about it.
         </span>
       </label>
     </div>
