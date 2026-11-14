@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { BackgroundGlow, Logo } from "@/components/auth-layout";
 import { getBusiness } from "@/lib/business";
+import { DRAFT_DAYS } from "@/lib/cleanup";
 import { clipThumbUrl } from "@/lib/clips";
 import { getMembership } from "@/lib/membership";
 import { listProjects, projectTitle, resumeHref, type ProjectStatus, type ProjectSummary } from "@/lib/projects";
@@ -112,6 +113,10 @@ async function cardFor(p: ProjectSummary): Promise<ProjectCardData> {
     cover: p.coverClipKey ? await clipThumbUrl(p.coverClipKey).catch(() => null) : null,
     prompt: p.prompt,
     busy: p.status === "processing" || p.status === "analyzing",
+    // Drafts (no version made yet) are deleted after DRAFT_DAYS untouched.
+    deletesInDays: p.counted
+      ? null
+      : Math.max(1, Math.ceil(DRAFT_DAYS - (Date.now() - new Date(p.lastActiveAt).getTime()) / 86_400_000)),
   };
 }
 

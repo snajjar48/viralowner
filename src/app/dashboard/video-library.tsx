@@ -116,6 +116,12 @@ export function VideoLibrary({ initial }: { initial: ProjectCardData[] }) {
               ))}
             </ul>
           )}
+          {cards.some((p) => p.deletesInDays !== null) && (
+            <p className="text-xs text-muted">
+              drafts you haven’t made a video from are deleted after 30 days without being opened. videos you’ve made are
+              kept.
+            </p>
+          )}
         </>
       )}
     </section>

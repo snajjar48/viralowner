@@ -22,6 +22,8 @@ export interface ProjectCardData {
   prompt: string;
   /** Still being made: can't be deleted yet. */
   busy: boolean;
+  /** A draft: days until it's deleted for being left untouched (null for made videos). */
+  deletesInDays: number | null;
 }
 
 /** The dot's color: the badge itself stays dark so it reads on any cover. */
@@ -224,6 +226,11 @@ export function ProjectCard({
         <span className="truncate text-xs text-muted">
           {p.kind === "scratch" ? "from scratch" : "remake"} · {p.when}
         </span>
+        {p.deletesInDays !== null && p.deletesInDays <= 7 && (
+          <span className="text-xs text-coral">
+            draft deletes in {p.deletesInDays} {p.deletesInDays === 1 ? "day" : "days"} · open it to keep it
+          </span>
+        )}
         {error && (
           <span role="alert" className="text-xs text-coral">
             {error}

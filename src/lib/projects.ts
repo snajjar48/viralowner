@@ -245,6 +245,10 @@ export interface ProjectSummary {
   shotCount: number | null;
   clipCount: number;
   latestVersion: number | null;
+  /** The last time it was opened or changed. */
+  lastActiveAt: string;
+  /** A version was made (it counted). Drafts that didn't are cleaned up when left untouched. */
+  counted: boolean;
 }
 
 export async function listProjects(userId: string, limit = 60): Promise<ProjectSummary[]> {
@@ -256,7 +260,11 @@ export async function listProjects(userId: string, limit = 60): Promise<ProjectS
            i.duration_s AS inspo_duration_s,
            (i.breakdown_json ->> 'shotCount')::int AS shot_count,
            (SELECT count(*) FROM clips c WHERE c.project_id = p.id AND c.status = 'uploaded')::int AS clip_count,
-           (SELECT max(version) FROM renders r WHERE r.project_id = p.id) AS latest_version
+           (SELECT max(version) FROM renders r WHERE r.project_id = p.id) AS latest_version,
+           (p.counted_at IS NOT NULL
+             OR EXISTS (SELECT 1 FROM renders r WHERE r.project_id = p.id AND r.status = 'done')) AS counted,
+           greatest(p.updated_at, (SELECT max(c.created_at) FROM clips c WHERE c.project_id = p.id),
+                    i.updated_at, (SELECT max(r.updated_at) FROM renders r WHERE r.project_id = p.id)) AS last_active
     FROM projects p LEFT JOIN inspirations i ON i.project_id = p.id
     WHERE p.user_id = ${userId} AND to_jsonb(p) ->> 'deleted_at' IS NULL
     ORDER BY p.updated_at DESC
@@ -274,6 +282,8 @@ export async function listProjects(userId: string, limit = 60): Promise<ProjectS
     shotCount: num(r.shot_count),
     clipCount: Number(r.clip_count),
     latestVersion: num(r.latest_version),
+    lastActiveAt: iso(r.last_active) ?? iso(r.created_at)!,
+    counted: !!r.counted,
   }));
 }
 
@@ -310,6 +320,14 @@ export async function deleteProjectRecords(projectId: string) {
     sql`DELETE FROM inspirations WHERE project_id = ${projectId}`,
     sql`UPDATE projects SET deleted_at = now(), name = '', prompt = '', audio = NULL WHERE id = ${projectId}`,
   ]);
+}
+
+/** The user opened the project: it counts as activity (drafts are cleaned up when untouched). */
+export async function touchProject(userId: string, projectId: string) {
+  if (!isUuid(projectId)) return;
+  await getSql()`
+    UPDATE projects SET updated_at = now()
+    WHERE id = ${projectId} AND user_id = ${userId} AND updated_at < now() - interval '1 hour'`;
 }
 
 /** Where "continue" should take the user for a project. */
