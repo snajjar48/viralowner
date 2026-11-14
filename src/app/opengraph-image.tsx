@@ -37,7 +37,6 @@ export default async function OpenGraphImage() {
           fontFamily: font ? "Lexend" : "sans-serif",
         }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element -- rendered into the image, not the page */}
         <img src={`data:image/svg+xml;base64,${logo}`} alt="" width={244} height={70} />
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <div style={{ display: "flex", flexDirection: "column", fontSize: 92, fontWeight: 600, lineHeight: 1.02, letterSpacing: -3 }}>
