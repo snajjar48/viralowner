@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { BackgroundGlow } from "./auth-layout";
+import { SHOWCASE } from "@/content/showcase";
 import { MarketingNav } from "./marketing-nav";
 import { JsonLd } from "./structured-data";
 import { WaitlistForm } from "./waitlist-form";
@@ -67,6 +68,11 @@ function Footer({ minimal }: { minimal: boolean }) {
             <Link href="/pricing" className="text-muted hover:text-foreground">
               pricing
             </Link>
+            {SHOWCASE.length > 0 && (
+              <Link href="/made-with-viralowner" className="text-muted hover:text-foreground">
+                made with viralowner
+              </Link>
+            )}
             <Link href="/terms" className="text-muted hover:text-foreground">
               terms
             </Link>

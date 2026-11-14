@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { pageMetadata } from "@/lib/seo";
 import { JsonLd, ORGANIZATION } from "@/components/structured-data";
+import { ShowcaseSection } from "@/components/showcase";
+import { featuredVideos } from "@/content/showcase";
 import Link from "next/link";
 import { TrendIcon, WandIcon } from "@/components/icons";
 import { FEATURES, HOME_FAQ, HOW_IT_WORKS, WHO } from "@/components/marketing-copy";
@@ -37,6 +39,8 @@ export default function Home() {
           <HeroVisual />
         </div>
       </section>
+
+      <ShowcaseSection videos={featuredVideos(4)} />
 
       <Section
         id="how"

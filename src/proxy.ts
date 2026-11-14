@@ -9,6 +9,7 @@ const PUBLIC_PATHS = new Set([
   "/why-viralowner", // public: why us
   "/pricing", // public: plans
   "/start", // public: landing page for ads
+  "/made-with-viralowner", // public: videos made with viralowner
   "/terms",
   "/robots.txt",
   "/sitemap.xml",
@@ -33,7 +34,8 @@ function needsAccount(pathname: string) {
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  if (PUBLIC_PATHS.has(pathname)) {
+  // The showcase's thumbnails (public/showcase/).
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/")) {
     return NextResponse.next();
   }
 
