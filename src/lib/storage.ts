@@ -169,3 +169,27 @@ export async function deleteObject(key: string) {
   const res = await r2().client.fetch(objectUrl(key), { method: "DELETE" });
   if (!res.ok && res.status !== 404) throw new Error(`Storage DELETE failed (${res.status})`);
 }
+
+/** Deletes every file under a folder ("u/<user>/p/<project>/"). Returns how many it deleted. */
+export async function deletePrefix(prefix: string): Promise<number> {
+  if (!/^u\/[A-Za-z0-9-]+\/p\/[A-Za-z0-9-]+\/$/.test(prefix)) throw new Error("Refusing to delete outside a project folder");
+  const { client, base } = r2();
+  const keys: string[] = [];
+  let token = "";
+  do {
+    const url = `${base}?list-type=2&prefix=${encodeURIComponent(prefix)}${token ? `&continuation-token=${encodeURIComponent(token)}` : ""}`;
+    const res = await client.fetch(url);
+    if (!res.ok) throw new Error(`Storage LIST failed (${res.status})`);
+    const xml = await res.text();
+    for (const m of xml.matchAll(/<Key>([^<]+)<\/Key>/g)) keys.push(unescapeXml(m[1]));
+    token = /<IsTruncated>true<\/IsTruncated>/.test(xml) ? unescapeXml(/<NextContinuationToken>([^<]+)</.exec(xml)?.[1] ?? "") : "";
+  } while (token);
+  for (let i = 0; i < keys.length; i += 8) {
+    await Promise.all(keys.slice(i, i + 8).filter((k) => k.startsWith(prefix)).map(deleteObject));
+  }
+  return keys.length;
+}
+
+function unescapeXml(s: string) {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}

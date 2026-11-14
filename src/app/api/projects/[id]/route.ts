@@ -1,5 +1,6 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
-import { PROJECT_NAME_MAX, renameProject } from "@/lib/projects";
+import { deleteProjectRecords, PROJECT_NAME_MAX, renameProject } from "@/lib/projects";
+import { deletePrefix } from "@/lib/storage";
 
 /** { name }: renames a video project ("" goes back to the name we make for it). */
 export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[id]">) {
@@ -16,5 +17,24 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[
       return jsonError("couldn’t rename it right now. please try again later.", 503);
     }
     return Response.json({ name });
+  });
+}
+
+/** Deletes a video project: its versions, clips, inspo and every file. Can't be undone. */
+export async function DELETE(_request: Request, ctx: RouteContext<"/api/projects/[id]">) {
+  return withProject(ctx.params, "Deleting project", async (userId, project) => {
+    // The worker would keep writing files into it.
+    if (project.status === "processing" || project.status === "analyzing") {
+      return jsonError("this video is still being made. delete it once it’s finished.", 409);
+    }
+    try {
+      await deleteProjectRecords(project.id);
+    } catch (error) {
+      console.error("Deleting project records failed:", error);
+      return jsonError("couldn’t delete it right now. please try again later.", 503);
+    }
+    // The records are gone, so the files can't be reached any more; clean them up after.
+    await deletePrefix(`u/${userId}/p/${project.id}/`).catch((error) => console.error("Deleting project files failed:", error));
+    return Response.json({ deleted: true });
   });
 }

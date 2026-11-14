@@ -2,12 +2,13 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonClass } from "@/components/form";
 import { hasBusiness, type BusinessProfile } from "@/lib/business";
-import { ArrowRightIcon, FilmIcon, TrendIcon, WandIcon } from "@/components/icons";
+import { ArrowRightIcon, TrendIcon, WandIcon } from "@/components/icons";
 import { canStartVideo, formatResetDate, type Membership } from "@/lib/membership";
 import { CHANGES_PER_VIDEO, TIER_NAMES, TRIAL_CHANGES } from "@/lib/plan-format";
 import { ManageBillingButton } from "./manage-billing-button";
-import { ProjectCard, type ProjectCardData } from "./project-card";
+import type { ProjectCardData } from "./project-card";
 import { SignOutButton } from "./sign-out-button";
+import { VideoLibrary } from "./video-library";
 
 const STATUS_LABELS: Record<string, string> = {
   active: "Active",
@@ -251,34 +252,6 @@ export function Account({ m, email }: { m: Membership; email: string }) {
 }
 
 export function VideoGrid({ cards }: { cards: ProjectCardData[] | null }) {
-  return (
-    <section aria-labelledby="videos-heading" className="flex flex-col gap-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 id="videos-heading" className="text-xl font-semibold tracking-tight">
-          your videos
-        </h2>
-        {cards && cards.length > 0 && (
-          <span className="text-sm text-muted tabular-nums">
-            {cards.length} {cards.length === 1 ? "video" : "videos"}
-          </span>
-        )}
-      </div>
-      {!cards ? (
-        <p className="text-sm text-coral">couldn’t load your videos. refresh to try again.</p>
-      ) : cards.length === 0 ? (
-        <div className="flex flex-col items-center gap-2 rounded-3xl border border-dashed border-white/15 px-6 py-12 text-center">
-          <FilmIcon className="size-7 text-muted" />
-          <p className="font-medium">no videos yet</p>
-          <p className="text-sm text-muted">the videos you make show up here, so you can come back to them any time.</p>
-        </div>
-      ) : (
-        <ul className="grid grid-cols-2 gap-x-3 gap-y-6 sm:grid-cols-3 lg:grid-cols-4">
-          {cards.map((p) => (
-            <ProjectCard key={p.id} p={p} />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
+  if (!cards) return <p className="text-sm text-coral">couldn’t load your videos. refresh to try again.</p>;
+  return <VideoLibrary initial={cards} />;
 }
-

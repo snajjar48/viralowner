@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FilmIcon, SparkleIcon } from "@/components/icons";
 
 export interface ProjectCardData {
@@ -18,6 +18,10 @@ export interface ProjectCardData {
   when: string;
   version: number | null;
   cover: string | null;
+  /** "Start from scratch": what the user described (searched too). */
+  prompt: string;
+  /** Still being made: can't be deleted yet. */
+  busy: boolean;
 }
 
 /** The dot's color: the badge itself stays dark so it reads on any cover. */
@@ -30,16 +34,59 @@ const TONES: Record<ProjectCardData["tone"], string> = {
 
 const NAME_MAX = 60;
 
-/** One video on the dashboard: its cover, where it's at, and a name the user can change in place. */
-export function ProjectCard({ p }: { p: ProjectCardData }) {
-  const [name, setName] = useState(p.name);
+/** One video on the dashboard: its cover, where it's at, and a menu to rename or delete it. */
+export function ProjectCard({
+  p,
+  onRenamed,
+  onDeleted,
+}: {
+  p: ProjectCardData;
+  onRenamed: (name: string) => void;
+  onDeleted: () => void;
+}) {
+  const name = p.name;
+  const setName = onRenamed;
   const [editing, setEditing] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const confirmRef = useRef<HTMLDialogElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // The menu closes on a tap anywhere else, or Escape.
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : !menuRef.current?.contains(e.target as Node)) setMenu(false);
+    };
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [menu]);
+
+  async function remove() {
+    setDeleting(true);
+    setError("");
+    const res = await fetch(`/api/projects/${p.id}`, { method: "DELETE" }).catch(() => null);
+    if (res?.ok) {
+      confirmRef.current?.close();
+      onDeleted();
+      return;
+    }
+    const body = (await res?.json().catch(() => null)) as { error?: string } | null;
+    setDeleting(false);
+    confirmRef.current?.close();
+    setError(body?.error ?? "couldn’t delete it. try again.");
+  }
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [coverFailed, setCoverFailed] = useState(false);
   const saving = useRef(false);
 
   function start() {
+    setMenu(false);
     setDraft(name || p.fallbackName);
     setError("");
     setEditing(true);
@@ -123,16 +170,56 @@ export function ProjectCard({ p }: { p: ProjectCardData }) {
             className="-mx-1 h-7 rounded-md border border-coral/60 bg-white/5 px-1 text-sm font-medium outline-none"
           />
         ) : (
-          <button
-            type="button"
-            onClick={start}
-            title="rename"
-            className="-mx-1 flex min-w-0 cursor-text items-center gap-1.5 rounded-md px-1 text-left text-sm font-medium hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-coral"
-          >
-            <span className={`truncate ${name ? "" : "text-foreground/85"}`}>{title}</span>
-            <PencilIcon className="size-3.5 shrink-0 text-muted opacity-60 transition group-hover:opacity-100" />
-            <span className="sr-only">(rename)</span>
-          </button>
+          <div className="flex min-w-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={start}
+              title="rename"
+              className="-mx-1 flex min-w-0 flex-1 cursor-text items-center rounded-md px-1 text-left text-sm font-medium hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-coral"
+            >
+              <span className={`truncate ${name ? "" : "text-foreground/85"}`}>{title}</span>
+              <span className="sr-only">(rename)</span>
+            </button>
+            <div ref={menuRef} className="relative shrink-0">
+              <button
+                type="button"
+                aria-label={`more for ${title}`}
+                aria-haspopup="menu"
+                aria-expanded={menu}
+                onClick={() => setMenu((m) => !m)}
+                className="flex size-7 cursor-pointer items-center justify-center rounded-full text-muted transition hover:bg-white/10 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral aria-expanded:bg-white/10"
+              >
+                <DotsIcon className="size-4" />
+              </button>
+              {menu && (
+                <div
+                  role="menu"
+                  className="absolute right-0 bottom-full z-20 mb-1 flex w-36 flex-col overflow-hidden rounded-xl border border-white/10 bg-[#17171d] p-1 text-sm shadow-xl shadow-black/50"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={start}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-white/10 focus-visible:bg-white/10 focus-visible:outline-none"
+                  >
+                    <PencilIcon className="size-3.5 text-muted" /> rename
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenu(false);
+                      setError("");
+                      confirmRef.current?.showModal();
+                    }}
+                    className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-coral hover:bg-coral/10 focus-visible:bg-coral/10 focus-visible:outline-none"
+                  >
+                    <TrashIcon className="size-3.5" /> delete
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         )}
         <span className="truncate text-xs text-muted">
           {p.kind === "scratch" ? "from scratch" : "remake"} · {p.when}
@@ -143,7 +230,69 @@ export function ProjectCard({ p }: { p: ProjectCardData }) {
           </span>
         )}
       </div>
+
+      <dialog
+        ref={confirmRef}
+        aria-labelledby={`delete-${p.id}`}
+        className="m-auto w-[calc(100%-2rem)] max-w-sm rounded-3xl border border-white/10 bg-[#141419] p-6 text-foreground shadow-2xl backdrop:bg-black/70 backdrop:backdrop-blur-sm"
+      >
+        <h3 id={`delete-${p.id}`} className="text-lg font-semibold text-balance">
+          delete “{title}”?
+        </h3>
+        <p className="mt-2 text-sm text-pretty text-muted">
+          {p.busy
+            ? "this video is still being made. you can delete it once it’s finished."
+            : "this deletes the video, every version of it and the clips you uploaded for it. it can’t be undone."}
+          {!p.busy && p.version ? " download anything you want to keep first." : ""}
+        </p>
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => confirmRef.current?.close()}
+            className="h-11 cursor-pointer rounded-full px-5 text-sm font-medium text-muted hover:bg-white/10 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral"
+          >
+            {p.busy ? "okay" : "keep it"}
+          </button>
+          {!p.busy && (
+            <button
+              type="button"
+              onClick={remove}
+              disabled={deleting}
+              className="h-11 cursor-pointer rounded-full bg-coral px-5 text-sm font-semibold text-white transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral disabled:opacity-60"
+            >
+              {deleting ? "deleting…" : "delete"}
+            </button>
+          )}
+        </div>
+      </dialog>
     </li>
+  );
+}
+
+function DotsIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
+      <circle cx="5" cy="12" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="19" cy="12" r="1.8" />
+    </svg>
+  );
+}
+
+function TrashIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+    </svg>
   );
 }
 

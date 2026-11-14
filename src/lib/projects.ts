@@ -173,7 +173,7 @@ export async function saveProjectPrompt(projectId: string, prompt: string) {
 export async function getProject(userId: string, projectId: string): Promise<Project | null> {
   if (!isUuid(projectId)) return null;
   const rows = await getSql()`
-    SELECT * FROM projects WHERE id = ${projectId} AND user_id = ${userId}`;
+    SELECT * FROM projects p WHERE id = ${projectId} AND user_id = ${userId} AND to_jsonb(p) ->> 'deleted_at' IS NULL`;
   return rows[0] ? toProject(rows[0]) : null;
 }
 
@@ -258,7 +258,7 @@ export async function listProjects(userId: string, limit = 60): Promise<ProjectS
            (SELECT count(*) FROM clips c WHERE c.project_id = p.id AND c.status = 'uploaded')::int AS clip_count,
            (SELECT max(version) FROM renders r WHERE r.project_id = p.id) AS latest_version
     FROM projects p LEFT JOIN inspirations i ON i.project_id = p.id
-    WHERE p.user_id = ${userId}
+    WHERE p.user_id = ${userId} AND to_jsonb(p) ->> 'deleted_at' IS NULL
     ORDER BY p.updated_at DESC
     LIMIT ${limit}`;
   return rows.map((r) => ({
@@ -293,6 +293,23 @@ export function projectTitle(p: Pick<ProjectSummary, "name" | "kind" | "prompt" 
 
 export async function renameProject(projectId: string, name: string) {
   await getSql()`UPDATE projects SET name = ${name} WHERE id = ${projectId}`;
+}
+
+/**
+ * Deletes a project's records. A video that never counted (no version was made) goes entirely; one
+ * that counted keeps an empty row, so this month's count and the free trial stay as they were.
+ * The caller deletes its files.
+ */
+export async function deleteProjectRecords(projectId: string) {
+  const sql = getSql();
+  const gone = await sql`DELETE FROM projects WHERE id = ${projectId} AND counted_at IS NULL RETURNING id`;
+  if (gone.length) return;
+  await sql.transaction([
+    sql`DELETE FROM renders WHERE project_id = ${projectId}`,
+    sql`DELETE FROM clips WHERE project_id = ${projectId}`,
+    sql`DELETE FROM inspirations WHERE project_id = ${projectId}`,
+    sql`UPDATE projects SET deleted_at = now(), name = '', prompt = '', audio = NULL WHERE id = ${projectId}`,
+  ]);
 }
 
 /** Where "continue" should take the user for a project. */

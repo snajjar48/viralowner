@@ -110,6 +110,8 @@ async function cardFor(p: ProjectSummary): Promise<ProjectCardData> {
     when: when(p.updatedAt),
     version: p.latestVersion,
     cover: p.coverClipKey ? await clipThumbUrl(p.coverClipKey).catch(() => null) : null,
+    prompt: p.prompt,
+    busy: p.status === "processing" || p.status === "analyzing",
   };
 }
 
