@@ -502,6 +502,20 @@ export function ClipsManager({
           </p>
         )}
 
+        {(takeMode || freeform) && (
+          <details className="group rounded-xl border border-white/10 px-3 py-2 text-xs text-muted">
+            <summary className="cursor-pointer list-none text-center focus-visible:outline-2 focus-visible:outline-coral [&::-webkit-details-marker]:hidden">
+              tips for filming yourself talking <span aria-hidden="true" className="inline-block transition group-open:rotate-180">▾</span>
+            </summary>
+            <ul className="mt-2 flex list-disc flex-col gap-1 pl-4 text-pretty">
+              <li>start talking the second you hit record. no “hi guys”: we cut everything before your first word.</li>
+              <li>light in front of you (face a window), not behind you. phone at eye level, close enough to hear you clearly.</li>
+              <li>film a new clip for each sentence or point, and switch spots or angles between them. it keeps people watching.</li>
+              <li>don’t worry about ums, pauses or retakes. we cut them.</li>
+            </ul>
+          </details>
+        )}
+
         {skipped.length > 0 && (
           <div role="alert" className="flex flex-col gap-1 rounded-xl border border-coral/30 bg-coral/[0.06] p-3 text-sm">
             {skipped.map((s) => (

@@ -10,10 +10,22 @@ export interface BusinessValues {
   words: string;
   role: string;
   purpose: string;
+  audience: string;
+  offer: string;
   notes: string;
 }
 
-export const EMPTY_PROFILE: BusinessValues = { name: "", about: "", city: "", words: "", role: "", purpose: "", notes: "" };
+export const EMPTY_PROFILE: BusinessValues = {
+  name: "",
+  about: "",
+  city: "",
+  words: "",
+  role: "",
+  purpose: "",
+  audience: "",
+  offer: "",
+  notes: "",
+};
 
 type Field = {
   key: keyof BusinessValues;
@@ -44,6 +56,21 @@ const PURPOSE: Field = {
     options: ["more customers in the door", "growing my following", "launching new products", "videos for my clients", "hiring"],
   },
 };
+const AUDIENCE: Field = {
+  key: "audience",
+  label: "who your videos are for",
+  placeholder: "e.g. college students near campus who want a late-night treat",
+  max: 200,
+  hint: "the one kind of viewer you most want. the best videos speak to one person.",
+};
+const OFFER: Field = {
+  key: "offer",
+  label: "what you want viewers to buy or do",
+  placeholder: "e.g. try our new ube crepe, order on our app, book a free consult",
+  max: 200,
+  optional: true,
+  hint: "we use it for calls to action at the end of your videos.",
+};
 const NAME: Field = { key: "name", label: "business or brand name", placeholder: "e.g. Crepe Escape", max: 80 };
 const ABOUT: Field = {
   key: "about",
@@ -72,12 +99,13 @@ const NOTES: Field = {
 
 const SECTIONS: { title: string; fields: Field[] }[] = [
   { title: "about you", fields: [ROLE, PURPOSE] },
+  { title: "your viewers", fields: [AUDIENCE, OFFER] },
   { title: "your business", fields: [NAME, ABOUT, CITY] },
   { title: "spelling", fields: [WORDS] },
   { title: "remember this", fields: [NOTES] },
 ];
 /** The few that matter most, for the one-time card before a first video. */
-const SHORT: Field[] = [NAME, ROLE, ABOUT, WORDS];
+const SHORT: Field[] = [NAME, ROLE, ABOUT, AUDIENCE, WORDS];
 
 /** The user's profile, asked once and used on every video (captions, text, edits and post captions). */
 export function BusinessForm({

@@ -13,6 +13,10 @@ export interface BusinessProfile {
   role: string;
   /** What they use the site for ("promote my shop", "videos for my clients"). */
   purpose: string;
+  /** Who their videos are for ("busy moms in Cleveland", "new coffee shop owners"). */
+  audience: string;
+  /** What they want viewers to buy or do ("order on our app", "book a free consult"). */
+  offer: string;
   /** Anything else to remember when we make their videos. */
   notes: string;
 }
@@ -24,9 +28,21 @@ export const BUSINESS_LIMITS = {
   words: 300,
   role: 80,
   purpose: 200,
+  audience: 200,
+  offer: 200,
   notes: 1000,
 } as const;
-export const EMPTY_BUSINESS: BusinessProfile = { name: "", about: "", city: "", words: "", role: "", purpose: "", notes: "" };
+export const EMPTY_BUSINESS: BusinessProfile = {
+  name: "",
+  about: "",
+  city: "",
+  words: "",
+  role: "",
+  purpose: "",
+  audience: "",
+  offer: "",
+  notes: "",
+};
 
 export function hasBusiness(p: BusinessProfile | null) {
   return !!p && Object.values(p).some(Boolean);
@@ -82,6 +98,19 @@ export function parseBusiness(body: Record<string, unknown> | null): BusinessPro
 }
 
 export async function saveBusiness(userId: string, p: BusinessProfile) {
+  try {
+    await getSql()`
+      INSERT INTO business_profiles (user_id, name, about, city, words, role, purpose, audience, offer, notes, updated_at)
+      VALUES (${userId}, ${p.name}, ${p.about}, ${p.city}, ${p.words}, ${p.role}, ${p.purpose}, ${p.audience},
+              ${p.offer}, ${p.notes}, now())
+      ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, about = EXCLUDED.about, city = EXCLUDED.city,
+        words = EXCLUDED.words, role = EXCLUDED.role, purpose = EXCLUDED.purpose, audience = EXCLUDED.audience,
+        offer = EXCLUDED.offer, notes = EXCLUDED.notes, updated_at = now()`;
+    return;
+  } catch (error) {
+    // Before the 0011 migration there's no audience or offer yet: save the rest.
+    if (!/column "(audience|offer)"/.test(String(error))) throw error;
+  }
   await getSql()`
     INSERT INTO business_profiles (user_id, name, about, city, words, role, purpose, notes, updated_at)
     VALUES (${userId}, ${p.name}, ${p.about}, ${p.city}, ${p.words}, ${p.role}, ${p.purpose}, ${p.notes}, now())
@@ -103,6 +132,8 @@ export function businessText(p: BusinessProfile | null): string {
     p.city && `where: ${p.city}`,
     p.role && `the user's role: ${p.role}`,
     p.purpose && `what they make videos for: ${p.purpose}`,
+    p.audience && `who their videos are for (call these viewers out in hooks when it fits): ${p.audience}`,
+    p.offer && `what they want viewers to buy or do (use it for calls to action when the video has one): ${p.offer}`,
     p.notes && `what they asked us to remember for every video:\n${p.notes}`,
   ]
     .filter(Boolean)

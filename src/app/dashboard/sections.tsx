@@ -150,6 +150,8 @@ export function ProfileCard({ profile }: { profile: BusinessProfile | null }) {
   const facts = [
     profile.about && { k: "sells", v: profile.about },
     profile.purpose && { k: "for", v: profile.purpose },
+    profile.audience && { k: "viewers", v: profile.audience },
+    profile.offer && { k: "offer", v: profile.offer },
     profile.words && { k: "spells", v: profile.words },
     profile.notes && { k: "remembers", v: profile.notes.replace(/\s+/g, " ") },
   ].filter((x): x is { k: string; v: string } => !!x);
