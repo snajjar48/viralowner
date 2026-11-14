@@ -35,7 +35,7 @@ export function PlanPill({ m }: { m: Membership }) {
   return (
     <a
       href="#account"
-      className="hidden rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-foreground/85 transition hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-coral sm:inline-block"
+      className="hidden rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-foreground/85 transition hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-coral lg:inline-block"
     >
       {text}
     </a>

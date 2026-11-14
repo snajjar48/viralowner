@@ -1,7 +1,7 @@
-import Link from "next/link";
 import type { ReactNode } from "react";
 import { BackgroundGlow, Logo } from "./auth-layout";
 import { ProgressSteps } from "./progress-steps";
+import { SiteNav } from "./site-nav";
 
 /** Page frame for the "create a video" flow. Mobile-first. */
 export function FlowShell({
@@ -21,12 +21,7 @@ export function FlowShell({
       <BackgroundGlow />
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between px-4 pt-4 sm:px-6 sm:pt-6">
         <Logo className="h-7 w-auto" />
-        <Link
-          href="/dashboard"
-          className="rounded-full px-3 py-1.5 text-sm text-muted transition hover:bg-white/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral"
-        >
-          my videos
-        </Link>
+        <SiteNav />
       </header>
       <main
         className={`mx-auto flex w-full flex-col gap-6 px-4 pt-6 pb-16 sm:px-6 sm:pt-10 ${

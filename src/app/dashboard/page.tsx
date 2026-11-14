@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { BackgroundGlow, Logo } from "@/components/auth-layout";
+import { SiteNav } from "@/components/site-nav";
 import { getBusiness } from "@/lib/business";
 import { DRAFT_DAYS } from "@/lib/cleanup";
 import { clipThumbUrl } from "@/lib/clips";
@@ -56,15 +56,10 @@ async function Dashboard() {
     <>
       <header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-3 px-4 pt-4 sm:px-6 sm:pt-6">
         <Logo className="h-7 w-auto" />
-        <nav className="flex items-center gap-1 text-sm" aria-label="account">
+        <div className="flex items-center gap-2">
           <PlanPill m={membership} />
-          <Link
-            href="/profile"
-            className="rounded-full px-3 py-1.5 text-muted transition hover:bg-white/5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral"
-          >
-            profile
-          </Link>
-        </nav>
+          <SiteNav />
+        </div>
       </header>
 
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 pt-8 pb-20 sm:px-6 sm:pt-12">
