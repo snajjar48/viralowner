@@ -3,7 +3,7 @@ import { AuthShell } from "@/components/auth-shell";
 import { ForgotForm } from "./forgot-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — reset your password",
+  title: "reset your password",
   robots: { index: false, follow: false },
 };
 

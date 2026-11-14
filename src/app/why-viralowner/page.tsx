@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
+import { breadcrumbs, JsonLd } from "@/components/structured-data";
 import { JoinCta, JoinSection, MarketingShell, Section } from "@/components/marketing";
 
-export const metadata: Metadata = {
-  title: "why viralowner — posting every day without editing every night",
+export const metadata: Metadata = pageMetadata({
+  title: "why viralowner: short-form video without the editing",
   description:
-    "how viralowner compares to editing it yourself, hiring an editor and template apps, and what we promise about your videos.",
-  alternates: { canonical: "/why-viralowner" },
-};
+    "viralowner vs editing it yourself, hiring a video editor and template apps. post TikToks and Reels every day without spending your nights editing.",
+  path: "/why-viralowner",
+});
 
 const OPTIONS = ["editing it yourself", "hiring an editor", "template apps", "viralowner"] as const;
 
@@ -73,6 +75,7 @@ const PROMISES = [
 export default function WhyPage() {
   return (
     <MarketingShell>
+      <JsonLd data={breadcrumbs("why viralowner", "/why-viralowner")} />
       <section className="px-4 pt-14 pb-10 sm:px-6 sm:pt-24">
         <div className="mx-auto flex max-w-3xl flex-col gap-6">
           <p className="text-sm font-medium bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">why viralowner</p>

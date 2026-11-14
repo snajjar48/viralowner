@@ -11,7 +11,7 @@ import type { Shot } from "@/lib/processing/types";
 import { PreviewEditor } from "./preview-editor";
 
 export const metadata: Metadata = {
-  title: "viralowner — your video",
+  title: "your video",
   robots: { index: false, follow: false },
 };
 

@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
 import { Check, Faq, FeatureGrid, HeroVisual, JoinCta, JoinSection, MarketingShell, Section, Steps } from "@/components/marketing";
 import { FEATURES, HOW_IT_WORKS } from "@/components/marketing-copy";
 
 // The page ads point to: one ask, nothing to wander off to. Not for search engines.
-export const metadata: Metadata = {
-  title: "viralowner — turn your own clips into the video that’s going viral",
-  description: "send a video that went viral and your raw clips. get yours back edited, captioned and ready to post. first video free.",
-  robots: { index: false, follow: false },
-};
+export const metadata: Metadata = pageMetadata({
+  title: "viralowner: turn your own clips into the video that’s going viral",
+  absoluteTitle: true,
+  description: "send a video that went viral and your own clips. get yours back edited, captioned and ready to post. first video free.",
+  path: "/start",
+  index: false,
+});
 
 export default function AdLandingPage() {
   return (
@@ -45,6 +48,7 @@ export default function AdLandingPage() {
       <Section eyebrow="quick answers" title="before you sign up.">
         <div className="max-w-3xl">
           <Faq
+            schema={false}
             items={[
               {
                 q: "do i need editing experience?",

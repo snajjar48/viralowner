@@ -12,6 +12,7 @@ const PUBLIC_PATHS = new Set([
   "/terms",
   "/robots.txt",
   "/sitemap.xml",
+  "/opengraph-image", // the picture shown when a page is shared
   "/api/waitlist", // waitlist signup
   "/unlock", // password page
   "/api/unlock", // password check

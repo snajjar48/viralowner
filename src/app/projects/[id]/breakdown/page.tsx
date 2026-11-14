@@ -9,7 +9,7 @@ import { BreakdownView } from "./breakdown-view";
 import { InspoStatus } from "./inspo-status";
 
 export const metadata: Metadata = {
-  title: "viralowner — your inspo, broken down",
+  title: "your inspo, broken down",
   robots: { index: false, follow: false },
 };
 

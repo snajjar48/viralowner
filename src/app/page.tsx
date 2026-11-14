@@ -1,24 +1,28 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
+import { JsonLd, ORGANIZATION } from "@/components/structured-data";
 import Link from "next/link";
 import { TrendIcon, WandIcon } from "@/components/icons";
 import { FEATURES, HOME_FAQ, HOW_IT_WORKS, WHO } from "@/components/marketing-copy";
 import { Faq, FeatureGrid, HeroVisual, JoinCta, JoinSection, MarketingShell, Section, Steps } from "@/components/marketing";
 
-export const metadata: Metadata = {
-  title: "viralowner — skip the editing, keep the views",
+export const metadata: Metadata = pageMetadata({
+  title: "viralowner: edit your clips like viral TikToks & Reels",
+  absoluteTitle: true,
   description:
-    "send a video that went viral and your own raw clips. we edit yours the same way: same cuts, same timing, captions and text, with your business in it.",
-  alternates: { canonical: "/" },
-};
+    "send a video that went viral and your own clips. we edit yours the same way, captioned and ready for TikTok, Reels and Shorts. first video free.",
+  path: "/",
+});
 
 export default function Home() {
   return (
     <MarketingShell>
+      <JsonLd data={ORGANIZATION} />
       <section className="px-4 pt-12 pb-16 sm:px-6 sm:pt-20 sm:pb-24">
         <div className="mx-auto grid max-w-6xl items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
           <div className="flex flex-col items-start gap-6">
             <p className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-muted">
-              for business owners &amp; creators
+              the viral video editor for business owners &amp; creators
             </p>
             <h1 className="text-5xl leading-[1.02] font-semibold tracking-tight text-balance sm:text-7xl">
               skip the editing,{" "}

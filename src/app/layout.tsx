@@ -9,14 +9,13 @@ const lexend = Lexend({
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.viralowner.com"),
-  title: "viralowner — skip the editing, keep the views",
-  description: "send a video that went viral and your raw clips. we edit yours the same way, with your business in it.",
-  openGraph: {
-    siteName: "viralowner",
-    type: "website",
-    title: "viralowner — skip the editing, keep the views",
-    description: "send a video that went viral and your raw clips. we edit yours the same way, with your business in it.",
-  },
+  applicationName: "viralowner",
+  title: { default: "viralowner: edit your clips like viral TikToks & Reels", template: "%s | viralowner" },
+  description:
+    "send a video that went viral and your own clips. we edit yours the same way, with captions and text in your words, ready to post.",
+  openGraph: { type: "website", siteName: "viralowner", locale: "en_US" },
+  twitter: { card: "summary_large_image" },
+  formatDetection: { telephone: false, email: false, address: false },
 };
 
 export const viewport: Viewport = {

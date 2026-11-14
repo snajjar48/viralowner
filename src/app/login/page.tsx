@@ -4,7 +4,7 @@ import { AuthLayout, EditPreview, Eyebrow, GradientText } from "@/components/aut
 import { LoginForm } from "./login-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — log in",
+  title: "log in",
   robots: { index: false, follow: false },
 };
 

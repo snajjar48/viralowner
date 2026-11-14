@@ -6,7 +6,7 @@ import { ClockIcon, SparkleIcon, TrendIcon, UploadIcon, WandIcon } from "@/compo
 import { SignupForm } from "./signup-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — create your account",
+  title: "create your account",
   robots: { index: false, follow: false },
 };
 

@@ -6,7 +6,7 @@ import { loadProject } from "@/lib/project-page";
 import { InspoUploader } from "@/components/inspo-uploader";
 
 export const metadata: Metadata = {
-  title: "viralowner — change your inspo",
+  title: "change your inspo",
   robots: { index: false, follow: false },
 };
 

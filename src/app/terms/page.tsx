@@ -4,7 +4,7 @@ import { AuthShell } from "@/components/auth-shell";
 import { CHANGES_PER_VIDEO, TRIAL_CHANGES, VIDEO_LIMITS } from "@/lib/plan-format";
 
 export const metadata: Metadata = {
-  title: "viralowner — terms and conditions",
+  title: "terms and conditions",
   robots: { index: false, follow: false },
 };
 

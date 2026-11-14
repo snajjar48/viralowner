@@ -12,7 +12,7 @@ import { audioView } from "@/lib/audio";
 import { ClipsManager } from "./clips-manager";
 
 export const metadata: Metadata = {
-  title: "viralowner — upload your clips",
+  title: "upload your clips",
   robots: { index: false, follow: false },
 };
 

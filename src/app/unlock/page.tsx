@@ -3,7 +3,7 @@ import Image from "next/image";
 import { UnlockForm } from "./unlock-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — private",
+  title: "private",
   robots: { index: false, follow: false },
 };
 

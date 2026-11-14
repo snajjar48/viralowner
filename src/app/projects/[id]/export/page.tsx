@@ -12,7 +12,7 @@ import type { MusicMode } from "@/lib/video-options";
 import { SaveVideo } from "./save-video";
 
 export const metadata: Metadata = {
-  title: "viralowner — download",
+  title: "download",
   robots: { index: false, follow: false },
 };
 

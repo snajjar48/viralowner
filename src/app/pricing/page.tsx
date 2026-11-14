@@ -1,15 +1,17 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
+import { breadcrumbs, JsonLd } from "@/components/structured-data";
 import { Fragment, Suspense } from "react";
 import { Faq, JoinSection, MAIN_CTA, MarketingShell, Section } from "@/components/marketing";
 import { CHANGES_PER_VIDEO, VIDEO_LIMITS } from "@/lib/plan-format";
 import { getPlans } from "@/lib/plans";
 import { PricingTable } from "./pricing-table";
 
-export const metadata: Metadata = {
-  title: "pricing — viralowner",
-  description: `your first video is free. Basic: ${VIDEO_LIMITS.basic} videos a month. Pro: ${VIDEO_LIMITS.pro} videos a month plus start from scratch. ${CHANGES_PER_VIDEO} changes on every video.`,
-  alternates: { canonical: "/pricing" },
-};
+export const metadata: Metadata = pageMetadata({
+  title: "pricing: plans for viral video editing, first video free",
+  description: `viralowner pricing: Basic gets ${VIDEO_LIMITS.basic} videos a month, Pro gets ${VIDEO_LIMITS.pro} plus start from scratch. ${CHANGES_PER_VIDEO} changes on every video, and your first video is free on both plans.`,
+  path: "/pricing",
+});
 
 /** Basic, Pro. `group` starts a labelled block; `sub` rows are part of the block above. */
 const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: boolean }[] = [
@@ -36,6 +38,7 @@ const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: b
 export default function PricingPage() {
   return (
     <MarketingShell>
+      <JsonLd data={breadcrumbs("pricing", "/pricing")} />
       <section className="px-4 pt-14 pb-6 sm:px-6 sm:pt-24">
         <div className="mx-auto flex max-w-3xl flex-col items-center gap-5 text-center">
           <p className="text-sm font-medium bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">pricing</p>
@@ -149,5 +152,31 @@ export default function PricingPage() {
 }
 
 async function Tiers() {
-  return <PricingTable plans={await getPlans()} cta={MAIN_CTA} />;
+  const plans = await getPlans();
+  const monthly = (plans ?? []).filter((p) => p.interval === "monthly");
+  return (
+    <>
+      {monthly.length > 0 && (
+        // The plans and their real prices (from Stripe), for search results.
+        <JsonLd
+          data={{
+            "@context": "https://schema.org",
+            "@type": "SoftwareApplication",
+            name: "viralowner",
+            url: "https://www.viralowner.com/pricing",
+            applicationCategory: "MultimediaApplication",
+            operatingSystem: "Web",
+            offers: monthly.map((p) => ({
+              "@type": "Offer",
+              name: `${p.tier === "basic" ? "Basic" : "Pro"} (monthly)`,
+              price: (p.amount / 100).toFixed(2),
+              priceCurrency: p.currency.toUpperCase(),
+              url: "https://www.viralowner.com/pricing",
+            })),
+          }}
+        />
+      )}
+      <PricingTable plans={plans} cta={MAIN_CTA} />
+    </>
+  );
 }

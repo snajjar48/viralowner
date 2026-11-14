@@ -13,7 +13,7 @@ import type { ProjectCardData } from "./project-card";
 import { Account, CreateCards, PlanPill, ProfileCard, VideoGrid } from "./sections";
 
 export const metadata: Metadata = {
-  title: "viralowner — dashboard",
+  title: "dashboard",
   robots: { index: false, follow: false },
 };
 

@@ -12,7 +12,7 @@ import { ManageBillingButton } from "../dashboard/manage-billing-button";
 import { PromptStart } from "./prompt-start";
 
 export const metadata: Metadata = {
-  title: "viralowner — start from scratch",
+  title: "start from scratch",
   robots: { index: false, follow: false },
 };
 

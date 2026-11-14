@@ -9,7 +9,7 @@ import { getUserId } from "@/lib/auth";
 import { EMPTY_BUSINESS, getBusiness } from "@/lib/business";
 
 export const metadata: Metadata = {
-  title: "viralowner — your profile",
+  title: "your profile",
   robots: { index: false, follow: false },
 };
 

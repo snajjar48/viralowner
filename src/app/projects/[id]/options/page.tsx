@@ -10,7 +10,7 @@ import { isOneTake } from "@/lib/processing/types";
 import { OptionsForm } from "./options-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — options",
+  title: "options",
   robots: { index: false, follow: false },
 };
 

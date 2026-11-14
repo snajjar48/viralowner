@@ -10,7 +10,7 @@ import { getBusiness, hasBusiness } from "@/lib/business";
 import { canStartVideo, getMembership } from "@/lib/membership";
 
 export const metadata: Metadata = {
-  title: "viralowner — new video",
+  title: "new video",
   robots: { index: false, follow: false },
 };
 

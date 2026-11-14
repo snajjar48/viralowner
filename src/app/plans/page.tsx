@@ -12,7 +12,7 @@ import { ManageBillingButton } from "../dashboard/manage-billing-button";
 import { PlansForm, type SavedCard } from "./plans-form";
 
 export const metadata: Metadata = {
-  title: "viralowner — choose your plan",
+  title: "choose your plan",
   robots: { index: false, follow: false },
 };
 

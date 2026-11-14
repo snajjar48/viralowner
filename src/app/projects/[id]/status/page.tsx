@@ -8,7 +8,7 @@ import { syncUnfinished } from "@/lib/renders";
 import { StatusTracker } from "./status-tracker";
 
 export const metadata: Metadata = {
-  title: "viralowner — making your video",
+  title: "making your video",
   robots: { index: false, follow: false },
 };
 

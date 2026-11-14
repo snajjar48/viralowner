@@ -12,7 +12,7 @@ import { scratchOptions } from "@/lib/video-options";
 import { ScratchCreate } from "./scratch-create";
 
 export const metadata: Metadata = {
-  title: "viralowner — start from scratch",
+  title: "start from scratch",
   robots: { index: false, follow: false },
 };
 

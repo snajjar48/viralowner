@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { BackgroundGlow } from "./auth-layout";
 import { MarketingNav } from "./marketing-nav";
+import { JsonLd } from "./structured-data";
 import { WaitlistForm } from "./waitlist-form";
 
 /**
@@ -187,9 +188,23 @@ export function FeatureGrid({ items }: { items: { title: string; body: ReactNode
   );
 }
 
-export function Faq({ items }: { items: { q: string; a: ReactNode }[] }) {
+/** Questions and answers, plus their FAQPage structured data (pass `schema={false}` on pages search shouldn't read). */
+export function Faq({ items, schema = true }: { items: { q: string; a: string }[]; schema?: boolean }) {
   return (
     <div className="flex flex-col divide-y divide-white/10 border-y border-white/10">
+      {schema && (
+        <JsonLd
+          data={{
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            mainEntity: items.map((f) => ({
+              "@type": "Question",
+              name: f.q,
+              acceptedAnswer: { "@type": "Answer", text: f.a },
+            })),
+          }}
+        />
+      )}
       {items.map((f) => (
         <details key={f.q} className="group py-1">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-left font-medium focus-visible:outline-2 focus-visible:outline-coral [&::-webkit-details-marker]:hidden">

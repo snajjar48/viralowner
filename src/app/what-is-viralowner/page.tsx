@@ -1,13 +1,15 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
+import { breadcrumbs, JsonLd } from "@/components/structured-data";
 import { Check, Faq, JoinCta, JoinSection, MarketingShell, Section } from "@/components/marketing";
 import { WHO } from "@/components/marketing-copy";
 
-export const metadata: Metadata = {
-  title: "what is viralowner? — how it works",
+export const metadata: Metadata = pageMetadata({
+  title: "how it works: turn your own clips into a viral-style video",
   description:
-    "viralowner is a video editor that works like a person: show it a video that went viral, hand it your clips, and it edits yours the same way.",
-  alternates: { canonical: "/what-is-viralowner" },
-};
+    "how viralowner works: we study a video that went viral, match your clips to it shot by shot and add captions in your words. preview it free first.",
+  path: "/what-is-viralowner",
+});
 
 const PROCESS = [
   {
@@ -35,6 +37,7 @@ const PROCESS = [
 export default function WhatIsPage() {
   return (
     <MarketingShell>
+      <JsonLd data={breadcrumbs("how it works", "/what-is-viralowner")} />
       <section className="px-4 pt-14 pb-10 sm:px-6 sm:pt-24">
         <div className="mx-auto flex max-w-3xl flex-col gap-6">
           <p className="text-sm font-medium bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">
