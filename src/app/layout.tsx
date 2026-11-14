@@ -8,8 +8,15 @@ const lexend = Lexend({
 });
 
 export const metadata: Metadata = {
-  title: "viralowner — join the waitlist",
-  description: "skip the editing, keep the views. upload your raw clips & we’ll handle the edit.",
+  metadataBase: new URL("https://www.viralowner.com"),
+  title: "viralowner — skip the editing, keep the views",
+  description: "send a video that went viral and your raw clips. we edit yours the same way, with your business in it.",
+  openGraph: {
+    siteName: "viralowner",
+    type: "website",
+    title: "viralowner — skip the editing, keep the views",
+    description: "send a video that went viral and your raw clips. we edit yours the same way, with your business in it.",
+  },
 };
 
 export const viewport: Viewport = {

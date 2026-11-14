@@ -17,10 +17,13 @@ export async function POST(request: Request) {
     return json({ error: "Invalid request." }, 400);
   }
 
-  const { email, website } = (body ?? {}) as {
+  const { email, website, source } = (body ?? {}) as {
     email?: unknown;
     website?: unknown;
+    source?: unknown;
   };
+  // Which page and ad it came from (free text, kept short and printable).
+  const from = typeof source === "string" ? source.replace(/[^\x20-\x7E]/g, "").slice(0, 300) : "";
 
   // Honeypot: real users never see or fill this field. Pretend it worked
   // so bots get no signal.
@@ -44,11 +47,21 @@ export async function POST(request: Request) {
     const sql = getSql();
     // Duplicate emails are silently ignored by the unique index. The response
     // is identical so the form can't be used to check who has signed up.
-    await sql`
-      INSERT INTO waitlist_signups (email)
-      VALUES (${normalized})
-      ON CONFLICT (lower(email)) DO NOTHING
-    `;
+    try {
+      await sql`
+        INSERT INTO waitlist_signups (email, source)
+        VALUES (${normalized}, ${from})
+        ON CONFLICT (lower(email)) DO NOTHING
+      `;
+    } catch (error) {
+      // Before the source migration runs, the column isn't there: still save the email.
+      if (!/column "source"/.test(String(error))) throw error;
+      await sql`
+        INSERT INTO waitlist_signups (email)
+        VALUES (${normalized})
+        ON CONFLICT (lower(email)) DO NOTHING
+      `;
+    }
 
     return json({ ok: true });
   } catch (error) {

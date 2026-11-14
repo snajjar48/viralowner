@@ -4,7 +4,14 @@ import { updateSession } from "@/lib/supabase/proxy";
 
 // The only paths anyone can reach without the password.
 const PUBLIC_PATHS = new Set([
-  "/", // waitlist landing page
+  "/", // home page
+  "/what-is-viralowner", // public: how it works
+  "/why-viralowner", // public: why us
+  "/pricing", // public: plans
+  "/start", // public: landing page for ads
+  "/terms",
+  "/robots.txt",
+  "/sitemap.xml",
   "/api/waitlist", // waitlist signup
   "/unlock", // password page
   "/api/unlock", // password check
