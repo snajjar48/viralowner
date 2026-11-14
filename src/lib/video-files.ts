@@ -5,7 +5,8 @@ import { formatDuration } from "./video-options";
 
 export const INSPO_MAX_SECONDS = 60;
 export const INSPO_MAX_BYTES = 200 * 1024 * 1024;
-export const CLIP_MAX_BYTES = 500 * 1024 * 1024;
+// Room for camera footage (4K at 100–200 Mbps is about 1 GB a minute). Big files upload in parts.
+export const CLIP_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 export const CLIP_MAX_SECONDS = 5 * 60;
 export const MAX_CLIPS = 20;
 
@@ -27,7 +28,7 @@ export function videoContentType(fileName: string, type: string): VideoContentTy
 export const extensionFor = (type: VideoContentType) => (type === "video/quicktime" ? "mov" : "mp4");
 
 export function formatBytes(bytes: number) {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 * 1024 * 1024) return `${Number((bytes / 1024 ** 3).toFixed(1))} GB`;
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / 1024 ** 2)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }

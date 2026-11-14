@@ -2343,6 +2343,105 @@ def windowed(base: str, windows: list[tuple[float, float, str]], total: float) -
     return ";".join(graph)
 
 
+# ---- reframing: wider-than-vertical clips (camera footage) are cropped around their subject
+
+_FRAME_X: dict[tuple, float] = {}
+
+
+def _gray_frame(path: Path, t: float, height: int):
+    """One frame as grayscale floats, `height` tall, the right way up (phone rotation applied)."""
+    import numpy as np
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-frames:v", "1",
+                          "-vf", f"scale=-2:{height},format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
+    if not raw or len(raw) % height:
+        return None
+    return np.frombuffer(raw, np.uint8).reshape(height, len(raw) // height).astype(np.float32)
+
+
+def _saliency(img):
+    """What stands out in a frame (spectral residual), 0..1, the frame's size."""
+    import cv2
+    import numpy as np
+
+    small = cv2.resize(img, (64, max(8, round(64 * img.shape[0] / img.shape[1]))))
+    f = np.fft.fft2(small)
+    residual = np.log(np.abs(f) + 1e-8)
+    residual = residual - cv2.blur(residual, (3, 3))
+    sal = np.abs(np.fft.ifft2(np.exp(residual + 1j * np.angle(f)))) ** 2
+    sal = cv2.resize(cv2.GaussianBlur(sal, (5, 5), 2.5), (img.shape[1], img.shape[0]))
+    return sal / (sal.max() or 1.0)
+
+
+def _subject_x(clip: dict, start: float, take: float) -> float:
+    import cv2
+    import numpy as np
+
+    h = 180
+    probe = _gray_frame(clip["path"], start + take * 0.5, h)
+    if probe is None:
+        return 0.5
+    w = probe.shape[1]
+    keep = (OUT_W / OUT_H) * h / w  # the share of the frame's width a vertical crop keeps
+    if keep >= 0.92:
+        return 0.5  # already vertical (or close): nothing to choose
+    win = max(1, round(keep * w))
+    profile = np.zeros(w, np.float32)
+    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    faces = 0
+    for frac in (0.15, 0.4, 0.65, 0.9):
+        t = start + take * frac
+        a = _gray_frame(clip["path"], t, h)
+        if a is None or a.shape[1] != w:
+            continue
+        b = _gray_frame(clip["path"], min(t + 0.12, start + take), h)
+        weight = 0.6 * _saliency(a)
+        if b is not None and b.shape == a.shape:
+            moving = cv2.GaussianBlur(np.abs(a - b), (9, 9), 3)
+            if moving.max() > 8:  # real movement, not sensor noise
+                weight += moving / moving.max()
+        profile += weight.mean(axis=0)
+        big = _gray_frame(clip["path"], t, 360)
+        if big is not None:
+            ratio = w / big.shape[1]
+            for (x, _y, fw, _fh) in cascade.detectMultiScale(big.astype(np.uint8), scaleFactor=1.1, minNeighbors=6,
+                                                            minSize=(28, 28)):
+                profile[int(x * ratio):int((x + fw) * ratio) + 1] += 3.0  # faces come first
+                faces += 1
+    if not profile.any():
+        return 0.5
+    profile = np.convolve(profile, np.ones(max(1, win // 4)) / max(1, win // 4), mode="same")
+    cols = np.arange(w)
+    profile *= 0.9 + 0.1 * np.exp(-(((cols - w / 2) / (w / 2)) ** 2))  # a slight pull to the middle
+    sums = np.convolve(profile, np.ones(win), mode="valid")
+    center, best = (w - win) // 2, int(np.argmax(sums))
+    if sums[best] < sums[center] * 1.1:
+        return 0.5  # nothing clearly off to one side: keep it centered
+    x = best / max(1, w - win)
+    print(f"reframe: {clip['path'].name} {start:.2f}+{take:.2f}s cropped at {x:.2f} (0=left, 1=right; {faces} faces)")
+    return float(x)
+
+
+def frame_x(clip: dict, start: float, take: float) -> float:
+    """Where a wider-than-vertical clip is cropped for this shot: 0 = its left edge, 0.5 = the center,
+    1 = its right edge. Over the subject (faces first, then what moves and stands out), one steady
+    position for the whole shot. Vertical clips are always 0.5. The shot, its face check for text
+    placement and its storyboard frame all use the same answer."""
+    key = (str(clip["path"]), round(start, 2), round(take, 2))
+    if key not in _FRAME_X:
+        try:
+            _FRAME_X[key] = _subject_x(clip, start, take)
+        except Exception as e:  # noqa: BLE001
+            print(f"reframe: kept the center ({type(e).__name__}: {e})")
+            _FRAME_X[key] = 0.5
+    return _FRAME_X[key]
+
+
+def crop_to(w: int, h: int, x: float) -> str:
+    """The crop filter to w×h after a scale that covers it, `x` across (0..1), centered vertically."""
+    return f"crop={w}:{h}:(iw-ow)*{min(1.0, max(0.0, x)):.4f}:(ih-oh)/2"
+
+
 def atempo_chain(rate: float) -> str:
     """atempo filters for any speed (each one only goes down to 0.5x), with a trailing comma; "" for 1x."""
     if abs(rate - 1) < 1e-3:
@@ -2355,7 +2454,7 @@ def atempo_chain(rate: float) -> str:
     return ",".join(parts) + ","
 
 
-def boomerang(clip: dict, start: float, need: float, dest: Path) -> dict:
+def boomerang(clip: dict, start: float, need: float, dest: Path, x: float = 0.5) -> dict:
     """The clip from `start`, played forward then backward (and again) until it lasts `need` seconds:
     a shot longer than its footage keeps moving instead of freezing. The sound plays once, then silence."""
     seg = max(0.1, clip["duration"] - start)
@@ -2363,7 +2462,7 @@ def boomerang(clip: dict, start: float, need: float, dest: Path) -> dict:
     vf = ",".join([
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={OUT_W}:{OUT_H}", "setsar=1", to_output_rate(clip.get("fps") or OUT_FPS), "format=yuv420p",
+        crop_to(OUT_W, OUT_H, x), "setsar=1", to_output_rate(clip.get("fps") or OUT_FPS), "format=yuv420p",
     ])
     frames = max(1, round(2 * seg * OUT_FPS))
     graph = (f"[0:v]{vf},split=2[f][r];[r]reverse[b];[f][b]concat=n=2:v=1:a=0,"
@@ -2389,6 +2488,7 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     """One shot: the clip from `start`, filling exactly `duration` seconds at 1080x1920, plus `tail`
     extra seconds of picture for a blend into the next shot (its audio is trimmed off later).
     `t_in` / `t_out`: the transitions into and out of it; `speed`: 0.5 = slow motion, 1.6 = sped up."""
+    x = frame_x(clip, start, take)  # wider-than-vertical footage: crop around its subject
     if speed < 1:
         # Never slower than the footage has real frames for: past that it gets choppy or smeared.
         smoothest = min(1.0, SMOOTH_SLOWMO_FPS / max(float(clip.get("fps") or OUT_FPS), 1.0))
@@ -2413,13 +2513,13 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
         stretch = min(MAX_STRETCH, total / max(avail, 0.05))
         need = total / stretch
     if avail < need - 0.02:
-        clip = boomerang(clip, start, need, dest.with_name(dest.stem + "-loop.mkv"))
+        clip = boomerang(clip, start, need, dest.with_name(dest.stem + "-loop.mkv"), x)
         start, avail = 0.0, clip["duration"]
     take, extra = min(avail, need), 0.0
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
         f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        f"crop={OUT_W}:{OUT_H}", "setsar=1",
+        crop_to(OUT_W, OUT_H, x), "setsar=1",
         *([f"setpts={stretch:.4f}*PTS"] if stretch != 1 else []),
         to_output_rate(clip.get("fps") or OUT_FPS, stretch),
         f"tpad=stop_mode=clone:stop_duration={total:.3f}",
@@ -2995,7 +3095,7 @@ def segment_faces(clip: dict, start: float, take: float) -> list[tuple[float, fl
     import numpy as np
 
     w, h = OUT_W // 3, OUT_H // 3
-    vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},format=gray"
+    vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,{crop_to(w, h, frame_x(clip, start, take))},format=gray"
     cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     ranges = []
     for f in (0.2, 0.5, 0.8):
@@ -5204,7 +5304,7 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
         raw = workdir / f"sb{i:02d}.png"
         vf = ",".join([*([tonemap_filter()] if clip["hdr"] else []),
                        f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-                       f"crop={OUT_W}:{OUT_H}", "setsar=1"])
+                       crop_to(OUT_W, OUT_H, frame_x(clip, p["start"], p["take"])), "setsar=1"])
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{p['start'] + p['take'] * 0.4:.3f}", "-i", str(clip["path"]),
                         "-frames:v", "1", "-vf", vf, str(raw)], capture_output=True)
         out = workdir / f"sb{i:02d}.jpg"

@@ -69,7 +69,8 @@ const xmlValue = (xml: string, tag: string) => new RegExp(`<${tag}>([^<]*)</${ta
  */
 export async function createMultipartUpload(
   key: string,
-  { contentType, sizeBytes, expiresIn = 4 * 3600 }: { contentType: string; sizeBytes: number; expiresIn?: number },
+  // 12 hours: a 4 GB camera clip on a slow connection takes a while.
+  { contentType, sizeBytes, expiresIn = 12 * 3600 }: { contentType: string; sizeBytes: number; expiresIn?: number },
 ) {
   const res = await r2().client.fetch(`${objectUrl(key)}?uploads=`, {
     method: "POST",
