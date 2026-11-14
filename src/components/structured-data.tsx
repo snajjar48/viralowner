@@ -20,7 +20,7 @@ export const ORGANIZATION = {
       "@id": `${SITE_URL}/#organization`,
       name: "viralowner",
       url: SITE_URL,
-      logo: `${SITE_URL}/logo.svg`,
+      logo: `${SITE_URL}/logo.png`,
       email: "hello@viralowner.com",
     },
     {

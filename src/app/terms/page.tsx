@@ -1,12 +1,15 @@
 import type { Metadata } from "next";
+import { pageMetadata } from "@/lib/seo";
 import type { ReactNode } from "react";
 import { AuthShell } from "@/components/auth-shell";
 import { CHANGES_PER_VIDEO, TRIAL_CHANGES, VIDEO_LIMITS } from "@/lib/plan-format";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMetadata({
   title: "terms and conditions",
-  robots: { index: false, follow: false },
-};
+  description: "viralowner’s terms: the free trial, memberships, changing or cancelling your plan, and your content.",
+  path: "/terms",
+  index: false,
+});
 
 // Billing terms in plain words. Have a lawyer review these (and add the rest
 // of the terms) before launch.

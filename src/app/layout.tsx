@@ -16,6 +16,8 @@ export const metadata: Metadata = {
   openGraph: { type: "website", siteName: "viralowner", locale: "en_US" },
   twitter: { card: "summary_large_image" },
   formatDetection: { telephone: false, email: false, address: false },
+  // Let Google show big image previews and full snippets for the public pages.
+  robots: { index: true, follow: true, googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1, "max-video-preview": -1 } },
 };
 
 export const viewport: Viewport = {

@@ -13,7 +13,8 @@ const PUBLIC_PATHS = new Set([
   "/terms",
   "/robots.txt",
   "/sitemap.xml",
-  "/opengraph-image", // the picture shown when a page is shared
+  "/apple-icon", // the site's phone icon
+  "/logo.png", // the company logo search engines show
   "/api/waitlist", // waitlist signup
   "/unlock", // password page
   "/api/unlock", // password check
@@ -34,8 +35,8 @@ function needsAccount(pathname: string) {
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
 
-  // The showcase's thumbnails (public/showcase/).
-  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/")) {
+  // The showcase's thumbnails (public/showcase/) and each page's featured image.
+  if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/") || pathname.endsWith("/opengraph-image")) {
     return NextResponse.next();
   }
 
