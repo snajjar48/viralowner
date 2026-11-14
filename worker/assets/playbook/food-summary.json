@@ -1,0 +1,87 @@
+{
+ "videos": 45,
+ "duration_s": {
+  "median": 20.6,
+  "p25": 10.9,
+  "p75": 32.9,
+  "min": 4.6,
+  "max": 68.0
+ },
+ "shots": {
+  "median": 11,
+  "p25": 7,
+  "p75": 21,
+  "min": 2,
+  "max": 25
+ },
+ "cuts_per_10s": {
+  "median": 5.38,
+  "p25": 4.04,
+  "p75": 6.28,
+  "min": 1.56,
+  "max": 13.04
+ },
+ "median_shot_s": {
+  "median": 1.47,
+  "p25": 1.23,
+  "p75": 1.67,
+  "min": 0.67,
+  "max": 3.2
+ },
+ "longest_shot_s": {
+  "median": 3.67,
+  "p25": 2.93,
+  "p75": 4.7,
+  "min": 0.8,
+  "max": 13.2
+ },
+ "shortest_shot_s": {
+  "median": 0.63,
+  "p25": 0.53,
+  "p75": 0.87,
+  "min": 0.33,
+  "max": 2.53
+ },
+ "words": {
+  "median": 7,
+  "p25": 1,
+  "p75": 18,
+  "min": 0,
+  "max": 108
+ },
+ "first_word_s": {
+  "median": 0.0,
+  "p25": 0.0,
+  "p75": 0.43,
+  "min": 0.0,
+  "max": 13.01
+ },
+ "median_motion": {
+  "median": 16.5,
+  "p25": 11.0,
+  "p75": 22.4,
+  "min": 6.7,
+  "max": 38.4
+ },
+ "quality_fps": {
+  "median": 30.0,
+  "p25": 30.0,
+  "p75": 30.0,
+  "min": 24.83,
+  "max": 30.0
+ },
+ "quality_video_kbps": {
+  "median": 5263,
+  "p25": 4222,
+  "p75": 5661,
+  "min": 733,
+  "max": 6149
+ },
+ "quality_height": {
+  "median": 1280,
+  "p25": 1280,
+  "p75": 1280,
+  "min": 854,
+  "max": 1280
+ }
+}

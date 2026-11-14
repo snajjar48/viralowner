@@ -218,11 +218,10 @@ image = (
 )
 
 
-def _read_playbook() -> str:
-    """What makes short videos go viral, learned from studying real viral skits
-    (worker/assets/playbook/viral-playbook.md; see its README for how it's made)."""
-    for path in (Path(PLAYBOOK_DIR) / "viral-playbook.md",
-                 Path(__file__).parent / "assets" / "playbook" / "viral-playbook.md"):
+def _read_playbook(name: str = "viral-playbook.md") -> str:
+    """A playbook learned from studying real viral videos (worker/assets/playbook/; see its README
+    for how they're made): viral-playbook.md from skits, food-playbook.md from food & drink videos."""
+    for path in (Path(PLAYBOOK_DIR) / name, Path(__file__).parent / "assets" / "playbook" / name):
         try:
             return path.read_text(encoding="utf-8").strip()
         except OSError:
@@ -231,21 +230,33 @@ def _read_playbook() -> str:
 
 
 VIRAL_PLAYBOOK = _read_playbook()
+FOOD_PLAYBOOK = _read_playbook("food-playbook.md")
 
 
 def with_playbook(system: str, inspo: bool) -> str:
-    """A system prompt, plus the viral playbook. Remakes follow their inspo first; the playbook
-    fills in everything the inspo leaves open (and how the user's own footage is cut and timed)."""
-    if not VIRAL_PLAYBOOK:
+    """A system prompt, plus the viral playbooks. Remakes follow their inspo first; the playbooks
+    fill in everything the inspo leaves open (and how the user's own footage is cut and timed).
+    The food & drink one applies only when the video shows food or drink."""
+    if not VIRAL_PLAYBOOK and not FOOD_PLAYBOOK:
         return system
-    how = ("The inspo's structure, timing and style come first. Use this playbook for every choice the inspo "
+    how = ("The inspo's structure, timing and style come first. Use these playbooks for every choice the inspo "
            "leaves open: which moments of the user's footage to use, how their lines are timed and trimmed, the "
            "words you write, and where things go." if inspo else
-           "Apply it to every choice, unless the user asks for something different.")
+           "Apply them to every choice, unless the user asks for something different.")
     how += (" These are defaults, never limits: anything the user asks for (transitions, sound effects, a caption "
             "style, speed changes) is still done exactly as asked.")
-    return (system + "\n\n## What makes short videos go viral\nLearned from studying real viral skits. " + how
-            + "\n\n" + VIRAL_PLAYBOOK)
+    out = system + "\n\n## What makes short videos go viral\n" + how
+    if VIRAL_PLAYBOOK:
+        out += "\n\n### Skits and talking videos\nLearned from studying real viral skits.\n\n" + VIRAL_PLAYBOOK
+    if FOOD_PLAYBOOK:
+        out += ("\n\n### Food and drink\nLearned from studying real viral food and drink videos. Follow this whenever "
+                "the video shows food or drink (a restaurant, café, bakery, dessert or drink shop, or anyone making, "
+                "pouring, serving or eating something), judging from the clips, the inspo, the user's description and "
+                "their business. When it's mainly a food or drink showcase rather than a skit, this section wins "
+                "wherever the two disagree; in a skit that features food, use the skit rules for timing and dialogue "
+                "and these for how the food is shown. Skip this section entirely for videos without food or drink."
+                "\n\n" + FOOD_PLAYBOOK)
+    return out
 
 # viralowner-worker:      ANTHROPIC_API_KEY, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET
 # viralowner-worker-auth: WORKER_TOKEN (the same value the website has)
@@ -1793,6 +1804,9 @@ LOSSLESS = ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
 # The finished video: near the clips' own quality (TikTok and Instagram re-compress it on upload,
 # so it should go in as clean as possible).
 FINAL_X264 = ["-c:v", "libx264", "-preset", "slow", "-crf", "15", "-tune", "film", "-maxrate", "30M", "-bufsize", "60M"]
+# Slow motion is only as slow as the clip's frame rate keeps smooth: at least this many real frames
+# per second of output (60fps footage plays at half speed; 30fps phone footage only eases to ~0.83x).
+SMOOTH_SLOWMO_FPS = 25.0
 MAX_SLOWDOWN = 2.0  # a clip shorter than its shot is slowed down up to this much
 MAX_STRETCH = 4.0  # ...and further, up to this, before it plays forward-then-backward. never a held frame
 FONT = "Montserrat"
@@ -1893,6 +1907,12 @@ def to_output_rate(fps: float, stretch: float = 1.0) -> str:
     return f"framerate=fps={OUT_FPS}"
 
 
+def fps_note(clip: dict) -> str:
+    """", 60fps" for the clip descriptions, so slow motion goes on footage that can stay smooth."""
+    fps = clip.get("fps")
+    return f", {round(fps)}fps" if isinstance(fps, (int, float)) and fps > 0 else ""
+
+
 def grab_frame(path: Path, t: float, dest: Path, width: int) -> Path | None:
     subprocess.run(
         ["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-i", str(path), "-frames:v", "1",
@@ -1952,7 +1972,7 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
 
     content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
     for ci, c in enumerate(clips):
-        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long)"})
+        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
@@ -2369,6 +2389,12 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     """One shot: the clip from `start`, filling exactly `duration` seconds at 1080x1920, plus `tail`
     extra seconds of picture for a blend into the next shot (its audio is trimmed off later).
     `t_in` / `t_out`: the transitions into and out of it; `speed`: 0.5 = slow motion, 1.6 = sped up."""
+    if speed < 1:
+        # Never slower than the footage has real frames for: past that it gets choppy or smeared.
+        smoothest = min(1.0, SMOOTH_SLOWMO_FPS / max(float(clip.get("fps") or OUT_FPS), 1.0))
+        if speed < smoothest:
+            print(f"slow motion eased from {speed}x to {smoothest:.2f}x to stay smooth ({clip.get('fps')} fps clip)")
+            speed = smoothest
     if speed > 1:
         take = max(take, min(clip["duration"] - start, duration * speed))
     elif speed < 1:
@@ -3643,7 +3669,7 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(frames[i])}})
     content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
     for ci, c in enumerate(clips):
-        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long)"})
+        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
@@ -4084,7 +4110,7 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     content: list[dict] = [{"type": "text", "text": "the user's prompt, in their own words:\n" + json.dumps(prompt, ensure_ascii=False)}]
     content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
     for ci, c in enumerate(clips):
-        content.append({"type": "text", "text": f"clip {ci + 1}: {c['duration']:.1f}s long"
+        content.append({"type": "text", "text": f"clip {ci + 1}: {c['duration']:.1f}s long{fps_note(c)}"
                                                  + ("" if c["has_audio"] else ", no sound")})
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
