@@ -28,3 +28,13 @@ modal run scripts/study-food.py --folder "<folder of videos>" --out <dir>
 Its study also measures video quality (resolution, frame rate, bitrate), a motion graph every half second (to spot
 slow motion and speed ramps) and the frames around every cut (to see transitions), and it breaks down how the food is
 shown, close-ups and pours, the money shot, ASMR versus fast pacing, speed, text, transitions, effects and quality.
+
+## Talking-head playbook
+
+`talking-playbook.md` comes from studies of real viral talking-head ("yapping") videos and is followed whenever a
+video is mainly someone talking to the camera. `creator-advice.md` collects the content-creation advice the speakers
+gave (it isn't sent to the editor). Make them again with:
+
+```
+modal run scripts/study-talking.py --folder "<folder of videos>" --out <dir>
+```

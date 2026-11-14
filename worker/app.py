@@ -231,13 +231,15 @@ def _read_playbook(name: str = "viral-playbook.md") -> str:
 
 VIRAL_PLAYBOOK = _read_playbook()
 FOOD_PLAYBOOK = _read_playbook("food-playbook.md")
+TALKING_PLAYBOOK = _read_playbook("talking-playbook.md")
 
 
 def with_playbook(system: str, inspo: bool) -> str:
     """A system prompt, plus the viral playbooks. Remakes follow their inspo first; the playbooks
     fill in everything the inspo leaves open (and how the user's own footage is cut and timed).
-    The food & drink one applies only when the video shows food or drink."""
-    if not VIRAL_PLAYBOOK and not FOOD_PLAYBOOK:
+    The talking-head one applies when someone talks to the camera; the food & drink one when the
+    video shows food or drink."""
+    if not VIRAL_PLAYBOOK and not FOOD_PLAYBOOK and not TALKING_PLAYBOOK:
         return system
     how = ("The inspo's structure, timing and style come first. Use these playbooks for every choice the inspo "
            "leaves open: which moments of the user's footage to use, how their lines are timed and trimmed, the "
@@ -248,6 +250,13 @@ def with_playbook(system: str, inspo: bool) -> str:
     out = system + "\n\n## What makes short videos go viral\n" + how
     if VIRAL_PLAYBOOK:
         out += "\n\n### Skits and talking videos\nLearned from studying real viral skits.\n\n" + VIRAL_PLAYBOOK
+    if TALKING_PLAYBOOK:
+        out += ("\n\n### Talking to the camera\nLearned from studying real viral talking-head videos. Follow this "
+                "whenever the video is mainly one person talking to the camera (advice, a story, an opinion, an "
+                "explainer, a one-take video), judging from the clips, the inspo and the user's description. For those "
+                "videos this section wins wherever it disagrees with the skits section; skits with characters and "
+                "dialogue follow the skits rules. Skip it for videos where nobody talks to the camera.\n\n"
+                + TALKING_PLAYBOOK)
     if FOOD_PLAYBOOK:
         out += ("\n\n### Food and drink\nLearned from studying real viral food and drink videos. Follow this whenever "
                 "the video shows food or drink (a restaurant, café, bakery, dessert or drink shop, or anyone making, "
