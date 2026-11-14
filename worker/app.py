@@ -1981,11 +1981,21 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
             content.append({"type": "text", "text": f"said in clip {ci + 1}:\n" + "\n".join(said)})
 
     rules = []
+    on_clip: dict[int, list[int]] = {}
+    for i, f in enumerate(fixed):
+        if f["clip"] is not None:
+            on_clip.setdefault(f["clip"], []).append(i)
     for i, f in enumerate(fixed):
         if f["clip"] is None:
             continue
+        others = [j + 1 for j in on_clip[f["clip"]] if j != i]
         if f["start"] is not None:
             rules.append(f"shot {i + 1}: the user chose clip {f['clip'] + 1} from {f['start']:.1f}s. return exactly that.")
+        elif others:
+            rules.append(f"shot {i + 1}: the user chose clip {f['clip'] + 1}, which they also chose for shot"
+                         f"{'s' if len(others) > 1 else ''} {', '.join(map(str, others))}. pick the best start time in it "
+                         "for this shot. Shots sharing a clip must each use a different part of it that never overlaps "
+                         "another's (back to back is fine, it's one long video split into shots), usually in story order.")
         else:
             rules.append(f"shot {i + 1}: the user chose clip {f['clip'] + 1}. pick the best start time in it.")
     ask = [
@@ -2003,12 +2013,14 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
     return ask_claude(with_playbook(MATCH_SYSTEM, True), content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.")
 
 
-def unused_start(used: list[tuple[float, float]], clip_len: float, length: float, want: float) -> float | None:
+def unused_start(used: list[tuple[float, float]], clip_len: float, length: float, want: float,
+                 gap: float | None = None) -> float | None:
     """Where `length` seconds of a clip can start without overlapping any `used` span, as close to
     `want` as possible (None if there's no room). Nobody wants to see the same footage twice."""
+    gap = SAME_CLIP_GAP_S if gap is None else gap
     gaps, t = [], 0.0
     for a, b in sorted(used):
-        a, b = a - SAME_CLIP_GAP_S, b + SAME_CLIP_GAP_S  # keep clear of what's used
+        a, b = a - gap, b + gap  # keep clear of what's used
         if a - t >= length:
             gaps.append((t, a))
         t = max(t, b)
@@ -2025,9 +2037,26 @@ def unused_start(used: list[tuple[float, float]], clip_len: float, length: float
 SAME_CLIP_GAP_S = 1.0  # two shots from one clip are at least this far apart in it: clearly different portions
 
 
+# Shots the user put on the same clip (one long video split into shots) may follow each other back to
+# back in it, but never share a frame.
+SHARED_CLIP_GAP_S = 0.04
+
+
 def overlaps(span: tuple[float, float], used: list[tuple[float, float]], gap: float = SAME_CLIP_GAP_S) -> bool:
     """`span` is the same section as (or too close to) one already `used`."""
     return any(span[0] < b + gap and span[1] > a - gap for a, b in used)
+
+
+def free_stretches(used: list[tuple[float, float]], clip_len: float, gap: float) -> list[tuple[float, float]]:
+    """The parts of a clip no `used` span (plus `gap` around it) touches."""
+    out, t = [], 0.0
+    for a, b in sorted(used):
+        if a - gap > t:
+            out.append((t, a - gap))
+        t = max(t, b + gap)
+    if clip_len > t:
+        out.append((t, clip_len))
+    return out
 
 
 MIN_SHOT_S, MAX_SHOT_S = 0.3, 30.0
@@ -2080,7 +2109,8 @@ def resolve_plan(shots: list[dict], clips: list[dict], fixed: list[dict], picked
         if take >= need - 0.15 and start + need <= d:
             take = need
         plan.append({"clip": ci, "start": start, "take": take, "duration": need})
-    return avoid_reused_footage(plan, clips, [f["clip"] is not None and f["start"] is not None for f in fixed])
+    return avoid_reused_footage(plan, clips, [f["clip"] is not None and f["start"] is not None for f in fixed],
+                                [f["clip"] is not None for f in fixed], keep_timing)
 
 
 def clip_words(clip: dict) -> list[dict]:
@@ -2127,32 +2157,79 @@ def fit_speech(plan: list[dict], clips: list[dict], pinned: list[bool], rates: l
     return plan
 
 
-def avoid_reused_footage(plan: list[dict], clips: list[dict], pinned: list[bool]) -> list[dict]:
-    """Moves shots that would show footage another shot already shows to an unused part of their
-    clip, or to another clip with room. The user's own exact choices are never moved. Only when
-    there's no unused footage left anywhere does a shot repeat some."""
+def avoid_reused_footage(plan: list[dict], clips: list[dict], pinned: list[bool],
+                         clip_pinned: list[bool] | None = None, keep_timing: bool = True) -> list[dict]:
+    """No two shots ever show the same frames.
+    - Shots the user placed exactly (a trim) keep their place, unless an earlier one already shows
+      that footage: then they move to the nearest unused part of the clip, or are shortened to fit one.
+    - Shots on a clip the user chose stay on that clip, in a part no other shot uses. Several shots on
+      one clip may follow each other back to back (one long video split into shots).
+    - Shots we picked move to an unused part of their clip, or to another clip with room.
+    Only when no unused footage is left anywhere does a shot repeat some. A shortened shot gets
+    shorter too, unless the inspo's audio sets the timing (then it's slowed to fit)."""
+    clip_pinned = clip_pinned or [False] * len(plan)
+    # Clips the user put on more than one shot: those shots may sit back to back.
+    counts: dict[int, int] = {}
+    for p, cp in zip(plan, clip_pinned):
+        if cp:
+            counts[p["clip"]] = counts.get(p["clip"], 0) + 1
+    shared = {ci for ci, k in counts.items() if k > 1}
     used: dict[int, list[tuple[float, float]]] = {i: [] for i in range(len(clips))}
-    for p, pin in zip(plan, pinned):
+
+    def gap_for(ci: int) -> float:
+        return SHARED_CLIP_GAP_S if ci in shared else SAME_CLIP_GAP_S
+
+    def fit(p: dict, i: int, gap: float) -> bool:
+        """Moves (or shortens) shot i into footage of its clip nobody uses. False if there's none."""
+        ci, dur = p["clip"], clips[p["clip"]]["duration"]
+        if not overlaps((p["start"], p["start"] + p["take"]), used[ci], gap):
+            return True
+        start = unused_start(used[ci], dur, p["take"], p["start"], gap)
+        if start is not None:
+            print(f"shot {i + 1}: moved to {start:.2f}s in clip {ci + 1} so it doesn't repeat another shot's footage")
+            p["start"] = start
+            return True
+        free = [(a, b) for a, b in free_stretches(used[ci], dur, gap) if b - a >= MIN_SHOT_S]
+        if not free:
+            return False
+        a, b = min(free, key=lambda f: abs(f[0] - p["start"]))
+        print(f"shot {i + 1}: shortened to {a:.2f}-{b:.2f}s of clip {ci + 1} so it doesn't repeat another shot's footage")
+        p["start"], p["take"] = a, b - a
+        if not keep_timing:
+            p["duration"] = p["take"]
+        return True
+
+    # The user's exact choices first, in order.
+    for i, (p, pin) in enumerate(zip(plan, pinned)):
         if pin:
+            if not fit(p, i, SHARED_CLIP_GAP_S):
+                print(f"shot {i + 1}: clip {p['clip'] + 1} has no unused footage left; it repeats some")
             used[p["clip"]].append((p["start"], p["start"] + p["take"]))
-    for p, pin in zip(plan, pinned):
+    for i, (p, pin, cp) in enumerate(zip(plan, pinned, clip_pinned)):
         if pin:
+            continue
+        if cp:
+            # The user chose this clip for this shot: it stays on it, in a part nobody else uses.
+            if not fit(p, i, gap_for(p["clip"])):
+                print(f"shot {i + 1}: clip {p['clip'] + 1} has no unused footage left; it repeats some")
+            used[p["clip"]].append((p["start"], p["start"] + p["take"]))
             continue
         if used[p["clip"]]:
             # This clip already fills a shot: give this one a clip nobody uses yet, if there is one.
-            fresh = [ci for ci in range(len(clips)) if not used[ci] and clips[ci]["duration"] >= min(p["take"], 1.0)]
+            fresh = [ci for ci in range(len(clips)) if not used[ci] and clips[ci]["duration"] >= min(p["take"], 1.0)
+                     and ci not in shared]
             if fresh:
                 ci = max(fresh, key=lambda c: clips[c]["duration"])
                 p["clip"], p["start"] = ci, min(0.3, max(0.0, clips[ci]["duration"] - p["take"]))
         span = (p["start"], p["start"] + p["take"])
-        if overlaps(span, used[p["clip"]]):
-            start = unused_start(used[p["clip"]], clips[p["clip"]]["duration"], p["take"], p["start"])
+        if overlaps(span, used[p["clip"]], gap_for(p["clip"])):
+            start = unused_start(used[p["clip"]], clips[p["clip"]]["duration"], p["take"], p["start"], gap_for(p["clip"]))
             if start is not None:
                 p["start"] = start
             else:
                 # Another clip with room, the least used first.
                 for ci in sorted(range(len(clips)), key=lambda c: sum(b - a for a, b in used[c])):
-                    start = unused_start(used[ci], clips[ci]["duration"], p["take"], 0.3)
+                    start = unused_start(used[ci], clips[ci]["duration"], p["take"], 0.3, gap_for(ci))
                     if start is not None:
                         p["clip"], p["start"] = ci, start
                         break
@@ -4025,7 +4102,7 @@ How the video is built: a list of shots, played in the order you give them. Each
 
 Editing craft:
 - The first 1-2 seconds decide whether people keep watching: open on the most striking moment, the result teased, or a bold line.
-- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Give every shot its own clip. Use a second part of a clip only when it's necessary: there aren't enough other clips for the video, or the clip holds a different moment the video needs (like the finished result at the end of a long take). Then the parts must be clearly different portions of the clip: never overlapping, and at least 1 second apart, so nobody sees the same section twice (and no teaser of the ending at the start that plays again later). A clip of someone talking to the camera is the exception: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
+- Pick moments that are in focus with the subject in frame, where the action is about to happen. Avoid the first and last ~0.3s of a clip, where people fumble with the phone. Skip unusable footage (black, blurry, accidental, screen recordings) unless the user wants it. Give every shot its own clip, except clips the user marked for several shots: cut those into several shots, each a different part. Otherwise use a second part of a clip only when it's necessary: there aren't enough other clips for the video, or the clip holds a different moment the video needs (like the finished result at the end of a long take). Then the parts must be clearly different portions of the clip: never overlapping, and at least 1 second apart, so nobody sees the same section twice (and no teaser of the ending at the start that plays again later). A clip of someone talking to the camera is the exception: the edit can cut it at the gaps between sentences and cut away and back to it. If the clips run out before the length the user asked for, make the video shorter and say so.
 - Speed: every shot plays at normal speed unless the user asks for slow motion or sped-up footage (users keep asking to take slow motion out when they didn't ask for it).
 - Pacing: music or b-roll edits usually cut every 0.6-2.5s (faster for hype, slower for calm or aesthetic); a talking video moves at the speed of the speech with the gaps taken out. Build to the payoff and end strong (the result, the reveal, or a call to action if the user wants one).
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
@@ -4211,7 +4288,11 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
     for ci, c in enumerate(clips):
         content.append({"type": "text", "text": f"clip {ci + 1}: {c['duration']:.1f}s long{fps_note(c)}"
-                                                 + ("" if c["has_audio"] else ", no sound")})
+                                                 + ("" if c["has_audio"] else ", no sound")
+                                                 + (". the user wants several different parts of this clip used in "
+                                                    "different shots: cut it into as many shots as the video needs, each "
+                                                    "a different part that never overlaps another (back to back is fine)"
+                                                    if c.get("multi") else "")})
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
@@ -4269,6 +4350,7 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
 
 
 def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, talking: set[int] | None = None) -> dict:
+    # (Clips the user marked for several shots, clip["multi"], may have shots back to back.)
     """Checks Claude's plan against the real clips: every shot inside its clip and long enough, the
     video within its length limit. Returns the plan, cleaned."""
     shots = []
@@ -4310,39 +4392,7 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
         })
         if len(shots) >= SCRATCH_MAX_SHOTS or total >= max_s - 0.05:
             break
-    # Never the same footage twice: a shot overlapping an earlier one moves to an unused part of its
-    # clip, or is shortened to fit one, or is left out.
-    used: dict[int, list[tuple[float, float]]] = {}
-    kept_shots = []
-    for sh in shots:
-        spans = used.setdefault(sh["clip"], [])
-        if talking is not None and sh["clip"] in talking:
-            # Cuts of someone talking follow their sentences: only never overlap.
-            if any(sh["start"] < b - 0.05 and sh["end"] > a + 0.05 for a, b in spans):
-                print(f"scratch: left out a shot repeating part of talking clip {sh['clip'] + 1}")
-                continue
-            spans.append((sh["start"], sh["end"]))
-            kept_shots.append(sh)
-            continue
-        length = sh["end"] - sh["start"]
-        if overlaps((sh["start"], sh["end"]), spans):
-            start = unused_start(spans, clips[sh["clip"]]["duration"], length, sh["start"])
-            if start is None:
-                # The longest unused stretch, if it's long enough for a shot.
-                gaps, t = [], 0.0
-                for a, b in sorted(spans):
-                    gaps.append((t, a - SAME_CLIP_GAP_S))
-                    t = max(t, b + SAME_CLIP_GAP_S)
-                gaps.append((t, clips[sh["clip"]]["duration"]))
-                a, b = max(gaps, key=lambda g: g[1] - g[0])
-                if b - a < SCRATCH_MIN_SHOT_S:
-                    print(f"scratch: left out a shot that repeated footage (clip {sh['clip'] + 1})")
-                    continue
-                start, length = a, b - a
-            sh["start"], sh["end"] = r2(start), r2(start + length)
-        spans.append((sh["start"], sh["end"]))
-        kept_shots.append(sh)
-    shots = kept_shots
+    shots = separate_scratch_shots(shots, clips, talking)
     if not shots:
         raise JobError("we couldn’t plan a video from these clips. try adding clips or describing the video differently.")
     shots[0]["transition_in"] = "cut"
@@ -4384,18 +4434,58 @@ def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, 
     }
 
 
-def reuse_problems(shots: list[dict], talking: set[int], clip_count: int) -> list[str]:
+def separate_scratch_shots(shots: list[dict], clips: list[dict], talking: set[int] | None) -> list[dict]:
+    """Never the same footage twice: a shot overlapping an earlier one moves to an unused part of its
+    clip, or is shortened to fit one, or is left out. Shots of a clip the user marked for several
+    shots (clip["multi"]) may follow each other back to back; others stay 1s apart."""
+    used: dict[int, list[tuple[float, float]]] = {}
+    kept_shots = []
+    for sh in shots:
+        spans = used.setdefault(sh["clip"], [])
+        if talking is not None and sh["clip"] in talking and not clips[sh["clip"]].get("multi"):
+            # Cuts of someone talking follow their sentences: only never overlap.
+            if any(sh["start"] < b - 0.05 and sh["end"] > a + 0.05 for a, b in spans):
+                print(f"scratch: left out a shot repeating part of talking clip {sh['clip'] + 1}")
+                continue
+            spans.append((sh["start"], sh["end"]))
+            kept_shots.append(sh)
+            continue
+        gap = SHARED_CLIP_GAP_S if clips[sh["clip"]].get("multi") else SAME_CLIP_GAP_S
+        length = sh["end"] - sh["start"]
+        if overlaps((sh["start"], sh["end"]), spans, gap):
+            start = unused_start(spans, clips[sh["clip"]]["duration"], length, sh["start"], gap)
+            if start is None:
+                # The longest unused stretch, if it's long enough for a shot.
+                free = free_stretches(spans, clips[sh["clip"]]["duration"], gap)
+                a, b = max(free, key=lambda g: g[1] - g[0]) if free else (0.0, 0.0)
+                if b - a < SCRATCH_MIN_SHOT_S:
+                    print(f"scratch: left out a shot that repeated footage (clip {sh['clip'] + 1})")
+                    continue
+                start, length = a, b - a
+            print(f"scratch: moved a shot to {start:.2f}s of clip {sh['clip'] + 1} so no footage repeats")
+            sh["start"], sh["end"] = r2(start), r2(start + length)
+        spans.append((sh["start"], sh["end"]))
+        kept_shots.append(sh)
+    return kept_shots
+
+
+def reuse_problems(shots: list[dict], talking: set[int], clip_count: int, multi: set[int] | None = None) -> list[str]:
     """Where a plan shows the same thing twice, or reuses a clip it doesn't need to: the same section
     of a clip twice (or too close), or a second shot from a clip while other clips go unused.
-    A clip of someone talking can be cut up freely."""
+    A clip of someone talking can be cut up freely; a clip the user marked for several shots can be
+    used again, but never the same part."""
+    multi = multi or set()
     problems, last, spans = [], {}, {}
     unused = set(range(clip_count)) - {sh["clip"] for sh in shots}
     for i, sh in enumerate(shots):
         c = sh["clip"]
-        if c in last and c not in talking and overlaps((sh["start"], sh["end"]), spans.get(c, [])):
+        if c in last and c in multi and overlaps((sh["start"], sh["end"]), spans.get(c, []), SHARED_CLIP_GAP_S):
+            problems.append(f"shot {i + 1} uses part of clip {c + 1} that shot {last[c] + 1} already shows; every shot "
+                            f"from that clip must be a different part")
+        elif c in last and c not in talking and c not in multi and overlaps((sh["start"], sh["end"]), spans.get(c, [])):
             problems.append(f"shot {i + 1} shows the same section of clip {c + 1} as shot {last[c] + 1} (or within "
                             f"{SAME_CLIP_GAP_S:.0f}s of it)")
-        elif c in last and c not in talking and unused:
+        elif c in last and c not in talking and c not in multi and unused:
             problems.append(f"shot {i + 1} uses clip {c + 1} again (already shot {last[c] + 1}) while clips "
                             f"{', '.join(str(u + 1) for u in sorted(unused))} aren't used; reuse a clip only if it's necessary")
         spans.setdefault(c, []).append((sh["start"], sh["end"]))
@@ -4540,7 +4630,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     for i, c in enumerate(req["clips"]):
         path = workdir / f"clip{i:02d}"
         try:
-            clips.append({"id": c["id"], "path": path, "storageKey": c["storageKey"], **probe_clip(path)})
+            clips.append({"id": c["id"], "path": path, "storageKey": c["storageKey"], **probe_clip(path),
+                          "multi": bool(c.get("multiUse"))})
         except Exception as e:  # noqa: BLE001
             print(f"skipping unreadable clip {c['id']}: {e}")
     if not clips:
@@ -4583,6 +4674,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             a = min(max(0.0, a if a is not None else s["start"]), max(0.0, d - SCRATCH_MIN_SHOT_S))
             b = min(max(b if b is not None else s["end"], a + SCRATCH_MIN_SHOT_S), d)
             s.update(clip=ci, start=r2(a), end=r2(b))
+        cleaned["shots"] = separate_scratch_shots(cleaned["shots"], clips, None) or cleaned["shots"]
         cleaned["summary"] = ""
         print("scratch: rebuilt from the earlier version with the user's shot edits")
     elif directed and (reused := directed_in(directed, clips, text_mode)):
@@ -4626,7 +4718,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
         raw = [{"clip": s.get("clip", 0) - 1, "start": float(s.get("start_s") or 0), "end": float(s.get("end_s") or 0)}
                for s in result["data"].get("shots") or [] if isinstance(s.get("clip"), int)]
-        problems = reuse_problems(raw, talking, len(clips))
+        multi = {i for i, c in enumerate(clips) if c.get("multi")}
+        problems = reuse_problems(raw, talking, len(clips), multi)
         if problems:
             print(f"scratch director repeated footage, asking again: {problems}")
             report("matching", 32)

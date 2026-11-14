@@ -44,7 +44,7 @@ async function Options({ id }: { id: string }) {
       id: c.id,
       fileName: c.fileName,
       durationS: c.durationS,
-      shotIndex: c.shotIndex,
+      shotIndexes: c.shotIndexes,
       previewUrl: await createDownloadUrl(c.storageKey, { expiresIn: 6 * 3600 }),
       thumbUrl: await clipThumbUrl(c.storageKey),
     })),

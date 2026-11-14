@@ -43,7 +43,10 @@ export interface InitialClip {
   id: string;
   fileName: string | null;
   durationS: number | null;
-  shotIndex: number | null;
+  /** The shots it's on (one long clip can fill several). */
+  shotIndexes: number[];
+  /** "Start from scratch": cut it into several shots. */
+  multiUse?: boolean;
   status: "uploading" | "uploaded" | "failed";
   previewUrl: string | null;
   /** The clip's saved still, if it has one. */
@@ -59,7 +62,8 @@ interface Item {
   previewUrl: string | null;
   /** A still of the clip: made in this browser when it's picked, or the saved one. */
   thumbUrl: string | null;
-  shotIndex: number | null;
+  shotIndexes: number[];
+  multiUse: boolean;
   status: ItemStatus;
   percent: number;
   error: string | null;
@@ -108,7 +112,8 @@ export function ClipsManager({
       durationS: c.durationS,
       previewUrl: c.previewUrl,
       thumbUrl: c.thumbUrl ?? null,
-      shotIndex: c.shotIndex,
+      shotIndexes: c.shotIndexes,
+      multiUse: !!c.multiUse,
       status: c.status === "uploaded" ? "uploaded" : "failed",
       percent: c.status === "uploaded" ? 100 : 0,
       error: c.status === "uploaded" ? null : "this upload didn’t finish.",
@@ -288,7 +293,8 @@ export function ClipsManager({
         durationS,
         previewUrl: URL.createObjectURL(file),
         thumbUrl: null,
-        shotIndex: null,
+        shotIndexes: [],
+        multiUse: false,
         status: "queued",
         percent: 0,
         error: null,
@@ -330,16 +336,40 @@ export function ClipsManager({
     }
   }
 
-  async function assign(item: Item, shotIndex: number | null) {
+  /** Puts a clip on a shot, or takes it off. One clip can fill several shots (a different part of it each). */
+  async function assign(item: Item, shotIndex: number, on: boolean) {
     if (!item.clipId || item.status !== "uploaded") return;
+    const before = items;
     setItems((list) =>
       list.map((i) =>
-        i.key === item.key ? { ...i, shotIndex } : shotIndex !== null && i.shotIndex === shotIndex ? { ...i, shotIndex: null } : i,
+        i.key === item.key
+          ? {
+              ...i,
+              shotIndexes: on
+                ? [...new Set([...i.shotIndexes, shotIndex])].sort((a, b) => a - b)
+                : i.shotIndexes.filter((s) => s !== shotIndex),
+            }
+          : on
+            ? { ...i, shotIndexes: i.shotIndexes.filter((s) => s !== shotIndex) }
+            : i,
       ),
     );
     try {
-      await postJsonPatch(`/api/projects/${projectId}/clips`, { assign: { clipId: item.clipId, shotIndex } });
+      await postJsonPatch(`/api/projects/${projectId}/clips`, { assign: { clipId: item.clipId, shotIndex, on } });
     } catch {
+      setItems(before);
+      setError("couldn’t save that. check your connection and try again.");
+    }
+  }
+
+  /** "Start from scratch": cut this clip into several shots. */
+  async function setMultiUse(item: Item, on: boolean) {
+    if (!item.clipId) return;
+    setItems((list) => list.map((i) => (i.key === item.key ? { ...i, multiUse: on } : i)));
+    try {
+      await postJsonPatch(`/api/projects/${projectId}/clips`, { multiUse: { clipId: item.clipId, on } });
+    } catch {
+      setItems((list) => list.map((i) => (i.key === item.key ? { ...i, multiUse: !on } : i)));
       setError("couldn’t save that. check your connection and try again.");
     }
   }
@@ -351,8 +381,8 @@ export function ClipsManager({
       return;
     }
     setError("");
-    void assign(item, item.shotIndex === shotIndex ? null : shotIndex);
-    setSelected(null);
+    // The clip stays picked, so a long clip can be put on several shots in a row.
+    void assign(item, shotIndex, !item.shotIndexes.includes(shotIndex));
   }
 
   const sensors = useSensors(
@@ -389,7 +419,7 @@ export function ClipsManager({
   useEffect(() => {
     onStatus?.({ uploaded: uploaded.length, busy });
   }, [onStatus, uploaded.length, busy]);
-  const covered = new Set(uploaded.map((i) => i.shotIndex).filter((s): s is number => s !== null));
+  const covered = new Set(uploaded.flatMap((i) => i.shotIndexes));
   const missing = shots.length - covered.size;
   const selectedItem = items.find((i) => i.key === selected) ?? null;
 
@@ -397,10 +427,10 @@ export function ClipsManager({
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted" aria-live="polite">
         {selectedItem
-          ? `now tap the shot for ${selectedItem.fileName}.`
+          ? `now tap the shot for ${selectedItem.fileName}. one long clip can fill several shots: tap each one, and we’ll use a different part of it for each.`
           : "tap a clip, then tap the shot it’s for."}
       </p>
-      <ShotList shots={shots} covered={covered} onSelect={onShotTap} selected={selectedItem?.shotIndex ?? null} compact />
+      <ShotList shots={shots} covered={covered} onSelect={onShotTap} selected={selectedItem?.shotIndexes[0] ?? null} compact />
     </div>
   );
 
@@ -505,7 +535,9 @@ export function ClipsManager({
                     onSelect={() => setSelected(selected === item.key ? null : item.key)}
                     onRemove={() => remove(item)}
                     onRetry={() => retry(item)}
-                    onAssign={(s) => assign(item, s)}
+                    onAssign={(s, on) => assign(item, s, on)}
+                    freeform={freeform}
+                    onMultiUse={(on) => setMultiUse(item, on)}
                   />
                 ))}
               </ul>
@@ -581,6 +613,8 @@ function ClipTile({
   onRemove,
   onRetry,
   onAssign,
+  freeform,
+  onMultiUse,
 }: {
   item: Item;
   index: number;
@@ -590,7 +624,9 @@ function ClipTile({
   onSelect: () => void;
   onRemove: () => void;
   onRetry: () => void;
-  onAssign: (shotIndex: number | null) => void;
+  onAssign: (shotIndex: number, on: boolean) => void;
+  freeform: boolean;
+  onMultiUse: (on: boolean) => void;
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: item.key,
@@ -617,9 +653,9 @@ function ClipTile({
         <span className="absolute top-1.5 left-1.5 flex size-6 items-center justify-center rounded-full bg-black/70 text-xs">
           {index + 1}
         </span>
-        {item.shotIndex !== null && ready && (
+        {item.shotIndexes.length > 0 && ready && (
           <span className="absolute bottom-1.5 left-1.5 rounded-md bg-linear-to-r from-violet to-coral px-1.5 py-0.5 text-xs font-medium text-white">
-            shot {item.shotIndex + 1}
+            {item.shotIndexes.length > 1 ? "shots" : "shot"} {item.shotIndexes.map((s) => s + 1).join(", ")}
           </span>
         )}
         {item.status !== "uploaded" && (
@@ -639,25 +675,18 @@ function ClipTile({
         )}
       </button>
 
-      {ready && !oneTake ? (
-        <label className="sr-only" htmlFor={`shot-${item.key}`}>
-          shot for clip {index + 1}
+      {ready && !oneTake && <ShotPicker item={item} index={index} shots={shots} onAssign={onAssign} />}
+
+      {ready && freeform && (item.durationS ?? 0) >= 3 && (
+        <label className="flex cursor-pointer items-start gap-2 px-0.5 text-xs text-muted">
+          <input
+            type="checkbox"
+            checked={item.multiUse}
+            onChange={(e) => onMultiUse(e.target.checked)}
+            className="mt-0.5 size-3.5 shrink-0 accent-coral"
+          />
+          <span>use different parts of this clip in several shots</span>
         </label>
-      ) : null}
-      {ready && !oneTake && (
-        <select
-          id={`shot-${item.key}`}
-          value={item.shotIndex ?? ""}
-          onChange={(e) => onAssign(e.target.value === "" ? null : Number(e.target.value))}
-          className="h-9 w-full rounded-lg border border-white/15 bg-[#15151b] px-2 text-xs text-foreground outline-none focus-visible:border-coral"
-        >
-          <option value="">no shot yet</option>
-          {shots.map((s) => (
-            <option key={s.index} value={s.index}>
-              shot {s.index + 1}: {ROLE_LABELS[s.role]}
-            </option>
-          ))}
-        </select>
       )}
 
       {ready && !oneTake && <ShortClipNote item={item} shots={shots} />}
@@ -695,16 +724,76 @@ function ClipTile({
   );
 }
 
-/** A clip shorter than the shot it's on makes that shot shorter than the inspo's: say so before the render. */
+/**
+ * Which shots a clip fills: a small menu of shots to tick (one long clip can fill several, with a
+ * different part of it in each).
+ */
+function ShotPicker({
+  item,
+  index,
+  shots,
+  onAssign,
+}: {
+  item: Item;
+  index: number;
+  shots: Shot[];
+  onAssign: (shotIndex: number, on: boolean) => void;
+}) {
+  const label = item.shotIndexes.length
+    ? `${item.shotIndexes.length > 1 ? "shots" : "shot"} ${item.shotIndexes.map((s) => s + 1).join(", ")}`
+    : "no shot yet";
+  return (
+    <details className="group relative">
+      <summary
+        aria-label={`shots for clip ${index + 1}: ${label}`}
+        className="flex h-9 cursor-pointer list-none items-center justify-between gap-1 rounded-lg border border-white/15 bg-[#15151b] px-2 text-xs focus-visible:outline-2 focus-visible:outline-coral [&::-webkit-details-marker]:hidden"
+      >
+        <span className="truncate">{label}</span>
+        <span aria-hidden="true" className="text-muted transition group-open:rotate-180">
+          ▾
+        </span>
+      </summary>
+      <fieldset className="absolute inset-x-0 top-full z-20 mt-1 flex max-h-64 flex-col gap-0.5 overflow-y-auto rounded-xl border border-white/10 bg-[#17171d] p-1.5 shadow-xl shadow-black/50">
+        <legend className="sr-only">shots for clip {index + 1}</legend>
+        <p className="px-1.5 pt-1 pb-1.5 text-[11px] leading-snug text-muted">
+          pick one or more. each shot gets a different part of this clip.
+        </p>
+        {shots.map((s) => (
+          <label
+            key={s.index}
+            className="flex cursor-pointer items-center gap-2 rounded-lg px-1.5 py-1.5 text-xs hover:bg-white/[0.06]"
+          >
+            <input
+              type="checkbox"
+              checked={item.shotIndexes.includes(s.index)}
+              onChange={(e) => onAssign(s.index, e.target.checked)}
+              className="size-3.5 shrink-0 accent-coral"
+            />
+            <span className="truncate">
+              shot {s.index + 1}: {ROLE_LABELS[s.role]}
+            </span>
+          </label>
+        ))}
+      </fieldset>
+    </details>
+  );
+}
+
+/**
+ * A clip shorter than the shot(s) it's on makes them shorter than the inspo's: say so before the
+ * render. On several shots, they share the clip (each gets its own part, never the same footage).
+ */
 function ShortClipNote({ item, shots }: { item: Item; shots: Shot[] }) {
-  const shot = item.shotIndex !== null ? shots.find((s) => s.index === item.shotIndex) : undefined;
-  if (!shot || item.durationS === null || item.durationS >= shot.durationS - 0.3) return null;
+  const on = shots.filter((s) => item.shotIndexes.includes(s.index));
+  const need = on.reduce((t, s) => t + s.durationS, 0);
+  if (!on.length || item.durationS === null || item.durationS >= need - 0.3) return null;
   return (
     <p className="flex items-start gap-1.5 text-xs text-amber-300/90">
       <AlertIcon className="mt-0.5 size-3.5 shrink-0" />
       <span>
-        this clip is {item.durationS.toFixed(1)}s but shot {shot.index + 1} is {shot.durationS.toFixed(1)}s, so that
-        shot will be a little shorter. a longer clip matches the inspo better.
+        {on.length === 1
+          ? `this clip is ${item.durationS.toFixed(1)}s but shot ${on[0].index + 1} is ${on[0].durationS.toFixed(1)}s, so that shot will be a little shorter. a longer clip matches the inspo better.`
+          : `this clip is ${item.durationS.toFixed(1)}s but shots ${on.map((s) => s.index + 1).join(", ")} need ${need.toFixed(1)}s together. we never repeat footage, so some of them will be shorter.`}
       </span>
     </p>
   );

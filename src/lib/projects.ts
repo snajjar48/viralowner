@@ -57,7 +57,12 @@ export interface Clip {
   sizeBytes: number | null;
   durationS: number | null;
   position: number;
+  /** The first shot it's on (see shotIndexes). */
   shotIndex: number | null;
+  /** Every shot it's on: one long clip can fill several, each with a different part of it. */
+  shotIndexes: number[];
+  /** "Start from scratch": cut this clip into several shots. */
+  multiUse: boolean;
   status: "uploading" | "uploaded" | "failed";
 }
 
@@ -121,6 +126,13 @@ function toClip(r: Row): Clip {
     durationS: num(r.duration_s),
     position: Number(r.position),
     shotIndex: num(r.shot_index),
+    // Before the 0010 migration only shot_index exists.
+    shotIndexes: Array.isArray(r.shot_indexes)
+      ? (r.shot_indexes as unknown[]).map(Number).filter(Number.isInteger).sort((a, b) => a - b)
+      : r.shot_index != null
+        ? [Number(r.shot_index)]
+        : [],
+    multiUse: r.multi_use === true,
     status: r.status as Clip["status"],
   };
 }
@@ -384,6 +396,7 @@ export async function replaceInspiration(projectId: string, up: InspoUpload): Pr
         style_reference_confirmed_at = now(), updated_at = now()
       RETURNING (SELECT storage_key FROM old) AS old_key`,
   ]);
+  await clearShotLists(projectId);
   const old = rows[0]?.old_key as string | null | undefined;
   return old && old !== up.storageKey ? old : null;
 }
@@ -481,6 +494,12 @@ export async function markClipUploaded(clipId: string, durationS: number, sizeBy
 
 export async function markClipFailed(clipId: string) {
   await getSql()`UPDATE clips SET status = 'failed', shot_index = NULL WHERE id = ${clipId}`;
+  await getSql()`UPDATE clips SET shot_indexes = '{}' WHERE id = ${clipId}`.catch(() => {}); // after the 0010 migration
+}
+
+/** Takes every clip of a project off its shots (the shot list changed). Nothing to do before the 0010 migration. */
+async function clearShotLists(projectId: string) {
+  await getSql()`UPDATE clips SET shot_indexes = '{}' WHERE project_id = ${projectId}`.catch(() => {});
 }
 
 /** Deletes a clip row; returns its storage key so the file can be deleted. */
@@ -499,17 +518,52 @@ export async function reorderClips(projectId: string, clipIds: string[]) {
     WHERE clips.id = o.id AND clips.project_id = ${projectId}`;
 }
 
-/** Puts a clip on a shot (one clip per shot), or takes it off (null). */
-export async function assignClip(projectId: string, clipId: string, shotIndex: number | null) {
+/**
+ * Puts a clip on a shot or takes it off. A shot has one clip, but a clip can be on several shots
+ * (`on`: add this shot to the ones it's on; otherwise take it off this one; shot null: off all).
+ */
+export async function assignClip(projectId: string, clipId: string, shotIndex: number | null, on = true) {
   const sql = getSql();
-  if (shotIndex === null) {
-    await sql`UPDATE clips SET shot_index = NULL WHERE id = ${clipId} AND project_id = ${projectId}`;
-    return;
+  try {
+    if (shotIndex === null) {
+      await sql`UPDATE clips SET shot_index = NULL, shot_indexes = '{}' WHERE id = ${clipId} AND project_id = ${projectId}`;
+      return;
+    }
+    await sql.transaction([
+      on
+        ? sql`
+          UPDATE clips SET shot_indexes = array_remove(shot_indexes, ${shotIndex}::int)
+          WHERE project_id = ${projectId} AND id <> ${clipId} AND ${shotIndex}::int = ANY(shot_indexes)`
+        : sql`SELECT 1`,
+      on
+        ? sql`
+          UPDATE clips SET shot_indexes = ARRAY(
+            SELECT DISTINCT unnest(array_append(shot_indexes, ${shotIndex}::int)) ORDER BY 1)
+          WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`
+        : sql`
+          UPDATE clips SET shot_indexes = array_remove(shot_indexes, ${shotIndex}::int)
+          WHERE id = ${clipId} AND project_id = ${projectId}`,
+      sql`UPDATE clips SET shot_index = shot_indexes[1] WHERE project_id = ${projectId}`,
+    ]);
+  } catch (error) {
+    // Before the 0010 migration: one shot per clip, as before.
+    if (!/shot_indexes/.test(String(error))) throw error;
+    if (shotIndex === null || !on) {
+      await sql`
+        UPDATE clips SET shot_index = NULL
+        WHERE id = ${clipId} AND project_id = ${projectId} AND (${shotIndex}::int IS NULL OR shot_index = ${shotIndex}::int)`;
+      return;
+    }
+    await sql.transaction([
+      sql`UPDATE clips SET shot_index = NULL WHERE project_id = ${projectId} AND shot_index = ${shotIndex}`,
+      sql`UPDATE clips SET shot_index = ${shotIndex} WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`,
+    ]);
   }
-  await sql.transaction([
-    sql`UPDATE clips SET shot_index = NULL WHERE project_id = ${projectId} AND shot_index = ${shotIndex}`,
-    sql`UPDATE clips SET shot_index = ${shotIndex} WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`,
-  ]);
+}
+
+/** "Start from scratch": whether a clip should be cut into several shots. */
+export async function setClipMultiUse(projectId: string, clipId: string, on: boolean) {
+  await getSql()`UPDATE clips SET multi_use = ${on} WHERE id = ${clipId} AND project_id = ${projectId}`;
 }
 
 export async function confirmClipRights(projectId: string) {

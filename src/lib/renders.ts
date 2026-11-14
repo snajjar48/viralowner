@@ -25,7 +25,7 @@ type Fail = { error: string; status: number };
 export function shotsFromAssignments(shotCount: number, clips: Clip[]): ShotEdit[] {
   return Array.from({ length: shotCount }, (_, shotIndex) => ({
     shotIndex,
-    clipId: clips.find((c) => c.status === "uploaded" && c.shotIndex === shotIndex)?.id ?? null,
+    clipId: clips.find((c) => c.status === "uploaded" && c.shotIndexes.includes(shotIndex))?.id ?? null,
     trimStartS: null,
     trimEndS: null,
   }));
@@ -177,6 +177,7 @@ export async function startScratchStoryboard(
         durationS: c.durationS ?? 0,
         position: c.position,
         shotIndex: c.shotIndex,
+        multiUse: c.multiUse,
       })),
       settings,
       history,
@@ -222,6 +223,7 @@ export async function startStoryboard(
         durationS: c.durationS ?? 0,
         position: c.position,
         shotIndex: c.shotIndex,
+        multiUse: c.multiUse,
       })),
       settings,
       history,
@@ -259,6 +261,7 @@ export async function submit(
         durationS: c.durationS ?? 0,
         position: c.position,
         shotIndex: c.shotIndex,
+        multiUse: c.multiUse,
       })),
       settings,
       ...extras,

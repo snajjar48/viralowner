@@ -1,6 +1,6 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { startClipUpload } from "@/lib/clips";
-import { assignClip, getInspiration, isUuid, reorderClips } from "@/lib/projects";
+import { assignClip, getInspiration, isUuid, reorderClips, setClipMultiUse } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { MAX_CLIPS } from "@/lib/video-files";
 
@@ -18,7 +18,11 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
   });
 }
 
-/** Saves the clip order ({ order: [ids] }) or one assignment ({ assign: { clipId, shotIndex } }). */
+/**
+ * Saves the clip order ({ order: [ids] }), one assignment ({ assign: { clipId, shotIndex, on } }: a clip
+ * can be on several shots; `on: false` takes it off that one, shotIndex null off all), or whether a
+ * "start from scratch" clip is cut into several shots ({ multiUse: { clipId, on } }).
+ */
 export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[id]/clips">) {
   return withProject(ctx.params, "Updating clips", async (userId, project) => {
     const body = await readJson(request);
@@ -31,7 +35,7 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[
     }
 
     if (body.assign && typeof body.assign === "object") {
-      const { clipId, shotIndex } = body.assign as Record<string, unknown>;
+      const { clipId, shotIndex, on } = body.assign as Record<string, unknown>;
       if (!isUuid(clipId)) return jsonError("invalid clip.", 400);
       if (shotIndex !== null) {
         const shots = (await getInspiration(userId, project.id))?.breakdown?.shotCount ?? 0;
@@ -39,7 +43,18 @@ export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[
           return jsonError("that shot doesn’t exist.", 400);
         }
       }
-      await assignClip(project.id, clipId, shotIndex as number | null);
+      await assignClip(project.id, clipId, shotIndex as number | null, on !== false);
+    }
+
+    if (body.multiUse && typeof body.multiUse === "object") {
+      const { clipId, on } = body.multiUse as Record<string, unknown>;
+      if (!isUuid(clipId) || typeof on !== "boolean") return jsonError("invalid clip.", 400);
+      try {
+        await setClipMultiUse(project.id, clipId, on);
+      } catch (error) {
+        console.error("Saving clip multi-use failed:", error);
+        return jsonError("couldn’t save that right now. please try again later.", 503);
+      }
     }
     return Response.json({ ok: true });
   });

@@ -16,7 +16,8 @@ export interface OptionClip {
   id: string;
   fileName: string | null;
   durationS: number | null;
-  shotIndex: number | null;
+  /** The shots it's on (one long clip can fill several). */
+  shotIndexes: number[];
   previewUrl: string | null;
   thumbUrl?: string | null;
 }
@@ -49,7 +50,7 @@ export function OptionsForm({
   const first = useRef(true);
   // A storyboard made from these exact options and clips: "make my video" makes that plan.
   const [plan, setPlan] = useState<{ jobId: string; madeFrom: string } | null>(null);
-  const madeFrom = JSON.stringify([options, clips.map((c) => [c.id, c.shotIndex])]);
+  const madeFrom = JSON.stringify([options, clips.map((c) => [c.id, c.shotIndexes])]);
 
   // Save a moment after each change, so going back or refreshing keeps it.
   useEffect(() => {
@@ -74,11 +75,18 @@ export function OptionsForm({
     const previous = clips;
     setClips((list) =>
       list.map((c) =>
-        c.id === clipId ? { ...c, shotIndex } : c.shotIndex === shotIndex ? { ...c, shotIndex: null } : c,
+        c.id === clipId
+          ? { ...c, shotIndexes: [...new Set([...c.shotIndexes, shotIndex])].sort((a, b) => a - b) }
+          : { ...c, shotIndexes: c.shotIndexes.filter((s) => s !== shotIndex) },
       ),
     );
-    const current = previous.find((c) => c.shotIndex === shotIndex);
-    const body = clipId ? { assign: { clipId, shotIndex } } : current ? { assign: { clipId: current.id, shotIndex: null } } : null;
+    // A clip can fill several shots: picking one for this shot doesn't take it off its others.
+    const current = previous.find((c) => c.shotIndexes.includes(shotIndex));
+    const body = clipId
+      ? { assign: { clipId, shotIndex, on: true } }
+      : current
+        ? { assign: { clipId: current.id, shotIndex, on: false } }
+        : null;
     if (!body) return;
     const res = await fetch(`/api/projects/${projectId}/clips`, {
       method: "PATCH",
@@ -119,14 +127,15 @@ export function OptionsForm({
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-base font-medium focus-visible:outline-2 focus-visible:outline-coral sm:px-5">
-          advanced: choose which clip goes in each shot
+          advanced: choose which clip goes in each shot (one clip can fill several)
           <span className="text-muted transition group-open:rotate-180" aria-hidden="true">
             ▾
           </span>
         </summary>
         <ul className="flex flex-col gap-2 px-4 pb-4 sm:px-5">
           {shots.map((shot) => {
-            const clip = clips.find((c) => c.shotIndex === shot.index);
+            const clip = clips.find((c) => c.shotIndexes.includes(shot.index));
+            const alsoOn = clip ? clip.shotIndexes.filter((s) => s !== shot.index) : [];
             return (
               <li key={shot.index} className="flex items-center gap-3 rounded-xl border border-white/10 p-2">
                 <ClipThumb
@@ -140,7 +149,11 @@ export function OptionsForm({
                   <span className="font-medium">
                     shot {shot.index + 1}: {ROLE_LABELS[shot.role]}
                   </span>
-                  <span className="truncate text-xs text-muted">{shot.tip}</span>
+                  <span className="truncate text-xs text-muted">
+                    {alsoOn.length
+                      ? `a different part of this clip than shot${alsoOn.length > 1 ? "s" : ""} ${alsoOn.map((x) => x + 1).join(", ")}`
+                      : shot.tip}
+                  </span>
                 </label>
                 <select
                   id={`assign-${shot.index}`}

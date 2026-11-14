@@ -94,6 +94,21 @@ export function PreviewEditor({
     optionsProblem(options, !!uploadedAudio) ??
     (trimProblem ? `shot ${trimProblem.shotIndex + 1}: the trim needs to be at least 0.3s and inside the clip.` : null);
 
+  /** Other shots on the same clip, and whether their trims overlap this one's (we'll move it then). */
+  function sharing(e: ShotEdit): { others: number[]; overlap: number | null } {
+    if (!e.clipId) return { others: [], overlap: null };
+    const d = clips.find((c) => c.id === e.clipId)?.durationS ?? 0;
+    const span = (x: ShotEdit) =>
+      x.trimStartS === null && x.trimEndS === null ? null : ([x.trimStartS ?? 0, x.trimEndS ?? d] as const);
+    const mine = span(e);
+    const others = shotEdits.filter((x) => x.clipId === e.clipId && x.shotIndex !== e.shotIndex);
+    const hit = others.find((x) => {
+      const theirs = span(x);
+      return x.shotIndex < e.shotIndex && mine && theirs && mine[0] < theirs[1] && theirs[0] < mine[1];
+    });
+    return { others: others.map((x) => x.shotIndex), overlap: hit ? hit.shotIndex : null };
+  }
+
   const setShot = (index: number, patch: Partial<ShotEdit>) =>
     setShotEdits((list) => list.map((e) => (e.shotIndex === index ? { ...e, ...patch } : e)));
 
@@ -272,6 +287,18 @@ export function PreviewEditor({
                       ))}
                     </select>
                   </div>
+                  {clip &&
+                    (() => {
+                      const { others, overlap } = sharing(edit);
+                      if (!others.length) return null;
+                      return (
+                        <p className={`text-xs ${overlap !== null ? "text-amber-300/90" : "text-muted"}`}>
+                          {overlap !== null
+                            ? `this trim overlaps shot ${overlap + 1}. we never show the same footage twice, so we’ll move this shot to a part of the clip nobody uses.`
+                            : `shares this clip with shot${others.length > 1 ? "s" : ""} ${others.map((x) => x + 1).join(", ")}. each gets a different part of it.`}
+                        </p>
+                      );
+                    })()}
                   {clip && (
                     <fieldset className="flex items-end gap-2">
                       <legend className="sr-only">trim shot {shot.index + 1}</legend>

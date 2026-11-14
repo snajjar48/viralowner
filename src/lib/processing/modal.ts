@@ -164,7 +164,7 @@ function renderFields(input: RenderInput) {
   return {
     ...(input.inspo ? { inspo: input.inspo } : {}),
     ...(input.scratch ? { scratch: input.scratch } : {}),
-    clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey })),
+    clips: input.clips.map((c) => ({ id: c.id, storageKey: c.storageKey, ...(c.multiUse ? { multiUse: true } : {}) })),
     shots: input.settings.shots,
     options: input.settings.options,
     reuse: input.reuseText ?? null,
