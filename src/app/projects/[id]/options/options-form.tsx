@@ -10,6 +10,8 @@ import { ROLE_LABELS } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import type { VideoOptions } from "@/lib/video-options";
+import { HookCheck } from "@/components/hook-check";
+import { NOTES_MAX } from "@/lib/video-options";
 import { Storyboard } from "./storyboard";
 
 export interface OptionClip {
@@ -173,6 +175,19 @@ export function OptionsForm({
           })}
         </ul>
       </details>
+
+      {oneTake && (
+        <HookCheck
+          projectId={projectId}
+          disabled={making}
+          onUseTitle={(title) =>
+            setOptions((o) => {
+              const line = `open with this on-screen title: "${title}"`;
+              return { ...o, notes: (o.notes ? `${o.notes}\n${line}` : line).slice(0, NOTES_MAX) };
+            })
+          }
+        />
+      )}
 
       <Storyboard
         projectId={projectId}

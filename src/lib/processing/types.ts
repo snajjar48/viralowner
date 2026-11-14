@@ -157,6 +157,22 @@ export interface Carry {
   captionGroups?: string[];
   /** The captions' words as the user retyped them (one time: the worker turns it into captionFixes). */
   captionEdit?: { before: string; after: string };
+  /** Screenshots the user added to prove what they say, shown on those words. */
+  proofs?: Proof[];
+}
+
+/** A screenshot shown on the words it proves ("2 million views"). */
+export interface Proof {
+  key: string;
+  phrase: string;
+}
+
+/** A number or result said in the video that a screenshot could prove. */
+export interface ProofMoment {
+  phrase: string;
+  /** What screenshot would prove it ("your view count"). */
+  ask: string;
+  atS: number;
 }
 
 /** The words chosen for a version, reused by later versions that don't change the text options. */
@@ -252,6 +268,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   /** Shot lengths the user asked for (inspo videos), the caption fixes in effect and the captions shown. */
   shotLengths?: number[];
   captionFixes?: CaptionFix[];
+  proofs?: Proof[];
+  proofMoments?: ProofMoment[];
   captionGroups?: string[];
   captionText?: string;
   /** The caption style this version used, when a request changed it from the one in the options. */

@@ -11,6 +11,7 @@ import { OptionsFields, optionsProblem, Section } from "@/components/options-fie
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
 import { ClipsManager, type InitialClip } from "../clips/clips-manager";
+import { HookCheck } from "@/components/hook-check";
 import { Storyboard } from "../options/storyboard";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -177,6 +178,16 @@ export function ScratchCreate({
           uploadedAudio={audio}
           variant="scratch"
         />
+
+        {clips.uploaded > 0 && !clips.busy && (
+          <HookCheck
+            projectId={projectId}
+            disabled={making}
+            onUseTitle={(title) =>
+              setPrompt((p) => `${p.trim()}\n\nopen with this on-screen title: "${title}"`.slice(0, PROMPT_MAX))
+            }
+          />
+        )}
 
         <Storyboard
           projectId={projectId}

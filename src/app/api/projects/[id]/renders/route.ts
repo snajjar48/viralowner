@@ -1,6 +1,8 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "@/lib/membership";
-import { listClips, listRenders, saveSettings, type Project } from "@/lib/projects";
+import { listClips, listRenders, saveSettings, type Project, type Render } from "@/lib/projects";
+import type { Carry, Proof } from "@/lib/processing/types";
+import { headObject } from "@/lib/storage";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
   carryFrom,
@@ -43,8 +45,9 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if (project.kind === "scratch" && !canUseScratch(await getMembership(userId))) {
       return Response.json({ error: SCRATCH_PRO_MESSAGE, reason: "pro" }, { status: 402 });
     }
-    // Fixing caption words remakes the same edit: it doesn't use up a change.
+    // Fixing caption words or adding proof screenshots remakes the same edit: it doesn't use up a change.
     if (body.mode === "captions") return fixCaptions(userId, project, body);
+    if (body.mode === "proof") return addProofs(userId, project, body);
 
     // Counts the video against the trial or plan on its first version, and
     // checks this video still has changes left otherwise.
@@ -133,6 +136,8 @@ async function makeVersion(userId: string, project: Project, body: Record<string
       // version's transitions and effects (a request can change them).
       {
         ...(previous ? { request, previous } : { reuseText: textToReuse(from, options) }),
+        // "repost with a new hook": a fresh post caption too.
+        ...(previous && body.repost === true ? { writePost: true } : {}),
         cuts: from?.plan?.jumpcut,
         effects: from?.plan?.effects,
       },
@@ -166,8 +171,37 @@ async function fixCaptions(userId: string, project: Project, body: Record<string
   if (!from?.plan) return jsonError("we couldn’t find that version.", 404);
   const edit = captionEditFrom(body, from);
   if ("error" in edit) return jsonError(edit.error!, 400);
+  return remakeSameEdit(userId, project, from, { captionEdit: edit });
+}
+
+/**
+ * { fromVersion, proofs: [{ key, phrase }] }: the same edit with these proof screenshots shown on
+ * the words they prove (the full list: leaving one out takes it off).
+ */
+async function addProofs(userId: string, project: Project, body: Record<string, unknown>) {
+  const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+  if (!from?.plan) return jsonError("we couldn’t find that version.", 404);
+  if (!Array.isArray(body.proofs) || body.proofs.length > 6) return jsonError("invalid screenshots.", 400);
+  const folder = `u/${userId}/p/${project.id}/proofs/`;
+  const proofs: Proof[] = [];
+  for (const raw of body.proofs as Record<string, unknown>[]) {
+    const key = typeof raw?.key === "string" ? raw.key : "";
+    const phrase = typeof raw?.phrase === "string" ? raw.phrase.trim().slice(0, 120) : "";
+    if (!key.startsWith(folder) || !/^[A-Za-z0-9-]+\.(png|jpg|webp)$/.test(key.slice(folder.length)) || !phrase) {
+      return jsonError("invalid screenshot.", 400);
+    }
+    const head = await headObject(key);
+    if (!head || head.sizeBytes > 15 * 1024 * 1024) return jsonError("that screenshot didn’t upload. please add it again.", 400);
+    proofs.push({ key, phrase });
+  }
+  return remakeSameEdit(userId, project, from, { proofs });
+}
+
+/** A new version that's the same edit as `from`, with `patch` carried in (free: no change used). */
+async function remakeSameEdit(userId: string, project: Project, from: Render, patch: Partial<Carry>) {
+  if (!from.plan) return jsonError("we couldn’t find that version.", 404);
   const carried = carryFrom(from).carry ?? {};
-  const carry = { carry: { ...carried, captionEdit: edit } };
+  const carry = { carry: { ...carried, ...patch } };
   const shots = from.plan.shots;
   let result;
   if (project.kind === "scratch") {
@@ -223,7 +257,7 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
         userId,
         project,
         { ...settingsFor(options, shots), ...carryFrom(from), fromVersion: from.version, ...(request ? { request } : {}) },
-        { previous, ...(request ? { request } : {}) },
+        { previous, ...(request ? { request } : {}), ...(request && body.repost === true ? { writePost: true } : {}) },
       );
     }
   } else if (body.mode === "regenerate") {

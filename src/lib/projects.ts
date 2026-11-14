@@ -142,7 +142,7 @@ function withCaptionStyle(options: VideoOptions, used: RenderPlan["captionStyle"
   if (!used) return options;
   return {
     ...options,
-    captions: used === "off" ? { ...options.captions, enabled: false } : { enabled: true, style: used },
+    captions: used === "off" ? { ...options.captions, enabled: false } : { ...options.captions, enabled: true, style: used },
   };
 }
 

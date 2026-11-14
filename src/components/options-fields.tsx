@@ -309,6 +309,43 @@ export function OptionsFields({
           disabled={!value.captions.enabled}
           onChange={(style) => set({ captions: { ...value.captions, style } })}
         />
+        {value.captions.enabled && (
+          <label className="flex cursor-pointer items-start gap-3 text-sm">
+            <input
+              type="checkbox"
+              checked={value.captions.emojis}
+              onChange={(e) => set({ captions: { ...value.captions, emojis: e.target.checked } })}
+              className="mt-0.5 size-4 shrink-0 accent-coral"
+            />
+            <span>
+              emoji pop-ups <span className="text-muted">· an emoji beside a punchy word every few seconds</span>
+            </span>
+          </label>
+        )}
+      </Section>
+
+      <Section title="series">
+        <label className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-muted">part of a series? this is part</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={1}
+            max={999}
+            value={value.series.part ?? ""}
+            placeholder="—"
+            onChange={(e) => {
+              const n = Number.parseInt(e.target.value, 10);
+              set({ series: { part: Number.isInteger(n) && n >= 1 && n <= 999 ? n : null } });
+            }}
+            aria-label="series part number"
+            className="h-10 w-20 rounded-lg border border-white/15 bg-[#15151b] px-3 text-center text-foreground outline-none focus-visible:border-coral"
+          />
+        </label>
+        <p className="text-xs text-muted">
+          adds a small “part {value.series.part ?? "2"}” label to the top of the video and mentions it in the post
+          caption. leave it empty if it’s a one-off.
+        </p>
       </Section>
     </div>
   );

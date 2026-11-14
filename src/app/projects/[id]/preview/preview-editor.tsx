@@ -9,9 +9,15 @@ import { ArrowRightIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem, Section } from "@/components/options-fields";
 import { ROLE_LABELS } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
-import type { RenderSettings, Shot, ShotEdit } from "@/lib/processing/types";
+import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
+import { ProofPanel } from "./proof-panel";
+
+/** "repost with a new hook": what the editor is asked to do (a normal change). */
+const REPOST_REQUEST =
+  "This is a repost of a video that didn't get many views. Give it a brand-new hook: new opening on-screen text " +
+  "with a different angle, and open on the strongest moment if there's a better one. Keep everything else the same.";
 
 interface EditorClip {
   id: string;
@@ -48,6 +54,8 @@ export function PreviewEditor({
     note: string | null;
     /** The captions as shown in this version (null if it has none). */
     captionText: string | null;
+    proofs: Proof[];
+    proofMoments: ProofMoment[];
   };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
@@ -76,7 +84,7 @@ export function PreviewEditor({
   );
   const [options, setOptions] = useState(current.settings.options);
   const [shotEdits, setShotEdits] = useState(initialShots);
-  const [busy, setBusy] = useState<"apply" | "regenerate" | null>(null);
+  const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | null>(null);
   const [request, setRequest] = useState("");
   const [error, setError] = useState("");
 
@@ -112,14 +120,23 @@ export function PreviewEditor({
   const setShot = (index: number, patch: Partial<ShotEdit>) =>
     setShotEdits((list) => list.map((e) => (e.shotIndex === index ? { ...e, ...patch } : e)));
 
-  async function run(kind: "apply" | "regenerate") {
+  async function run(kind: "apply" | "regenerate" | "repost") {
     setBusy(kind);
     setError("");
     try {
       const body =
         kind === "apply"
           ? { mode: "edit", options, shots: shotEdits, fromVersion: current.version, request: request.trim() || undefined }
-          : { mode: "regenerate", fromVersion: current.version };
+          : kind === "repost"
+            ? {
+                mode: "edit",
+                options: current.settings.options,
+                shots: initialShots,
+                fromVersion: current.version,
+                request: REPOST_REQUEST,
+                repost: true,
+              }
+            : { mode: "regenerate", fromVersion: current.version };
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, body);
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
@@ -170,6 +187,18 @@ export function PreviewEditor({
           <button type="button" onClick={() => run("regenerate")} disabled={locked} className={secondaryButton}>
             <RefreshIcon className="size-4" /> {busy === "regenerate" ? "starting…" : "regenerate"}
           </button>
+          <button
+            type="button"
+            onClick={() => run("repost")}
+            disabled={locked}
+            title="posted it and it didn’t take off? same video, a brand-new hook and post caption. uses a change."
+            className={secondaryButton}
+          >
+            <SparkleIcon className="size-4" /> {busy === "repost" ? "starting…" : "repost with a new hook"}
+          </button>
+          <p className="text-center text-xs text-muted">
+            didn’t take off? repost it with a new hook and post caption (uses a change).
+          </p>
         </div>
       </div>
 
@@ -228,6 +257,14 @@ export function PreviewEditor({
         {current.captionText && (
           <CaptionWords key={current.version} projectId={projectId} version={current.version} text={current.captionText} />
         )}
+
+        <ProofPanel
+          key={`proof-${current.version}`}
+          projectId={projectId}
+          version={current.version}
+          moments={current.proofMoments}
+          proofs={current.proofs}
+        />
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">

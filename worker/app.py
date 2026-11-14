@@ -249,7 +249,7 @@ def with_playbook(system: str, inspo: bool) -> str:
             "style, speed changes) is still done exactly as asked.")
     out = system + "\n\n## What makes short videos go viral\n" + how
     if VIRAL_PLAYBOOK:
-        out += "\n\n### Skits and talking videos\nLearned from studying real viral skits.\n\n" + VIRAL_PLAYBOOK
+        out += "\n\n### Skits\nLearned from studying real viral skits.\n\n" + VIRAL_PLAYBOOK
     if TALKING_PLAYBOOK:
         out += ("\n\n### Talking to the camera\nLearned from studying real viral talking-head videos. Follow this "
                 "whenever the video is mainly one person talking to the camera (advice, a story, an opinion, an "
@@ -4770,13 +4770,13 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
         "speechHint": prompt[:600],
-        "carry": {"captionFixes": caption_fixes,
+        "carry": {"captionFixes": caption_fixes, "proofs": clean_proofs(carry.get("proofs")),
                   "captionGroups": clean_caption_groups(((base or {}).get("plan") or {}).get("captionGroups") if base else None,
                                                         carry.get("captionGroups"))},
         # The prompt (and any change request) can say how the captions should look and read.
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
         "preferences": prefs,
-        "writePost": not (base and request),
+        "writePost": bool(req.get("writePost")) or not (base and request),
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -4794,6 +4794,299 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     meta["seconds"] = round(time.time() - started, 1)
     meta["scratch"] = True
     return out
+
+
+# ---- pictures on top of the video: emoji pop-ups, proof screenshots, the series label
+
+EMOJI_PNG_URL = "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e07d3d1fe1bdbcdb14964547f0fd592966f/2D/png/512/emoji_u{}.png"  # pinned: the repo moves folders
+PROOF_KEY_RE = r"^u/[A-Za-z0-9-]+/p/[A-Za-z0-9-]+/proofs/[A-Za-z0-9-]+\.(png|jpg|jpeg|webp)$"
+
+
+def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str) -> list[str]:
+    """Filters putting each picture on the video from `start` to `end`, centered at (x, y) as
+    fractions of the frame, `w` pixels wide: it fades in with a little rise, and fades out.
+    Adds the pictures to `inputs`."""
+    graph, cur = [], base
+    for k, o in enumerate(overlays):
+        dur = max(0.2, o["end"] - o["start"])
+        idx = inputs.count("-i")
+        inputs += ["-loop", "1", "-framerate", str(OUT_FPS), "-t", f"{dur:.3f}", "-i", str(o["path"])]
+        fade_out = max(0.0, dur - 0.12)
+        graph.append(f"[{idx}:v]scale={int(o['w'])}:-1,format=rgba,fade=t=in:st=0:d=0.12:alpha=1,"
+                     f"fade=t=out:st={fade_out:.3f}:d=0.12:alpha=1,setpts=PTS+{o['start']:.3f}/TB[ov{k}]")
+        nxt = out if k == len(overlays) - 1 else f"ovb{k}"
+        rise = 28 if o.get("rise", True) else 0
+        graph.append(f"[{cur}][ov{k}]overlay=x=W*{o['x']:.4f}-w/2:"
+                     f"y=H*{o['y']:.4f}-h/2+{rise}*max(0\\,1-(t-{o['start']:.3f})/0.15):"
+                     f"eval=frame:eof_action=pass:format=auto[{nxt}]")
+        cur = nxt
+    if not overlays:
+        graph.append(f"[{base}]null[{out}]")
+    return graph
+
+
+def emoji_png(emoji: str, workdir: Path) -> Path | None:
+    """The emoji as a picture (Google's Noto Emoji, Apache 2.0), or None if it can't be had."""
+    import urllib.request
+
+    cps = [f"{ord(c):x}" for c in emoji.strip() if ord(c) not in (0xFE0F, 0x200D)]
+    if not cps or len(cps) > 4:
+        return None
+    name = "_".join(cps)
+    dest = workdir / f"emoji_{name}.png"
+    if not dest.exists():
+        try:
+            with urllib.request.urlopen(EMOJI_PNG_URL.format(name), timeout=8) as r:
+                data = r.read(2_000_000)
+            if not data.startswith(b"\x89PNG"):
+                return None
+            dest.write_bytes(data)
+        except Exception as e:  # noqa: BLE001
+            print(f"emoji {emoji!r} unavailable: {e}")
+            return None
+    return dest
+
+
+EMOJI_SCHEMA = {
+    "type": "object",
+    "properties": {"picks": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"word": {"type": "integer", "description": "the word's number in the list."},
+                       "emoji": {"type": "string", "description": "one emoji."}},
+        "required": ["word", "emoji"], "additionalProperties": False}}},
+    "required": ["picks"],
+    "additionalProperties": False,
+}
+
+
+def emoji_overlays(words: list[dict], caption_y_at, total: float, workdir: Path, guide: str) -> tuple[list[dict], float]:
+    """Emoji pop-ups beside punchy captions: about one every 2-4 seconds, on the words that carry
+    the point (a feeling, a number, an object, a result), just above the caption."""
+    if len(words) < 4 or total < 3:
+        return [], 0.0
+    listing = " ".join(f"{i}:{w['w']}" for i, w in enumerate(words))
+    want = max(1, int(total / 3))
+    result = ask_claude(
+        "You add emoji pop-ups to a short-form video's captions, the way viral talking videos do: one emoji beside a "
+        "punchy word every 2-4 seconds, never two within 1.5 seconds. Pick words that carry the point (a feeling, a "
+        "number, a thing, a result, a reaction) and the single emoji that says it best; skip filler words. Never put an "
+        "emoji on a serious or sad moment where it would read as mocking. Follow anything the user asked about emojis."
+        + (("\n\nwhat the user asked for:\n" + guide[:1500]) if guide else ""),
+        [{"type": "text", "text": f"the video is {total:.1f}s. pick about {want} words. numbered words:\n{listing}"}],
+        EMOJI_SCHEMA, "emoji picks failed", effort="low")
+    picks, last = [], -9.0
+    for pk in sorted(result["data"].get("picks") or [], key=lambda x: x.get("word", 0)):
+        i = pk.get("word")
+        if not isinstance(i, int) or not 0 <= i < len(words) or not pk.get("emoji"):
+            continue
+        t = float(words[i]["s"])
+        if t - last < 1.5 or t > total - 0.4:
+            continue
+        png = emoji_png(str(pk["emoji"]), workdir)
+        if not png:
+            continue
+        cap_y = caption_y_at(t)
+        cap_y = cap_y if isinstance(cap_y, (int, float)) else 0.7
+        picks.append({"path": png, "start": t, "end": min(total, t + 0.9), "x": 0.5, "y": max(0.18, cap_y - 0.1),
+                      "w": 170})
+        last = t
+    print(f"emoji pop-ups: {len(picks)} ({', '.join(str(p['path'].stem) for p in picks)})")
+    return picks, result["cost_usd"]
+
+
+def _words_key(text: str) -> list[str]:
+    import re
+
+    return [re.sub(r"[^a-z0-9$%]", "", w.lower()) for w in text.split() if re.sub(r"[^a-z0-9$%]", "", w.lower())]
+
+
+def phrase_time(words: list[dict], phrase: str) -> float | None:
+    """When `phrase` is said (its first word), from the word timings; None if it isn't found."""
+    want = _words_key(phrase)
+    have = [(_words_key(w["w"]) or [""])[0] for w in words]
+    if not want:
+        return None
+    for i in range(len(have) - len(want) + 1):
+        if have[i:i + len(want)] == want:
+            return float(words[i]["s"])
+    for i, h in enumerate(have):  # just the first word that matters (a number, usually)
+        if h and h == want[0]:
+            return float(words[i]["s"])
+    return None
+
+
+def clean_proofs(raw) -> list[dict]:
+    """The user's proof screenshots: {key, phrase} each, at most 6."""
+    import re
+
+    out = []
+    for x in raw if isinstance(raw, list) else []:
+        if (isinstance(x, dict) and isinstance(x.get("key"), str) and re.match(PROOF_KEY_RE, x["key"])
+                and isinstance(x.get("phrase"), str) and x["phrase"].strip()):
+            out.append({"key": x["key"], "phrase": x["phrase"].strip()[:120]})
+    return out[:6]
+
+
+def framed_picture(src: Path, dest: Path, max_w: int = 860, max_h: int = 660) -> Path:
+    """A screenshot ready to pop in: fitted, rounded corners, a white edge and a soft shadow."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+    img = ImageOps.exif_transpose(Image.open(src)).convert("RGBA")
+    img.thumbnail((max_w, max_h), Image.LANCZOS)
+    w, h = img.size
+    border, radius, pad = 8, 34, 40
+    card = Image.new("RGBA", (w + 2 * border, h + 2 * border), (255, 255, 255, 255))
+    card.paste(img, (border, border), img)
+    mask = Image.new("L", card.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, card.size[0] - 1, card.size[1] - 1), radius=radius, fill=255)
+    card.putalpha(mask)
+    canvas = Image.new("RGBA", (card.size[0] + 2 * pad, card.size[1] + 2 * pad), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle((pad, pad + 12, pad + card.size[0], pad + card.size[1] + 12),
+                                             radius=radius, fill=(0, 0, 0, 120))
+    canvas = Image.alpha_composite(canvas, shadow.filter(ImageFilter.GaussianBlur(18)))
+    canvas.alpha_composite(card, (pad, pad))
+    canvas.save(dest)
+    return dest
+
+
+def proof_overlays(proofs: list[dict], words: list[dict], total: float, workdir: Path, fetch) -> list[dict]:
+    """Each proof screenshot pops in at the top of the frame on the words it proves, for ~2.2s."""
+    out = []
+    for k, pr in enumerate(proofs):
+        t = phrase_time(words, pr["phrase"])
+        if t is None:
+            print(f"proof: couldn't find {pr['phrase']!r} in what's said; left out")
+            continue
+        raw = workdir / f"proof{k}{Path(pr['key']).suffix}"
+        try:
+            fetch(pr["key"], raw)
+            png = framed_picture(raw, workdir / f"proof{k}.png")
+        except Exception as e:  # noqa: BLE001
+            print(f"proof {pr['key']}: unusable ({type(e).__name__}: {e})")
+            continue
+        start = max(0.0, t - 0.1)
+        out.append({"path": png, "start": start, "end": min(total, start + 2.2), "x": 0.5, "y": 0.32, "w": 940})
+    out.sort(key=lambda o: o["start"])
+    for a, b in zip(out, out[1:]):  # one at a time
+        a["end"] = min(a["end"], b["start"])
+    return out
+
+
+PROOF_SCHEMA = {
+    "type": "object",
+    "properties": {"moments": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"phrase": {"type": "string", "description": "2-6 words exactly as said, starting with the number or result."},
+                       "ask": {"type": "string", "description": "what screenshot would prove it, in a few lowercase words (e.g. 'your view count')."}},
+        "required": ["phrase", "ask"], "additionalProperties": False}}},
+    "required": ["moments"],
+    "additionalProperties": False,
+}
+
+
+def proof_moments(words: list[dict], proofs: list[dict]) -> tuple[list[dict], float]:
+    """Numbers and results said in the video that a screenshot would prove ("2 million views", "$300k
+    in sales"): where viral talking videos cut to the proof. Only asked when a number is said."""
+    import re
+
+    text = " ".join(w["w"] for w in words)
+    if not re.search(r"\d|\b(hundred|thousand|million|billion|percent|k)\b", text, re.I):
+        return [], 0.0
+    have = {pr["phrase"].lower() for pr in proofs}
+    result = ask_claude(
+        "You find the moments in a short talking video where the speaker states a result, number or claim that a "
+        "screenshot could prove (views, followers, sales, revenue, a review, a ranking, a before/after). Return at most "
+        "4, the strongest first. Skip numbers that are just steps or counts (\"3 tips\", \"number one\").",
+        [{"type": "text", "text": "what's said:\n" + text[:6000]}], PROOF_SCHEMA, "proof check failed", effort="low")
+    out = []
+    for m in result["data"].get("moments") or []:
+        phrase = (m.get("phrase") or "").strip()
+        t = phrase_time(words, phrase) if phrase else None
+        if t is None or phrase.lower() in have:
+            continue
+        out.append({"phrase": phrase[:120], "ask": (m.get("ask") or "").strip()[:80], "atS": r2(t)})
+    return out[:4], result["cost_usd"]
+
+
+def series_label(part: int, workdir: Path, total: float) -> dict:
+    """A small "part 2" pill at the top left for the whole video."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font_path = run(["fc-match", "-f", "%{file}", "Montserrat:extrabold"]).strip()
+    font = ImageFont.truetype(font_path, 46)
+    text = f"part {part}"
+    box = ImageDraw.Draw(Image.new("RGBA", (10, 10))).textbbox((0, 0), text, font=font)
+    w, h = box[2] - box[0] + 56, box[3] - box[1] + 34
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=(0, 0, 0, 175))
+    d.text((28 - box[0], 17 - box[1]), text, font=font, fill=(255, 255, 255, 255))
+    dest = workdir / "series.png"
+    img.save(dest)
+    return {"path": dest, "start": 0.0, "end": total, "x": 0.06 + w / OUT_W / 2, "y": 0.135, "w": w, "rise": False}
+
+
+# ---- hook check: is the first thing said a strong hook?
+
+HOOK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "has": {"type": "array", "items": {"type": "string", "enum": ["number", "call_out", "result", "question", "bold_claim"]},
+                "description": "which hook ingredients the first line has."},
+        "verdict": {"type": "string", "enum": ["strong", "okay", "weak"]},
+        "why": {"type": "string", "description": "one or two short sentences, lowercase, talking to the user."},
+        "rewrites": {"type": "array", "items": {"type": "string"}, "description": "3 stronger first lines in the user's own voice and topic, each under 18 words."},
+        "title": {"type": "string", "description": "an opening on-screen title for the video, 3-8 words, lowercase unless a name."},
+    },
+    "required": ["has", "verdict", "why", "rewrites", "title"],
+    "additionalProperties": False,
+}
+
+
+def first_line(words: list[dict]) -> str:
+    out = []
+    for w in words:
+        out.append(w["w"])
+        if w["w"].rstrip()[-1:] in ".?!" and len(out) >= 4 or len(out) >= 28:
+            break
+    return " ".join(out).strip()
+
+
+def hook_check(req: dict, workdir: Path, fetch=r2_fetch) -> dict:
+    """The first sentence the user says (from their clips, in order) and how strong a hook it is,
+    with stronger first lines and an opening title."""
+    line = ""
+    for i, c in enumerate((req.get("clips") or [])[:6]):
+        path = workdir / f"hook{i:02d}"
+        fetch(c["storageKey"], path)
+        audio = workdir / f"hook{i:02d}.wav"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(path), "-t", "25", "-vn", "-ac", "1", "-ar", "16000",
+                        str(audio)], capture_output=True)
+        if not audio.exists() or audio.stat().st_size < 2000:
+            continue
+        words = [w for seg in transcribe(audio, (req.get("business") or "")[:400])["segments"] for w in seg.get("words") or []]
+        line = first_line(words)
+        if len(line.split()) >= 3:
+            break
+    if not line:
+        raise JobError("we couldn’t hear anyone talking at the start of your clips.")
+    about = "\n".join(x for x in (
+        f"what the video is: {req.get('about')}" if req.get("about") else "",
+        f"about the user's business:\n{req['business']}" if req.get("business") else "") if x)
+    result = ask_claude(
+        "You coach business owners and creators on the first line of a short talking video. Viral talking videos start "
+        "speaking on frame one and pack the promise into the first 2-4 seconds with at least one of: a number, a call-out "
+        "of who it's for, a specific result, a question, or a bold claim. Never a greeting or an intro. Judge the user's "
+        "first line honestly, then write 3 stronger first lines they could say instead, keeping their topic, facts and "
+        "voice (no made-up numbers: use a number only if they said one or it's about their own business), plus a short "
+        "opening on-screen title. Lowercase, plain, no hashtags, no emojis.",
+        [{"type": "text", "text": f"{about}\n\ntheir first line: \"{line}\""}], HOOK_SCHEMA, "hook check failed",
+        effort="medium")
+    data = result["data"]
+    return {"line": line, "verdict": data["verdict"], "has": data["has"], "why": data["why"],
+            "rewrites": [r.strip() for r in data["rewrites"] if r.strip()][:3], "title": data["title"].strip(),
+            "costUsd": result["cost_usd"]}
 
 
 def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
@@ -5264,6 +5557,39 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     report("editing", 85)
     ass = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions, caption_y_at)
+
+    # Pictures on top of the video: emoji pop-ups, proof screenshots and the series label.
+    proofs = clean_proofs(carry.get("proofs"))
+    spoken = words
+    if proofs and not spoken and music in ("original", "upload"):
+        heard = own_audio if use_own_audio else joined
+        spoken = [w for seg in transcribe(heard, speech_hint)["segments"] for w in seg.get("words") or []
+                  if w.get("w") and w["e"] <= total + 0.5]
+    pictures: list[dict] = []
+    if (options["captions"].get("emojis") and words) and shown_captions:
+        try:
+            emojis, emoji_cost = emoji_overlays(words, caption_y_at, total, workdir, guide)
+            cost += emoji_cost
+            pictures += emojis
+        except Exception as e:  # noqa: BLE001
+            print(f"emoji pop-ups skipped: {type(e).__name__}: {e}")
+    proof_pics = proof_overlays(proofs, spoken, total, workdir, fetch) if proofs else []
+    pictures += proof_pics
+    series_part = (options.get("series") or {}).get("part") if isinstance(options.get("series"), dict) else None
+    if isinstance(series_part, int) and 1 <= series_part <= 999:
+        try:
+            pictures.append(series_label(series_part, workdir, total))
+        except Exception as e:  # noqa: BLE001
+            print(f"series label skipped: {type(e).__name__}: {e}")
+    # Numbers and results said that a screenshot could prove: offered to the user after the video's made.
+    moments: list[dict] = []
+    if spoken and music in ("original", "upload"):
+        try:
+            moments, moment_cost = proof_moments(spoken, proofs)
+            cost += moment_cost
+        except Exception as e:  # noqa: BLE001
+            print(f"proof moments skipped: {type(e).__name__}: {e}")
+
     out = workdir / "final.mp4"
     inputs = ["-i", joined.name]
     if music == "none":
@@ -5283,6 +5609,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # Sound effects: the inspo's are already in its own audio, so only add the ones asked for then.
     sounds = sfx_times([e for e in effects["sfx"] if not (use_inspo_audio and e.get("source") == "inspo")],
                        starts, durations, total)
+    sounds += [(pic["start"], "pop", 0.6) for pic in proof_pics]
     graph = [main]
     first_sfx = 1 if main.startswith("[0:a]") else 2  # input number of the first sound effect
     for k, (t, name, vol) in enumerate(sounds):
@@ -5295,9 +5622,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                  + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
     graph += fire_overlays(cuts, starts, inputs)
     graph += look_graph(effects["looks"], "fired", "looked")
+    graph += overlay_graph(pictures, inputs, "looked", "pictured")
     if ass:
         (workdir / "text.ass").write_text(ass, encoding="utf-8")
-    graph.append("[looked]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
+    graph.append("[pictured]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
     cmd = ["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
            *FINAL_X264, "-pix_fmt", "yuv420p", "-profile:v", "high",
            "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
@@ -5314,6 +5642,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         about = (req.get("captionInstructions") or "").strip()[:600] or "; ".join(
             x for x in (ins.get("hook"), ins.get("structure"), *(why if isinstance(why, list) else [why]))
             if isinstance(x, str) and x)
+        if isinstance(series_part, int) and series_part >= 1:
+            about = (about + f" this video is part {series_part} of a series: say so in the caption.").strip()
         new_post, post_cost = write_post(out, workdir, plan_texts, words, about, guide)
         cost += post_cost
         if new_post:
@@ -5364,6 +5694,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "effects": effects,
             **({"captionFixes": caption_fixes} if caption_fixes else {}),
             **({"captionGroups": caption_groups} if caption_groups else {}),
+            **({"proofs": proofs} if proofs else {}),
+            **({"proofMoments": moments} if moments else {}),
             # The caption style used, when it isn't the one chosen in the options (a request changed it).
             **({"captionStyle": caption_style or "off"}
                if (caption_style or "off") != (options["captions"]["style"] if options["captions"]["enabled"] else "off")
@@ -5577,6 +5909,13 @@ def render_job(req: dict) -> dict:
                 notify_job.spawn(*target)
             except Exception as e:  # noqa: BLE001
                 print(f"couldn't schedule notify: {e}")
+
+
+@app.function(**job_resources, timeout=300)
+def hook_job(req: dict) -> dict:
+    """How strong the first line said in the user's clips is as a hook (see hook_check)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        return hook_check(req, Path(tmp))
 
 
 @app.function(**job_resources, timeout=900)
@@ -5844,6 +6183,20 @@ def api():
         if not re.match(CLIP_KEY_RE, storage_key) or ".." in storage_key:
             raise HTTPException(status_code=400, detail="invalid storage key")
         return started(thumb_job.spawn(storage_key))
+
+    @web.post("/jobs/hook", dependencies=[Depends(require_token)])
+    def start_hook(req: dict = Body(...)) -> dict:
+        import re
+
+        clips = req.get("clips") if isinstance(req.get("clips"), list) else []
+        keys = [c.get("storageKey") for c in clips if isinstance(c, dict)]
+        if not keys or any(not isinstance(k, str) or not re.match(CLIP_KEY_RE, k) or ".." in k for k in keys):
+            raise HTTPException(status_code=400, detail="invalid clips")
+        return started(hook_job.spawn({
+            "clips": [{"storageKey": k} for k in keys[:6]],
+            "about": str(req.get("about") or "")[:800],
+            "business": str(req.get("business") or "")[:2200],
+        }))
 
     @web.post("/jobs/ping", dependencies=[Depends(require_token)])
     def start_ping() -> dict:

@@ -11,6 +11,8 @@ import {
   type JobStage,
   type JobStatus,
   type PostCopy,
+  type Proof,
+  type ProofMoment,
   type RenderInput,
   type ProcessingEngine,
   type RenderOutput,
@@ -147,6 +149,17 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
           .map((f) => ({ wrong: f.wrong, right: f.right }))
       : undefined,
     captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
+    proofs: Array.isArray(p.proofs)
+      ? p.proofs
+          .filter((x): x is Proof => !!x && typeof x.key === "string" && typeof x.phrase === "string")
+          .slice(0, 6)
+      : undefined,
+    proofMoments: Array.isArray(p.proofMoments)
+      ? p.proofMoments
+          .filter((x): x is ProofMoment => !!x && typeof x.phrase === "string" && isNum(x.atS))
+          .map((x) => ({ phrase: x.phrase, ask: typeof x.ask === "string" ? x.ask : "", atS: x.atS }))
+          .slice(0, 4)
+      : undefined,
     captionGroups: Array.isArray(p.captionGroups)
       ? p.captionGroups.filter((g): g is string => typeof g === "string").slice(0, 30)
       : undefined,
@@ -306,3 +319,43 @@ export const modalEngine: ProcessingEngine = {
     return { state: job.state, stage, progress: job.progress };
   },
 };
+
+/** How strong the first line said in the user's clips is as a hook (the worker's hook check). */
+export interface HookCheck {
+  line: string;
+  verdict: "strong" | "okay" | "weak";
+  has: string[];
+  why: string;
+  rewrites: string[];
+  title: string;
+}
+
+export async function startHookJob(input: { clips: { storageKey: string }[]; about: string; business: string }) {
+  return workerFetch<{ jobId: string }>("/jobs/hook", { method: "POST", timeoutMs: 30_000, body: input });
+}
+
+export async function getHookJob(
+  jobId: string,
+): Promise<{ state: "queued" | "processing" | "done" | "failed"; result?: HookCheck; error?: string }> {
+  let job: WorkerJob;
+  try {
+    job = await workerFetch<WorkerJob>(`/jobs/${encodeURIComponent(jobId)}`);
+  } catch (error) {
+    if (error instanceof WorkerError && error.status === 404) return { state: "failed", error: "we lost track of that check. please try again." };
+    throw error;
+  }
+  if (job.state !== "done") return { state: job.state, error: job.error };
+  const o = (job.output ?? {}) as Partial<HookCheck>;
+  if (typeof o.line !== "string" || !o.verdict) return { state: "failed", error: "we couldn’t check your hook. please try again." };
+  return {
+    state: "done",
+    result: {
+      line: o.line,
+      verdict: o.verdict === "strong" || o.verdict === "okay" ? o.verdict : "weak",
+      has: Array.isArray(o.has) ? o.has.filter((x): x is string => typeof x === "string") : [],
+      why: str(o.why),
+      rewrites: Array.isArray(o.rewrites) ? o.rewrites.filter((x): x is string => typeof x === "string").slice(0, 3) : [],
+      title: str(o.title),
+    },
+  };
+}

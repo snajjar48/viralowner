@@ -436,6 +436,7 @@ export function carryFrom(from: Render | undefined): Pick<RenderSettings, "carry
     ...(plan?.shotLengths?.length ? { shotLengths: plan.shotLengths } : {}),
     ...(plan?.captionFixes?.length ? { captionFixes: plan.captionFixes } : {}),
     ...(plan?.captionGroups?.length ? { captionGroups: plan.captionGroups } : {}),
+    ...(plan?.proofs?.length ? { proofs: plan.proofs } : {}),
   };
   return Object.keys(carry).length ? { carry } : {};
 }

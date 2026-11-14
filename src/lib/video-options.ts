@@ -16,9 +16,12 @@ export interface VideoOptions {
   text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
-  captions: { enabled: boolean; style: CaptionStyleId };
+  /** emojis: emoji pop-ups beside punchy captions. */
+  captions: { enabled: boolean; style: CaptionStyleId; emojis: boolean };
   /** "additional requests": anything the user wants the edit to know or do. */
   notes: string;
+  /** Part of a series: a "part 2" label on the video (and in the post caption). */
+  series: { part: number | null };
 }
 
 export const TEXT_MAX = 300;
@@ -31,8 +34,9 @@ export const PROMPT_MAX = 2000;
 export const DEFAULT_OPTIONS: VideoOptions = {
   text: { mode: "match", custom: "", align: "inspo", style: "auto" },
   music: { mode: "original", inspoAudioConfirmed: false },
-  captions: { enabled: true, style: "bold-pop" },
+  captions: { enabled: true, style: "bold-pop", emojis: false },
   notes: "",
+  series: { part: null },
 };
 
 export const NO_AUDIO_FILE_ERROR = "add your audio file on the clips step, or choose another music option.";
@@ -83,6 +87,9 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   const text = obj(raw.text);
   const music = obj(raw.music);
   const captions = obj(raw.captions);
+  const series = obj(raw.series);
+  const part = typeof series.part === "number" && Number.isInteger(series.part) ? series.part : null;
+  if (part !== null && (part < 1 || part > 999)) return { error: "the series part needs to be a number from 1 to 999." };
 
   // Keep the user's line breaks: each line they type is its own line on screen.
   const custom =
@@ -125,8 +132,10 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
       style: CAPTION_IDS.includes(captions.style as CaptionStyleId)
         ? (captions.style as CaptionStyleId)
         : DEFAULT_OPTIONS.captions.style,
+      emojis: captions.emojis === true,
     },
     notes,
+    series: { part },
   };
 }
 

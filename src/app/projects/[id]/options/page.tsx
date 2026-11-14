@@ -58,7 +58,7 @@ async function Options({ id }: { id: string }) {
         initialOptions={
           // Until the user picks, captions start in the style closest to the inspo's own.
           !project.settingsSaved && inspo.breakdown.style?.captions?.look
-            ? { ...project.settings, captions: { enabled: true, style: inspo.breakdown.style.captions.look } }
+            ? { ...project.settings, captions: { ...project.settings.captions, enabled: true, style: inspo.breakdown.style.captions.look } }
             : project.settings
         }
         shots={inspo.breakdown.shots}
