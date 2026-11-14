@@ -14,7 +14,7 @@ export const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
 
 /** The main button's words and where it goes (the join section below, while it's a waitlist). */
 export const MAIN_CTA = SIGNUPS_OPEN
-  ? { href: "/signup", label: "make my free video" }
+  ? { href: "/signup", label: "get started" }
   : { href: "#join", label: "join the waitlist" };
 
 /** Page frame for the public site. `minimal` (ad landing pages): just the logo, no links away. */
@@ -91,7 +91,7 @@ export function JoinCta({ id, source, center = false }: { id: string; source: st
           href="/signup"
           className="inline-flex h-14 items-center rounded-full bg-linear-to-r from-violet to-coral px-8 text-lg font-medium text-white shadow-[0_18px_50px_-20px] shadow-coral/70 transition hover:brightness-110"
         >
-          make my free video
+          get started
         </Link>
         <p className="text-sm text-muted">your first video is free. no charge unless you pick a plan.</p>
       </div>
