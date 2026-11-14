@@ -247,7 +247,7 @@ export function HeroVisual() {
       {/* the viral video */}
       <Phone className="absolute top-8 left-0 w-[42%] -rotate-6 opacity-80" tone="from-sky-500/50 via-violet/40 to-fuchsia-500/40">
         <span className="absolute inset-x-2 top-[22%] text-center text-[9px] leading-tight font-semibold text-white drop-shadow sm:text-[10px]">
-          pov: you finally found a barber who actually listens
+          when the line is out the door at 7am
         </span>
         <Tag className="absolute bottom-3 left-1/2 -translate-x-1/2">the viral one</Tag>
       </Phone>

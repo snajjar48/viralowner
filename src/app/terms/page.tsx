@@ -58,6 +58,24 @@ export default function TermsPage() {
           </p>
         </Part>
 
+        <Part title="Audio">
+          <p>
+            viralowner does not own, license or provide any of the audio used in your videos. That includes any
+            audio file you upload, the sound from an inspiration video you choose to use, and your clips’ own
+            sound. We only edit it into your video the way you ask.
+          </p>
+          <p>
+            Audio such as songs, trending sounds and other people’s voices usually belongs to someone else. By
+            uploading or choosing audio, you confirm you own it or have permission to use it, and you take full
+            responsibility for how you use it. viralowner isn’t responsible for any copyright claim, muting,
+            takedown or other action taken against your videos or accounts because of their audio.
+          </p>
+          <p>
+            The safest way to use a trending sound is to make your video with no music and add the sound inside
+            TikTok or Instagram when you post, where it’s licensed for use.
+          </p>
+        </Part>
+
         <p>
           Questions? Email{" "}
           <a href="mailto:hello@viralowner.com" className="text-foreground underline underline-offset-4">

@@ -20,9 +20,13 @@ export function AudioRightsNotice({
         {source === "inspo"
           ? "the inspo’s sound usually belongs to someone else, like a song or another creator’s voice."
           : "unless you made this audio yourself, it probably belongs to someone else, like a song, a sound from another video or another person’s voice."}{" "}
-        viralowner doesn’t own or license it. posting it can get your video muted, taken down or hit with a copyright
-        claim. the safest way to use a trending sound is to pick “no music” and add the sound inside tiktok or
-        instagram when you post.
+        viralowner doesn’t own, license or provide any audio you upload or use, and isn’t responsible for it. posting it
+        can get your video muted, taken down or hit with a copyright claim. the safest way to use a trending sound is to
+        pick “no music” and add the sound inside tiktok or instagram when you post.{" "}
+        <a href="/terms" target="_blank" rel="noopener noreferrer" className="underline underline-offset-4 hover:text-foreground">
+          see our terms
+        </a>
+        .
       </p>
       <label className="flex cursor-pointer items-start gap-3">
         <input
