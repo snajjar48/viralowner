@@ -4,7 +4,7 @@ import { FEATURES, HOW_IT_WORKS } from "@/components/marketing-copy";
 
 // The page ads point to: one ask, nothing to wander off to. Not for search engines.
 export const metadata: Metadata = {
-  title: "viralowner — turn your phone clips into the video that’s going viral",
+  title: "viralowner — turn your own clips into the video that’s going viral",
   description: "send a video that went viral and your raw clips. get yours back edited, captioned and ready to post. first video free.",
   robots: { index: false, follow: false },
 };
@@ -16,7 +16,7 @@ export default function AdLandingPage() {
         <div className="mx-auto grid max-w-6xl items-center gap-10 lg:grid-cols-[1.1fr_1fr]">
           <div className="flex flex-col items-start gap-6">
             <h1 className="text-4xl leading-[1.04] font-semibold tracking-tight text-balance sm:text-6xl">
-              turn your phone clips into{" "}
+              turn your own clips into{" "}
               <span className="bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">the video that’s going viral.</span>
             </h1>
             <p className="max-w-xl text-lg text-pretty text-muted">
