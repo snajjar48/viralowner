@@ -466,6 +466,12 @@ export function ClipsManager({
           />
         </label>
 
+        {!oneTake && (
+          <p className="text-center text-xs text-pretty text-muted">
+            tip: film pours, drizzles and cheese pulls in slo-mo or at 60fps for smooth slow motion.
+          </p>
+        )}
+
         {skipped.length > 0 && (
           <div role="alert" className="flex flex-col gap-1 rounded-xl border border-coral/30 bg-coral/[0.06] p-3 text-sm">
             {skipped.map((s) => (
