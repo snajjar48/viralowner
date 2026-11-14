@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import { Suspense } from "react";
+import { Fragment, Suspense } from "react";
 import { Faq, JoinSection, MAIN_CTA, MarketingShell, Section } from "@/components/marketing";
-import { CHANGES_PER_VIDEO, TRIAL_CHANGES, VIDEO_LIMITS } from "@/lib/plan-format";
+import { CHANGES_PER_VIDEO, VIDEO_LIMITS } from "@/lib/plan-format";
 import { getPlans } from "@/lib/plans";
 import { PricingTable } from "./pricing-table";
 
@@ -11,19 +11,26 @@ export const metadata: Metadata = {
   alternates: { canonical: "/pricing" },
 };
 
-const COMPARE: { label: string; cells: [string, string, string] }[] = [
-  { label: "videos", cells: ["1", `${VIDEO_LIMITS.basic} a month`, `${VIDEO_LIMITS.pro} a month`] },
-  { label: "changes per video", cells: [`${TRIAL_CHANGES}`, `${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`] },
-  { label: "remake a viral video", cells: ["✓", "✓", "✓"] },
-  { label: "start from scratch (describe it, we plan it)", cells: ["", "", "✓"] },
-  { label: "free storyboard preview", cells: ["✓", "✓", "✓"] },
-  { label: "word-by-word captions, every style", cells: ["✓", "✓", "✓"] },
-  { label: "fix caption words yourself (free)", cells: ["✓", "✓", "✓"] },
-  { label: "on-screen text styles", cells: ["✓", "✓", "✓"] },
-  { label: "your business profile on every video", cells: ["✓", "✓", "✓"] },
-  { label: "your own audio", cells: ["✓", "✓", "✓"] },
-  { label: "post caption written for you", cells: ["✓", "✓", "✓"] },
-  { label: "full quality download", cells: ["✓", "✓", "✓"] },
+/** Basic, Pro. `group` starts a labelled block; `sub` rows are part of the block above. */
+const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: boolean }[] = [
+  { label: "videos a month", cells: [`${VIDEO_LIMITS.basic}`, `${VIDEO_LIMITS.pro}`] },
+  { label: "changes per video", cells: [`${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`] },
+  { label: "first video free (free trial)", cells: ["✓", "✓"] },
+  { label: "remake any viral video with your clips", cells: ["✓", "✓"] },
+  { label: "free storyboard preview", cells: ["✓", "✓"] },
+  { label: "word-by-word captions, every style", cells: ["✓", "✓"] },
+  { label: "fix caption words yourself (free)", cells: ["✓", "✓"] },
+  { label: "on-screen text styles", cells: ["✓", "✓"] },
+  { label: "your business profile on every video", cells: ["✓", "✓"] },
+  { label: "your own audio", cells: ["✓", "✓"] },
+  { label: "post caption written for you", cells: ["✓", "✓"] },
+  { label: "full quality download", cells: ["✓", "✓"] },
+  { group: "start from scratch", label: "make your own viral video from your clips", cells: ["", "✓"] },
+  { label: "no viral video needed to start", cells: ["", "✓"], sub: true },
+  { label: "describe the video in your own words", cells: ["", "✓"], sub: true },
+  { label: "shots, text and captions planned for you", cells: ["", "✓"], sub: true },
+  { label: "transitions and sound effects picked for you", cells: ["", "✓"], sub: true },
+  { label: "cut to the beat of your own song", cells: ["", "✓"], sub: true },
 ];
 
 export default function PricingPage() {
@@ -36,7 +43,7 @@ export default function PricingPage() {
             your first video is free.
           </h1>
           <p className="max-w-xl text-lg text-pretty text-muted">
-            try it on your own clips. if you like it, pick a plan. no contracts, cancel anytime.
+            both plans start with a free trial: your first video is on us. no contracts, cancel anytime.
           </p>
         </div>
       </section>
@@ -51,41 +58,56 @@ export default function PricingPage() {
 
       <Section eyebrow="compare" title="what’s in each plan.">
         <div className="overflow-x-auto rounded-3xl border border-white/10">
-          <table className="w-full min-w-[34rem] text-left text-sm">
+          <table className="w-full min-w-[30rem] text-left text-sm">
             <thead>
               <tr className="border-b border-white/10">
                 <th scope="col" className="p-4 font-normal text-muted sm:p-5">
                   <span className="sr-only">feature</span>
                 </th>
-                {["Free trial", "Basic", "Pro"].map((t) => (
-                  <th key={t} scope="col" className="w-[18%] p-4 text-center font-semibold sm:p-5">
-                    {t}
-                  </th>
-                ))}
+                <th scope="col" className="w-[22%] p-4 text-center font-semibold sm:p-5">
+                  Basic
+                </th>
+                <th scope="col" className="w-[22%] bg-linear-to-b from-violet/30 to-coral/10 p-4 text-center font-semibold sm:p-5">
+                  Pro
+                </th>
               </tr>
             </thead>
             <tbody>
               {COMPARE.map((r) => (
-                <tr key={r.label} className="border-b border-white/[0.06] last:border-0">
-                  <th scope="row" className="p-4 font-normal text-pretty sm:p-5">
-                    {r.label}
-                  </th>
-                  {r.cells.map((c, i) => (
-                    <td key={i} className="p-4 text-center sm:p-5">
-                      {c === "✓" ? (
-                        <span className="text-coral" aria-label="included">
-                          ✓
-                        </span>
-                      ) : c ? (
-                        c
-                      ) : (
-                        <span className="text-muted/60" aria-label="not included">
-                          —
-                        </span>
-                      )}
-                    </td>
-                  ))}
-                </tr>
+                <Fragment key={r.label}>
+                  {r.group && (
+                    <tr className="border-b border-white/[0.06]">
+                      <th
+                        scope="rowgroup"
+                        colSpan={2}
+                        className="px-4 pt-6 pb-2 text-xs font-medium tracking-wide text-coral uppercase sm:px-5"
+                      >
+                        {r.group} · Pro only
+                      </th>
+                      <td className="bg-coral/[0.06]" />
+                    </tr>
+                  )}
+                  <tr className="border-b border-white/[0.06] last:border-0">
+                    <th scope="row" className={`p-4 font-normal text-pretty sm:p-5 ${r.sub ? "pl-8 text-foreground/80 sm:pl-9" : ""}`}>
+                      {r.label}
+                    </th>
+                    {r.cells.map((c, i) => (
+                      <td key={i} className={`p-4 text-center sm:p-5 ${i === 1 ? "bg-coral/[0.06] font-medium" : ""}`}>
+                        {c === "✓" ? (
+                          <span className="text-base font-semibold text-emerald-400" aria-label="included">
+                            ✓
+                          </span>
+                        ) : c ? (
+                          c
+                        ) : (
+                          <span className="text-muted/50" aria-label="not included">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                </Fragment>
               ))}
             </tbody>
           </table>

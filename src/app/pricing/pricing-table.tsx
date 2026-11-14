@@ -12,20 +12,22 @@ import {
   type Tier,
 } from "@/lib/plan-format";
 
-const TIER_INFO: Record<Tier, { tagline: string; extras: string[] }> = {
-  basic: {
-    tagline: "for posting a few times a week",
-    extras: ["remake any viral video", "every caption and text style", "free storyboard preview", "post caption written for you"],
-  },
-  pro: {
-    tagline: "for posting every day",
-    extras: ["everything in Basic", "start from scratch: describe it, we plan it", "cut to the beat of your own song"],
-  },
+const BASIC_ITEMS = [
+  "remake any viral video with your clips",
+  "every caption and text style",
+  "free storyboard preview before it’s made",
+  "post caption written for you",
+  "full quality download",
+];
+
+const TIER_INFO: Record<Tier, { tagline: string; items: string[]; scratch?: boolean }> = {
+  basic: { tagline: "for posting a few times a week", items: BASIC_ITEMS },
+  pro: { tagline: "for posting every day", items: BASIC_ITEMS, scratch: true },
 };
 
 /** The tiers with a monthly / yearly switch. Prices come from Stripe; null shows the plans without them. */
 export function PricingTable({ plans, cta }: { plans: Plan[] | null; cta: { href: string; label: string } }) {
-  const [interval, setInterval] = useState<Interval>("monthly");
+  const [interval, setInterval] = useState<Interval>("yearly");
   const price = (tier: Tier, i: Interval) => plans?.find((p) => p.tier === tier && p.interval === i) ?? null;
   const saving = (() => {
     const m = price("pro", "monthly");
@@ -57,22 +59,7 @@ export function PricingTable({ plans, cta }: { plans: Plan[] | null; cta: { href
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card
-          name="Free trial"
-          tagline="try it on your own clips"
-          amount="$0"
-          per=""
-          note="card required, never charged unless you choose a plan"
-          items={[
-            "1 video",
-            `${TRIAL_CHANGES} change to it`,
-            "remake a viral video",
-            "free storyboard preview",
-            "download at full quality",
-          ]}
-          cta={cta}
-        />
+      <div className="mx-auto grid w-full max-w-4xl gap-4 md:grid-cols-2">
         {(["basic", "pro"] as const).map((tier) => {
           const p = price(tier, interval);
           const perMonth = p && interval === "yearly" ? formatMoney(Math.round(p.amount / 12), p.currency) : null;
@@ -90,7 +77,8 @@ export function PricingTable({ plans, cta }: { plans: Plan[] | null; cta: { href
                     : "billed monthly, cancel anytime"
                   : "pricing coming soon"
               }
-              items={[`${VIDEO_LIMITS[tier]} videos a month`, `${CHANGES_PER_VIDEO} changes per video`, ...TIER_INFO[tier].extras]}
+              items={[`${VIDEO_LIMITS[tier]} videos a month`, `${CHANGES_PER_VIDEO} changes per video`, ...TIER_INFO[tier].items]}
+              scratch={TIER_INFO[tier].scratch}
               cta={cta}
               featured={tier === "pro"}
             />
@@ -110,6 +98,7 @@ function Card({
   items,
   cta,
   featured,
+  scratch,
 }: {
   name: string;
   tagline: string;
@@ -119,6 +108,8 @@ function Card({
   items: string[];
   cta: { href: string; label: string };
   featured?: boolean;
+  /** Pro: explains start from scratch above the list. */
+  scratch?: boolean;
 }) {
   return (
     <div
@@ -144,6 +135,15 @@ function Card({
         </p>
         <p className="min-h-5 text-xs text-muted">{note}</p>
       </div>
+      <p className="flex items-center gap-2 rounded-2xl border border-emerald-400/25 bg-emerald-400/[0.08] px-3.5 py-2.5 text-sm">
+        <span aria-hidden="true" className="text-emerald-400">
+          ✦
+        </span>
+        <span>
+          <span className="font-medium">free trial included:</span>{" "}
+          <span className="text-muted">your first video is free, with {TRIAL_CHANGES} change.</span>
+        </span>
+      </p>
       <Link
         href={cta.href}
         className={`flex h-12 items-center justify-center rounded-full text-sm font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral ${
@@ -152,10 +152,24 @@ function Card({
       >
         {cta.label}
       </Link>
+      {scratch && (
+        <div className="flex flex-col gap-1.5 rounded-2xl bg-linear-to-br from-violet/25 to-coral/15 p-4 ring-1 ring-coral/30">
+          <p className="flex items-center gap-2 text-sm font-semibold">
+            <span aria-hidden="true" className="text-coral">
+              ✦
+            </span>
+            start from scratch
+          </p>
+          <p className="text-sm text-pretty text-foreground/80">
+            no viral video needed. upload your own clips, tell us the video you want, and we make your own viral video
+            from scratch: shots, text, captions, transitions and sound effects, planned for you.
+          </p>
+        </div>
+      )}
       <ul className="flex flex-col gap-2.5">
         {items.map((it) => (
           <li key={it} className="flex items-start gap-2.5 text-sm">
-            <svg viewBox="0 0 20 20" aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-coral" fill="none" stroke="currentColor" strokeWidth={2}>
+            <svg viewBox="0 0 20 20" aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-emerald-400" fill="none" stroke="currentColor" strokeWidth={2}>
               <path d="M4 10.5l4 4 8-9" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             {it}
