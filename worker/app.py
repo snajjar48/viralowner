@@ -1813,9 +1813,10 @@ LOSSLESS = ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
 # The finished video: near the clips' own quality (TikTok and Instagram re-compress it on upload,
 # so it should go in as clean as possible).
 FINAL_X264 = ["-c:v", "libx264", "-preset", "slow", "-crf", "15", "-tune", "film", "-maxrate", "30M", "-bufsize", "60M"]
-# Slow motion is only as slow as the clip's frame rate keeps smooth: at least this many real frames
-# per second of output (60fps footage plays at half speed; 30fps phone footage only eases to ~0.83x).
-SMOOTH_SLOWMO_FPS = 25.0
+# Slow motion is only as slow as the clip's frame rate keeps smooth: a real frame for every output
+# frame (60fps footage plays at half speed; ordinary 30fps phone footage plays at real speed).
+SMOOTH_SLOWMO_FPS = 30.0  # slow motion only goes as slow as the footage has real frames for (60fps → 0.5x)
+FILL_MIN_FPS = 24.0  # a clip too short for its shot is slowed at most to this many real frames a second
 MAX_SLOWDOWN = 2.0  # a clip shorter than its shot is slowed down up to this much
 MAX_STRETCH = 4.0  # ...and further, up to this, before it plays forward-then-backward. never a held frame
 FONT = "Montserrat"
@@ -1907,13 +1908,10 @@ def frame_rate(value) -> float:
 
 
 def to_output_rate(fps: float, stretch: float = 1.0) -> str:
-    """The filter putting a shot at OUT_FPS. With at least that many real frames a second (after any
-    slow-down), frames are just picked. With fewer (a phone's variable frame rate, around 27; slow
-    motion), simply repeating frames makes the picture stutter like it's catching, so the missing
-    frames are made by blending their neighbors instead."""
-    if fps / max(stretch, 1e-3) >= OUT_FPS - 0.5:
-        return f"fps={OUT_FPS}"
-    return f"framerate=fps={OUT_FPS}"
+    """The filter putting a shot at OUT_FPS: real frames only, picked (or, below OUT_FPS, the odd one
+    shown twice). Never blended: a frame made by mixing two neighbors shows a double image, which
+    looks blurry and glitchy, so slow-downs are kept to what the footage has real frames for."""
+    return f"fps={OUT_FPS}"
 
 
 def fps_note(clip: dict) -> str:
@@ -2268,12 +2266,24 @@ def even(x: float) -> int:
     return int(round(x / 2)) * 2
 
 
+# How much bigger than the output each motion's picture is cut from the clip (motion_canvas). The
+# motion then crops it down to 1080x1920, so a zoom shows the footage's real detail (a phone's 4K)
+# instead of an enlarged 1080 picture, which looks soft.
+MOTION_CANVAS = {"slow_zoom_in": 2.0, "slow_zoom_out": 2.0, "punch_in": 2.0, "zoomed": 1.18, "shake": 1.08,
+                 "pan_left": 1.15, "pan_right": 1.15}
+
+
+def motion_canvas(motion: str) -> tuple[int, int]:
+    k = MOTION_CANVAS.get(motion, 1.0)
+    return even(OUT_W * k), even(OUT_H * k)
+
+
 def motion_filter(motion: str, frames: int) -> str | None:
-    """Camera-style motion over the whole shot (`frames` long)."""
+    """Camera-style motion over the whole shot (`frames` long), on a picture already motion_canvas()
+    in size, ending at 1080x1920."""
     zoom = lambda z: (  # noqa: E731
-        # Zoom on a 2x frame so slow zooms move smoothly instead of in whole-pixel steps.
-        f"scale={OUT_W * 2}:{OUT_H * 2}:flags=bicubic,zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-        f":d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS}"
+        # On a 2x picture, so slow zooms move in half-pixel steps (smooth) and never enlarge.
+        f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={OUT_W}x{OUT_H}:fps={OUT_FPS}"
     )
     n = max(1, frames)
     if motion == "slow_zoom_in":
@@ -2284,16 +2294,13 @@ def motion_filter(motion: str, frames: int) -> str | None:
         return zoom("if(lt(on,5),1+0.035*on,1.17)")
     if motion == "zoomed":
         # Jump-cut style: this cut is framed tighter than the one before (no movement).
-        w, h = round(OUT_W * 1.18), round(OUT_H * 1.18)
         # A little above center: talking heads sit in the upper half.
-        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:{(w - OUT_W) // 2}:{round((h - OUT_H) * 0.35)}"
+        return f"crop={OUT_W}:{OUT_H}:(iw-ow)/2:(ih-oh)*0.35"
     if motion == "shake":
-        w, h = round(OUT_W * 1.08), round(OUT_H * 1.08)
-        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{(w - OUT_W) // 2}+18*sin(n*1.9)':y='{(h - OUT_H) // 2}+14*cos(n*2.7)'"
+        return f"crop={OUT_W}:{OUT_H}:x='(iw-ow)/2+18*sin(n*1.9)':y='(ih-oh)/2+14*cos(n*2.7)'"
     if motion in ("pan_left", "pan_right"):
-        w, h = even(OUT_W * 1.15), even(OUT_H * 1.15)
         x = f"(iw-ow)*n/{n}" if motion == "pan_left" else f"(iw-ow)*(1-n/{n})"
-        return f"scale={w}:{h},crop={OUT_W}:{OUT_H}:x='{x}':y='(ih-oh)/2'"
+        return f"crop={OUT_W}:{OUT_H}:x='{x}':y='(ih-oh)/2'"
     return None
 
 
@@ -2586,7 +2593,9 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     elif speed < 1:
         take = min(take, duration * speed)
     stretch = duration / take if abs(take - duration) > 0.02 else 1.0
-    stretch = min(MAX_SLOWDOWN, max(0.55, stretch))
+    # Slowing down shows each real frame longer: only as far as stays smooth (no blended frames).
+    fill_max = max(1.0, float(clip.get("fps") or OUT_FPS) / FILL_MIN_FPS)
+    stretch = min(MAX_SLOWDOWN, fill_max, max(0.55, stretch))
     total = duration + tail
     # Never hold a frame: the picture keeps moving to the very end of the shot (and its blend tail).
     # Not enough footage after `start`: start earlier in the clip; then slow it down a bit more;
@@ -2596,16 +2605,19 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
         start = max(0.0, clip["duration"] - need)
     avail = clip["duration"] - start
     if avail < need:
-        stretch = min(MAX_STRETCH, total / max(avail, 0.05))
+        stretch = max(stretch, min(MAX_STRETCH, fill_max, total / max(avail, 0.05)))
         need = total / stretch
     if avail < need - 0.02:
         clip = boomerang(clip, start, need, dest.with_name(dest.stem + "-loop.mkv"), x)
         start, avail = 0.0, clip["duration"]
     take, extra = min(avail, need), 0.0
+    if motion_filter(motion, 1) is None:
+        motion = "none"
+    cw, ch = motion_canvas(motion)
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
-        f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase:flags=lanczos",
-        crop_to(OUT_W, OUT_H, x), "setsar=1",
+        f"scale={cw}:{ch}:force_original_aspect_ratio=increase:flags=lanczos",
+        crop_to(cw, ch, x), "setsar=1",
         *([f"setpts={stretch:.4f}*PTS"] if stretch != 1 else []),
         to_output_rate(clip.get("fps") or OUT_FPS, stretch),
         f"tpad=stop_mode=clone:stop_duration={total:.3f}",

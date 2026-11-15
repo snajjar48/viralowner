@@ -45,7 +45,7 @@
 
 ## 6. Speed
 - Slow to ~50% (if shot at 50–60fps): pours, dust, falling crumbs, cheese pulls, steam, espresso drips.
-- Slow motion must stay smooth and silky, never choppy or stuttering. Only slow a clip as far as its frame rate allows: 120–240fps footage can go to 25–50%, 60fps to 50%, and ordinary 30fps phone footage only to a gentle ~85%. Put slow motion on clips shot at high frame rates. If the best pour was shot at 30fps, play it at real speed and hold it longer instead of slowing it.
+- Slow motion must stay smooth and silky, never choppy or stuttering. Only slow a clip as far as its frame rate allows: 120–240fps footage can go to 25–50%, 60fps to 50%; ordinary 30fps phone footage isn't slowed at all (it would need made-up in-between frames, which look blurry). Put slow motion on clips shot at high frame rates. If the best pour was shot at 30fps, play it at real speed and hold it longer instead of slowing it.
 - Keep at real speed: tossing, chopping, shaking, scooping, hand assembly. Thick pours (smoothie, foam, frappe) already look indulgent at 1x.
 - No video used a timelapse. Skip waiting time (baking, melting) with a hard cut to the result or a ~3s cutaway to another station.
 - Use speed ramps only as whip transitions, never inside the money shot.
