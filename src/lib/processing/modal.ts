@@ -1,4 +1,5 @@
 import "server-only";
+import { emojiKitKeyFor } from "../emoji-kit-store";
 import { WorkerError, workerFetch } from "../worker";
 import { siteUrl } from "../site-url";
 import { CAPTION_STYLES } from "../video-options";
@@ -207,7 +208,13 @@ export async function startStoryboardJob(input: RenderInput, storyboardId: strin
   return workerFetch<{ jobId: string }>("/jobs/render", {
     method: "POST",
     timeoutMs: 30_000,
-    body: { outputKey: `${folder}storyboards/${storyboardId}/plan.mp4`, ...renderFields(input), storyboard: true },
+    body: {
+      outputKey: `${folder}storyboards/${storyboardId}/plan.mp4`,
+      ...renderFields(input),
+      storyboard: true,
+      // The maker's own device's emoji, when it has sent them (components/emoji-kit-sync.tsx).
+      emojiKit: await emojiKitKeyFor(folder),
+    },
   });
 }
 
@@ -294,6 +301,7 @@ export const modalEngine: ProcessingEngine = {
       body: {
         outputKey: outputKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey, input.version, input.renderId),
         ...renderFields(input),
+        emojiKit: await emojiKitKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey),
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
     });

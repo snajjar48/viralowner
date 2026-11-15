@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
+import { EmojiKitSync } from "./emoji-kit-sync";
 import { FilmIcon, TrendIcon, WandIcon } from "./icons";
 
 type Item = {
@@ -56,9 +57,13 @@ const ITEMS: Item[] = [
 /** The menu on every signed-in page: my videos, the two ways to start a video, and the profile. */
 export function SiteNav() {
   return (
-    <Suspense fallback={<Nav path={null} />}>
-      <CurrentNav />
-    </Suspense>
+    <>
+      <Suspense fallback={<Nav path={null} />}>
+        <CurrentNav />
+      </Suspense>
+      {/* This device's emoji, for this person's videos. */}
+      <EmojiKitSync />
+    </>
   );
 }
 

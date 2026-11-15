@@ -3450,7 +3450,9 @@ def text_picture(lines: list[str], look: dict, size: int, align: str, workdir: P
                     png = emoji_png(piece, workdir)
                     pic = Image.open(png).convert("RGBA") if png else None
                     if pic is not None:
-                        pic.thumbnail((esz, esz), Image.LANCZOS)  # flags are wider than tall: fit, don't stretch
+                        # Fill the emoji's space (flags are wider than tall: fit, don't stretch).
+                        k = esz / max(pic.size)
+                        pic = pic.resize((max(1, round(pic.size[0] * k)), max(1, round(pic.size[1] * k))), Image.LANCZOS)
                     pictures[piece] = pic
                 pic = pictures[piece]
                 if pic is not None:
@@ -5045,14 +5047,84 @@ def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str) 
     return graph
 
 
+def emoji_name(emoji: str) -> str:
+    """"❤️" -> "2764": the emoji's code points, without the "show as emoji" marker."""
+    return "_".join(f"{ord(c):x}" for c in emoji.strip() if ord(c) != 0xFE0F)
+
+
+EMOJI_KIT_SHEET_RE = r"^u/[A-Za-z0-9-]+/emoji/[A-Za-z0-9-]+\.(png|webp)$"
+
+
+def install_emoji_kit(req: dict, workdir: Path, fetch=None) -> list[str]:
+    """The maker's own device's emoji (Apple's on an iPhone, Samsung's on a Samsung…; the site's
+    components/emoji-kit-sync.tsx draws them in the browser): cut into workdir/emoji_kit/, where
+    emoji_png looks first. Returns the emojis it has; [] without a kit (Google's are used)."""
+    import re
+
+    from PIL import Image
+
+    key = req.get("emojiKit")
+    if not isinstance(key, str):
+        return []
+    fetch = fetch or r2_fetch
+    user = key.split("/emoji/")[0] + "/emoji/"
+    out_dir = workdir / "emoji_kit"
+    out_dir.mkdir(exist_ok=True)
+    have: list[str] = []
+    try:
+        fetch(key, workdir / "emoji_kit.json")
+        kit = json.loads((workdir / "emoji_kit.json").read_text())
+        cell, cols = int(kit["cell"]), int(kit["cols"])
+        if not (32 <= cell <= 512 and 1 <= cols <= 64):
+            return []
+        for n, sheet in enumerate(kit.get("sheets") or []):
+            skey = sheet.get("key")
+            emojis = sheet.get("emojis") or []
+            if not isinstance(skey, str) or not skey.startswith(user) or not re.match(EMOJI_KIT_SHEET_RE, skey):
+                continue
+            path = workdir / f"emoji_sheet{n}{Path(skey).suffix}"
+            fetch(skey, path)
+            if path.stat().st_size > 16 * 1024 * 1024:
+                continue
+            img = Image.open(path).convert("RGBA")
+            for k, e in enumerate(emojis[:2000]):
+                if not isinstance(e, str) or not 0 < len(e) <= 16:
+                    continue
+                x, y = (k % cols) * cell, (k // cols) * cell
+                if y + cell > img.height:
+                    break
+                pic = img.crop((x, y, x + cell, y + cell))
+                box = pic.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox()
+                if not box:
+                    continue
+                pad = 2
+                pic = pic.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(cell, box[2] + pad), min(cell, box[3] + pad)))
+                pic.save(out_dir / f"{emoji_name(e)}.png")
+                have.append(e)
+        (out_dir / "list.txt").write_text(" ".join(have))
+        print(f"emoji kit: {len(have)} emojis in the maker's style ({kit.get('style')})")
+    except Exception as e:  # noqa: BLE001
+        print(f"emoji kit unavailable, using Google's emoji: {type(e).__name__}: {e}")
+        return []
+    return have
+
+
+def emoji_kit_list(workdir: Path) -> list[str]:
+    f = workdir / "emoji_kit" / "list.txt"
+    return f.read_text().split() if f.exists() else []
+
+
 def emoji_png(emoji: str, workdir: Path) -> Path | None:
-    """The emoji as a picture (Google's Noto Emoji, Apache 2.0), or None if it can't be had."""
+    """The emoji as a picture: the maker's own device's (install_emoji_kit), or else Google's Noto
+    Emoji (Apache 2.0); None if it can't be had."""
     import urllib.request
 
-    cps = [f"{ord(c):x}" for c in emoji.strip() if ord(c) != 0xFE0F]
-    if not cps or len(cps) > 8:
+    name = emoji_name(emoji)
+    if not name or name.count("_") > 7:
         return None
-    name = "_".join(cps)
+    own = workdir / "emoji_kit" / f"{name}.png"
+    if own.exists():
+        return own
     url = EMOJI_PNG_URL.format(name)
     letters = [ord(c) - 0x1F1E6 for c in emoji.strip()]
     if len(letters) == 2 and all(0 <= x < 26 for x in letters):
@@ -5096,7 +5168,9 @@ def emoji_overlays(words: list[dict], caption_y_at, total: float, workdir: Path,
         "punchy word every 2-4 seconds, never two within 1.5 seconds. Pick words that carry the point (a feeling, a "
         "number, a thing, a result, a reaction) and the single emoji that says it best; skip filler words. Never put an "
         "emoji on a serious or sad moment where it would read as mocking. Follow anything the user asked about emojis."
-        + (("\n\nwhat the user asked for:\n" + guide[:1500]) if guide else ""),
+        + (("\n\nwhat the user asked for:\n" + guide[:1500]) if guide else "")
+        + (("\n\nuse only emojis from this list (they're drawn in the user's own phone's style): " + " ".join(kit))
+           if (kit := [e for e in emoji_kit_list(workdir) if not 0x1F1E6 <= ord(e[0]) <= 0x1F1FF]) else ""),
         [{"type": "text", "text": f"the video is {total:.1f}s. pick about {want} words. numbered words:\n{listing}"}],
         EMOJI_SCHEMA, "emoji picks failed", effort="low")
     picks, last = [], -9.0
@@ -6106,6 +6180,9 @@ def check_render_request(req: dict) -> str | None:
             return "invalid shots"
     if not isinstance(req.get("options"), dict):
         return "invalid options"
+    kit = req.get("emojiKit")
+    if kit is not None and (not isinstance(kit, str) or kit != prefix.split("/p/")[0] + "/emoji/kit.json"):
+        return "invalid emoji kit"
     return None
 
 
@@ -6194,6 +6271,7 @@ def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
         with tempfile.TemporaryDirectory() as tmp:
+            install_emoji_kit(req, Path(tmp))
             if isinstance(req.get("scratch"), dict):
                 return render_scratch(req, Path(tmp))
             return render_video(req, Path(tmp))
