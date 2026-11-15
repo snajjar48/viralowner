@@ -32,8 +32,26 @@ function needsAccount(pathname: string) {
   return ACCOUNT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
+/** True when a browser sent this from another website (a forged request riding on someone's cookies). */
+function fromAnotherSite(request: NextRequest) {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return false;
+  if (request.headers.get("sec-fetch-site") === "cross-site") return true;
+  const origin = request.headers.get("origin");
+  if (!origin) return false; // servers (Stripe, the worker, the cron) don't send one
+  try {
+    return new URL(origin).host !== request.nextUrl.host;
+  } catch {
+    return true;
+  }
+}
+
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+
+  // Only viralowner's own pages can change anything (on top of SameSite cookies).
+  if (pathname.startsWith("/api/") && pathname !== "/api/stripe/webhook" && fromAnotherSite(request)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   // The showcase's thumbnails (public/showcase/) and each page's featured image.
   if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/") || pathname.endsWith("/opengraph-image")) {

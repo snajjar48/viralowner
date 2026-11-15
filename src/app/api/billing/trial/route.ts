@@ -1,3 +1,4 @@
+import { getUserId } from "@/lib/auth";
 import { getStripe } from "@/lib/stripe";
 import { trialFromSetupIntent } from "@/lib/trial";
 
@@ -21,6 +22,11 @@ export async function POST(request: Request) {
 
   try {
     const si = await getStripe().setupIntents.retrieve(setupIntentId);
+    // Signed in: only your own card. Not yet (email to confirm first): only one just saved.
+    const userId = await getUserId();
+    if (userId ? si.metadata?.supabase_user_id !== userId : si.created * 1000 < Date.now() - 30 * 60_000) {
+      return Response.json({ error: "Not found." }, { status: 404 });
+    }
     const trial = await trialFromSetupIntent(si);
     if (!trial) return Response.json({ error: "Not found." }, { status: 404 });
     return Response.json({ trial });

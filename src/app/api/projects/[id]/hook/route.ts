@@ -1,5 +1,6 @@
 import { jsonError, withProject } from "@/lib/api";
 import { businessText, getBusiness } from "@/lib/business";
+import { jobTicket, ticketJobId } from "@/lib/job-ticket";
 import { getHookJob, startHookJob } from "@/lib/processing/modal";
 import { getInspiration, listClips } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -22,15 +23,15 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/projects/[
       about: (about ?? "").slice(0, 800),
       business: businessText(await getBusiness(userId)),
     });
-    return Response.json({ jobId });
+    return Response.json({ jobId: jobTicket(project.id, jobId) });
   });
 }
 
 /** ?job=…: how the check is going, and its answer when it's done. */
 export async function GET(request: Request, ctx: RouteContext<"/api/projects/[id]/hook">) {
-  return withProject(ctx.params, "Checking hook", async () => {
-    const jobId = new URL(request.url).searchParams.get("job") ?? "";
-    if (!/^[A-Za-z0-9_-]{1,100}$/.test(jobId)) return jsonError("invalid request.", 400);
+  return withProject(ctx.params, "Checking hook", async (_userId, project) => {
+    const jobId = ticketJobId(project.id, new URL(request.url).searchParams.get("job"));
+    if (!jobId) return jsonError("invalid request.", 400);
     return Response.json(await getHookJob(jobId));
   });
 }

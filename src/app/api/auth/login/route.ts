@@ -18,7 +18,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    if (!(await checkRateLimit(`login:${clientIp(request)}`))) {
+    // Per connection, and per account (so one password can't be guessed from many places).
+    if (!(await checkRateLimit(`login:${clientIp(request)}`)) || !(await checkRateLimit(`login-email:${email}`, 10))) {
       return Response.json(
         { error: "Too many attempts. Please try again in a few minutes." },
         { status: 429 },
