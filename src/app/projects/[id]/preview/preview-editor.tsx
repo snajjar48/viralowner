@@ -59,6 +59,8 @@ export function PreviewEditor({
     captionText: string | null;
     proofs: Proof[];
     proofMoments: ProofMoment[];
+    /** Shots deleted in this version (inspo shot numbers). */
+    removedShots: number[];
   };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
@@ -76,14 +78,15 @@ export function PreviewEditor({
 }) {
   const router = useRouter();
   const clipIds = new Set(clips.map((c) => c.id));
-  const initialShots: ShotEdit[] = shots.map(
-    (s) =>
-      current.shots.find((e) => e.shotIndex === s.index && (!e.clipId || clipIds.has(e.clipId))) ?? {
+  const initialShots: ShotEdit[] = shots.map((s) =>
+    current.removedShots.includes(s.index)
+      ? { shotIndex: s.index, clipId: null, trimStartS: null, trimEndS: null, removed: true }
+      : (current.shots.find((e) => e.shotIndex === s.index && (!e.clipId || clipIds.has(e.clipId))) ?? {
         shotIndex: s.index,
         clipId: null,
         trimStartS: null,
         trimEndS: null,
-      },
+      }),
   );
   const [options, setOptions] = useState(current.settings.options);
   const [shotEdits, setShotEdits] = useState(initialShots);
@@ -95,7 +98,7 @@ export function PreviewEditor({
     JSON.stringify(options) !== JSON.stringify(current.settings.options) ||
     JSON.stringify(shotEdits) !== JSON.stringify(initialShots);
   const trimProblem = shotEdits.find((e) => {
-    if (!e.clipId || (e.trimStartS === null && e.trimEndS === null)) return false;
+    if (e.removed || !e.clipId || (e.trimStartS === null && e.trimEndS === null)) return false;
     const d = clips.find((c) => c.id === e.clipId)?.durationS ?? 0;
     const start = e.trimStartS ?? 0;
     const end = e.trimEndS ?? d;
@@ -112,7 +115,7 @@ export function PreviewEditor({
     const span = (x: ShotEdit) =>
       x.trimStartS === null && x.trimEndS === null ? null : ([x.trimStartS ?? 0, x.trimEndS ?? d] as const);
     const mine = span(e);
-    const others = shotEdits.filter((x) => x.clipId === e.clipId && x.shotIndex !== e.shotIndex);
+    const others = shotEdits.filter((x) => !x.removed && x.clipId === e.clipId && x.shotIndex !== e.shotIndex);
     const hit = others.find((x) => {
       const theirs = span(x);
       return x.shotIndex < e.shotIndex && mine && theirs && mine[0] < theirs[1] && theirs[0] < mine[1];
@@ -305,10 +308,34 @@ export function PreviewEditor({
             {shots.map((shot) => {
               const edit = shotEdits[shot.index];
               const clip = clips.find((c) => c.id === edit.clipId);
+              if (edit.removed) {
+                return (
+                  <li
+                    key={shot.index}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-dashed border-white/15 px-3 py-2.5 text-sm"
+                  >
+                    <span className="text-muted line-through decoration-white/30">
+                      shot {shot.index + 1}: {ROLE_LABELS[shot.role]}
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs text-muted">deleted</span>
+                      <button
+                        type="button"
+                        onClick={() => setShot(shot.index, { removed: false })}
+                        className="h-8 cursor-pointer rounded-full bg-white/10 px-3 text-xs font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+                      >
+                        undo
+                      </button>
+                    </span>
+                  </li>
+                );
+              }
+              const lastShot = shotEdits.filter((e) => !e.removed).length <= 1;
+              const timedToInspo = options.music.mode === "inspo";
               return (
                 <li key={shot.index} className="flex flex-col gap-2 rounded-xl border border-white/10 p-3">
                   <div className="flex items-center justify-between gap-2">
-                    <label htmlFor={`clip-${shot.index}`} className="text-sm font-medium">
+                    <label htmlFor={`clip-${shot.index}`} className="min-w-0 flex-1 truncate text-sm font-medium">
                       shot {shot.index + 1}: {ROLE_LABELS[shot.role]}
                     </label>
                     <select
@@ -326,6 +353,22 @@ export function PreviewEditor({
                         </option>
                       ))}
                     </select>
+                    <button
+                      type="button"
+                      onClick={() => setShot(shot.index, { removed: true, clipId: null, trimStartS: null, trimEndS: null })}
+                      disabled={lastShot || timedToInspo}
+                      aria-label={`delete shot ${shot.index + 1}`}
+                      title={
+                        timedToInspo
+                          ? "the inspo’s sound is timed to every shot. pick another music option to delete shots."
+                          : lastShot
+                            ? "a video needs at least one shot."
+                            : "delete this shot"
+                      }
+                      className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted transition hover:bg-coral/10 hover:text-coral focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <TrashIcon className="size-4" />
+                    </button>
                   </div>
                   {clip &&
                     (() => {
@@ -534,5 +577,22 @@ function CaptionWords({ projectId, version, text }: { projectId: string; version
         {busy ? "starting…" : "fix the captions"}
       </button>
     </Section>
+  );
+}
+
+function TrashIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
+    </svg>
   );
 }

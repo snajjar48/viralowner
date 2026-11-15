@@ -128,6 +128,8 @@ export interface ShotEdit {
   /** Trim within that clip, in seconds. null = let the engine decide. */
   trimStartS: number | null;
   trimEndS: number | null;
+  /** Deleted in the editor: the video is made without this shot. */
+  removed?: boolean;
 }
 
 /** Everything a render is made from. Saved on the render row as `settings`. */
@@ -263,6 +265,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   note?: string | null;
   /** One-take videos: where the take was cut. */
   jumpcut?: TakeCut[];
+  /** Inspo shots the user deleted (their numbers in the inspo's shot list). */
+  removedShots?: number[];
   /** The edit's transitions, motion, speed, effects, looks and sound effects (worker-defined shape). */
   effects?: Record<string, unknown>;
   /** Shot lengths the user asked for (inspo videos), the caption fixes in effect and the captions shown. */

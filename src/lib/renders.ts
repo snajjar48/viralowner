@@ -44,6 +44,10 @@ export function parseShotEdits(input: unknown, shotCount: number, clips: Clip[])
     if (clipId !== null && (typeof clipId !== "string" || !byId.has(clipId))) {
       return { status: 400, error: `shot ${i + 1} uses a clip that isn’t in this project.` };
     }
+    if (raw?.removed === true) {
+      out.push({ shotIndex: i, clipId: null, trimStartS: null, trimEndS: null, removed: true });
+      continue;
+    }
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
     let start = num(raw?.trimStartS);
     let end = num(raw?.trimEndS);
@@ -59,6 +63,7 @@ export function parseShotEdits(input: unknown, shotCount: number, clips: Clip[])
     }
     out.push({ shotIndex: i, clipId: clipId as string | null, trimStartS: start, trimEndS: end });
   }
+  if (shotCount > 0 && out.every((e) => e.removed)) return { status: 400, error: "keep at least one shot." };
   return out;
 }
 

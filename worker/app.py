@@ -4040,6 +4040,39 @@ def effects_from(style: dict, n: int, jump: bool) -> dict:
     }
 
 
+def shot_number(req: dict, i: int, count: int) -> int:
+    """Shot i of the video, numbered as in the inspo's shot list (deleted shots leave gaps)."""
+    idx = req.get("_shotIndexes")
+    return idx[i] if isinstance(idx, list) and len(idx) == count else i
+
+
+def drop_shots_from_effects(e: dict | None, keep: list[int], old_n: int) -> dict | None:
+    """Effects (or an inspo style) for `old_n` shots, with only the shots in `keep` (in order). The
+    transition into a kept shot is its own; sound effects on a removed shot or its cut go."""
+    if not isinstance(e, dict):
+        return e
+    out = dict(e)
+    for key in ("motions", "speeds", "shotEffects", "textSpots", "textLines"):
+        if isinstance(e.get(key), list) and len(e[key]) == old_n:
+            out[key] = [e[key][i] for i in keep]
+    if isinstance(e.get("transitions"), list) and len(e["transitions"]) == old_n - 1:
+        out["transitions"] = [e["transitions"][i - 1] if i > 0 else "cut" for i in keep[1:]]
+    if isinstance(e.get("sfx"), list):
+        pos = {i: j for j, i in enumerate(keep)}
+        sfx = []
+        for x in e["sfx"]:
+            if not isinstance(x, dict) or not isinstance(x.get("index"), int):
+                continue
+            if x.get("anchor") == "shot" and x["index"] in pos:
+                sfx.append({**x, "index": pos[x["index"]]})
+            elif x.get("anchor") == "cut" and x["index"] + 1 in pos and pos[x["index"] + 1] > 0:
+                sfx.append({**x, "index": pos[x["index"] + 1] - 1})
+            elif x.get("anchor") not in ("shot", "cut"):
+                sfx.append(x)
+        out["sfx"] = sfx
+    return out
+
+
 def clean_effects(e, n: int) -> dict | None:
     """Effects saved with an earlier version, if they're valid for `n` shots."""
     if not isinstance(e, dict) or len(e.get("transitions") or []) != n - 1 or len(e.get("motions") or []) != n:
@@ -4791,6 +4824,20 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         sound = "original"
 
     previous = plan_from_render(base["plan"], index_of) if base and isinstance(base.get("plan"), dict) else None
+    # Shots the user deleted in the editor: gone from the plan before anything else.
+    deleted = {e.get("shotIndex") for e in req.get("shots") or [] if isinstance(e, dict) and e.get("removed")}
+    shot_pos: dict[int, int] = {}
+    if previous and deleted:
+        every = previous["shots"]
+        kept = [i for i in range(len(every)) if i not in deleted] or [0]
+        shot_pos = {i: j for j, i in enumerate(kept)}
+        previous["_all_shots"], previous["_kept"] = every, kept
+        previous["shots"] = [every[i] for i in kept]
+        previous["shots"][0]["transition_in"] = "cut"
+        number = {i + 1: j + 1 for j, i in enumerate(kept)}  # the director numbers shots from 1
+        previous["sfx"] = [{**x, "index": number[x["index"]]} for x in previous.get("sfx") or []
+                           if isinstance(x, dict) and x.get("index") in number]
+        print(f"scratch: deleted shots {sorted(i + 1 for i in deleted if isinstance(i, int))}, {len(kept)} left")
     carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
     caption_fixes = clean_caption_fixes(((base or {}).get("plan") or {}).get("captionFixes") if base else None,
                                         carry.get("captionFixes"))
@@ -4808,7 +4855,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         # An edit without words: the same plan, with the user's own clip and trim choices per shot.
         cleaned = clean_director({**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
                                   "hashtags": (base.get("postCopy") or {}).get("hashtags", [])}, clips, max_s, text_mode)
-        edits = {e.get("shotIndex"): e for e in req.get("shots") or [] if isinstance(e, dict)}
+        edits = {shot_pos.get(e.get("shotIndex"), e.get("shotIndex")): e for e in req.get("shots") or []
+                 if isinstance(e, dict) and not e.get("removed")}
         for i, s in enumerate(cleaned["shots"]):
             e = edits.get(i) or {}
             ci = index_of.get(e.get("clipId"))
@@ -4848,11 +4896,16 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         prev_frames: list[Path | None] = []
         if previous and request:
             t = 0.0
-            for i, s in enumerate(previous["shots"]):
+            kept = set(previous.get("_kept") or range(len(previous["shots"])))
+            for i, s in enumerate(previous.get("_all_shots") or previous["shots"]):
+                # The earlier video still has the deleted shots: step past them.
                 length = max(0.1, (s["end_s"] - s["start_s"]) / SPEED_RATES.get(s["speed"], 1.0))
-                prev_frames.append(grab_frame(prev_path, t + length / 2, workdir / f"prev{i:02d}.jpg", MATCH_FRAME_WIDTH)
-                                   if prev_path.exists() else None)
+                if i in kept:
+                    prev_frames.append(grab_frame(prev_path, t + length / 2, workdir / f"prev{i:02d}.jpg",
+                                                  MATCH_FRAME_WIDTH) if prev_path.exists() else None)
                 t += length
+            previous.pop("_all_shots", None)
+            previous.pop("_kept", None)
             # The current caption and hashtags, so a change can keep them, and what the captions say.
             previous = {**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
                         "hashtags": (base.get("postCopy") or {}).get("hashtags", []),
@@ -5343,10 +5396,46 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     caption_groups = clean_caption_groups(((previous or {}).get("plan") or {}).get("captionGroups"), carry.get("captionGroups"))
     inspo_lengths = [s["durationS"] for s in shots]
     lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
-    if (not jump and isinstance(lengths, list) and len(lengths) == n
-            and all(isinstance(x, (int, float)) and x > 0 for x in lengths)):
+    lengths_ok = isinstance(lengths, list) and all(isinstance(x, (int, float)) and x > 0 for x in lengths)
+    if not jump and lengths_ok and len(lengths) == n:
         # Shot lengths the user asked for in an earlier version.
         shots = with_lengths(shots, [float(x) for x in lengths])
+        lengths_ok = False
+    # Shots the user deleted in the editor: the video is made without them. Everything kept per
+    # shot (the inspo's text spots and lines, effects, earlier words and places) follows.
+    shot_indexes = list(range(n))  # each shot's number in the inspo's shot list
+    removed = sorted({e["shotIndex"] for e in req_shots if isinstance(e, dict) and e.get("removed")
+                      and isinstance(e.get("shotIndex"), int) and 0 <= e["shotIndex"] < n})
+    if removed and not jump and music == "inspo":
+        print("deleted shots kept: the inspo's sound is timed to every shot")
+        removed = []
+    if removed and not jump and len(removed) < n:
+        old_n = n
+        shot_indexes = [i for i in range(old_n) if i not in removed]
+        pos = {i: j for j, i in enumerate(shot_indexes)}
+        shots = with_lengths([{**shots[i], "index": j} for j, i in enumerate(shot_indexes)],
+                             [shots[i]["durationS"] for i in shot_indexes])
+        spots = [spots[i] for i in shot_indexes]
+        inspo_lines = [inspo_lines[i] for i in shot_indexes]
+        inspo_lengths = [inspo_lengths[i] for i in shot_indexes]
+        inspo_style = drop_shots_from_effects(inspo_style, shot_indexes, old_n)
+        req_shots = [{**e, "shotIndex": pos[e["shotIndex"]]} for e in req_shots
+                     if isinstance(e, dict) and e.get("shotIndex") in pos and not e.get("removed")]
+        if isinstance(req.get("effects"), dict):
+            req["effects"] = drop_shots_from_effects(req["effects"], shot_indexes, old_n)
+        if previous and isinstance((previous.get("plan") or {}).get("effects"), dict):
+            previous["plan"]["effects"] = drop_shots_from_effects(previous["plan"]["effects"], shot_indexes, old_n)
+        if isinstance(keep, dict):
+            keep = {k: ([v[i] for i in shot_indexes] if k in ("texts", "textXs", "textYs", "captionYs")
+                        and isinstance(v, list) and len(v) == old_n else v) for k, v in keep.items()}
+        n = len(shot_indexes)
+        print(f"deleted shots {[i + 1 for i in removed]}: {n} shots left")
+    else:
+        removed = []
+    if not jump and lengths_ok and len(lengths) == n:
+        # Lengths saved by a version that already had shots deleted.
+        shots = with_lengths(shots, [float(x) for x in lengths])
+    req["_shotIndexes"], req["_removedShots"] = shot_indexes, removed
     jump_ranges: list[dict] = []
     jump_texts: list[str] | None = None
     jump_post = None
@@ -5822,10 +5911,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         "postCopy": post,
         "plan": {
             "shots": [
-                {"shotIndex": i, "clipId": clips[p["clip"]]["id"], "trimStartS": r2(p["start"]),
-                 "trimEndS": r2(p["start"] + p["take"])}
+                {"shotIndex": shot_number(req, i, len(plan)), "clipId": clips[p["clip"]]["id"],
+                 "trimStartS": r2(p["start"]), "trimEndS": r2(p["start"] + p["take"])}
                 for i, p in enumerate(plan)
             ],
+            **({"removedShots": req["_removedShots"]} if req.get("_removedShots") else {}),
             "texts": plan_texts,
             "textPosition": position,
             "textLook": look_name(style),
@@ -5925,8 +6015,9 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
         "storyboard": frames,
         "postCopy": post,
         "plan": {
-            "shots": [{"shotIndex": i, "clipId": clips[p["clip"]]["id"], "trimStartS": r2(p["start"]),
-                       "trimEndS": r2(p["start"] + p["take"])} for i, p in enumerate(plan)],
+            "shots": [{"shotIndex": shot_number(req, i, len(plan)), "clipId": clips[p["clip"]]["id"],
+                       "trimStartS": r2(p["start"]), "trimEndS": r2(p["start"] + p["take"])} for i, p in enumerate(plan)],
+            **({"removedShots": req["_removedShots"]} if req.get("_removedShots") else {}),
             "texts": plan_texts, "textPosition": position, "textLook": look_name(style), "textStyle": style,
             **({"textPreset": preset} if preset else {}), "keepLines": keep_lines,
             "textXs": layout["textXs"], "textYs": layout["textYs"], "captionYs": layout["captionYs"],

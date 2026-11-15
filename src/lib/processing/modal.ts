@@ -149,6 +149,9 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
           .map((f) => ({ wrong: f.wrong, right: f.right }))
       : undefined,
     captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
+    removedShots: Array.isArray(p.removedShots)
+      ? p.removedShots.filter((x): x is number => Number.isInteger(x) && (x as number) >= 0)
+      : undefined,
     proofs: Array.isArray(p.proofs)
       ? p.proofs
           .filter((x): x is Proof => !!x && typeof x.key === "string" && typeof x.phrase === "string")
