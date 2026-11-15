@@ -3103,44 +3103,52 @@ def text_style_line(look: dict) -> str:
 
 
 def line_width(line: str, look: dict, size: float) -> float:
-    """Width of one line drawn at `size`, as a fraction of the frame (measured with the real font)."""
+    """Width of one line drawn at `size`, as a fraction of the frame (measured with the real font;
+    each emoji counts as the picture text_picture draws for it)."""
     m = font_metrics(look["key"])
-    return m["font"].getlength(line) * size * m["em_per_size"] / 100 / OUT_W
+    px = 0.0
+    for piece, is_emoji in emoji_runs(line):
+        px += size * 0.86 * 1.08 if is_emoji else m["font"].getlength(piece) * size * m["em_per_size"] / 100
+    return px / OUT_W
 
 
 def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[list[str], int]:
     """The lines to draw and the font size. `keep_lines`: exactly the lines given (shrunk to fit if
-    needed). Otherwise wrapped to fit `avail` (a fraction of the width)."""
+    needed; a line still too wide at half size is wrapped rather than run off the frame). Otherwise
+    wrapped to fit `avail` (a fraction of the width)."""
     size = look["size"]
+
+    def wrap(sz: int, src: str) -> list[str]:
+        out = []
+        for para in src.split("\n"):
+            cur = ""
+            for word in para.split():
+                trial = f"{cur} {word}".strip()
+                if cur and line_width(trial, look, sz) > avail:
+                    out.append(cur)
+                    cur = word
+                else:
+                    cur = trial
+            if cur:
+                out.append(cur)
+        return out or [src.strip()]
+
     if keep_lines:
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()] or [text.strip()]
     else:
-        def wrap(sz: int) -> list[str]:
-            out = []
-            for para in text.split("\n"):
-                cur = ""
-                for word in para.split():
-                    trial = f"{cur} {word}".strip()
-                    if cur and line_width(trial, look, sz) > avail:
-                        out.append(cur)
-                        cur = word
-                    else:
-                        cur = trial
-                if cur:
-                    out.append(cur)
-            return out or [text.strip()]
-
         # A hook wrapped into a tall tower covers the video: shrink a little (to ~60%) to keep it to
         # the lines it was written with, or 3 at most.
         most = max(3, len([p for p in text.split("\n") if p.strip()]))
-        lines = wrap(size)
+        lines = wrap(size, text)
         floor = round(size * 0.6)
         while len(lines) > most and size > floor:
             size = max(floor, round(size * 0.93))
-            lines = wrap(size)
+            lines = wrap(size, text)
     widest = max(line_width(ln, look, size) for ln in lines)
     if widest > avail:
         size = max(round(size * 0.5), int(size * avail / widest))
+    if keep_lines and max(line_width(ln, look, size) for ln in lines) > avail:
+        lines = wrap(size, "\n".join(lines))  # never off the edge of the frame
     return lines, size
 
 
@@ -3339,6 +3347,138 @@ def text_events(start: float, end: float, lay: dict, look: dict, animation: str)
     elif animation == "slide_up":
         tags = f"\\move({px},{py + 50},{px},{py},0,220)\\fad(150,0)"
     return [event(start, end, tags, ass_text(raw))]
+
+
+# ---- text with emoji: libass can't draw color emoji, so a line with emoji is drawn as a picture
+
+def _is_emoji_char(c: str) -> bool:
+    o = ord(c)
+    return (o >= 0x1F000 or 0x2600 <= o <= 0x27BF or 0x2300 <= o <= 0x23FF or 0x2B00 <= o <= 0x2BFF
+            or o in (0x200D, 0xFE0F, 0x20E3, 0x00A9, 0x00AE, 0x2122, 0x3030, 0x303D, 0x3297, 0x3299))
+
+
+def has_emoji(text: str) -> bool:
+    return any(_is_emoji_char(c) and c not in "‍️⃣" for c in text)
+
+
+def emoji_runs(text: str) -> list[tuple[str, bool]]:
+    """Splits text into (piece, is_emoji). An emoji keeps its joiners, skin tone, variation selector
+    and flag pair together (one picture each)."""
+    out: list[tuple[str, bool]] = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if not (_is_emoji_char(c) and c not in "‍️"):
+            j = i
+            while j < len(text) and not (_is_emoji_char(text[j]) and text[j] not in "‍️"):
+                j += 1
+            out.append((text[i:j], False))
+            i = j
+            continue
+        j = i + 1
+        if 0x1F1E6 <= ord(c) <= 0x1F1FF and j < len(text) and 0x1F1E6 <= ord(text[j]) <= 0x1F1FF:
+            j += 1  # a flag is two letters
+        while j < len(text):
+            o = ord(text[j])
+            if text[j] == "️" or 0x1F3FB <= o <= 0x1F3FF or text[j] == "⃣":
+                j += 1
+            elif text[j] == "‍" and j + 1 < len(text):
+                j += 2
+            else:
+                break
+        out.append((text[i:j], True))
+        i = j
+    return out
+
+
+def _ass_rgba(color: str) -> tuple[int, int, int, int]:
+    """&HAABBGGRR -> (r, g, b, a)."""
+    h = color.replace("&H", "").replace("&", "").rjust(8, "0")[-8:]
+    a, b, g, r = (int(h[k:k + 2], 16) for k in (0, 2, 4, 6))
+    return r, g, b, 255 - a
+
+
+def text_picture(lines: list[str], look: dict, size: int, align: str, workdir: Path, name: str) -> Path | None:
+    """On-screen text with color emoji, drawn the way libass draws it: same font, size, color, edge or
+    box and shadow, lines as given. Emoji are Google's Noto Emoji pictures, inline."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    m = font_metrics(look["key"])
+    path = m["font"].path
+    font = ImageFont.truetype(path, max(8, round(size * m["em_per_size"])))
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent  # libass: the font size is ascent + descent
+    esz = round(line_h * 0.86)
+    outline = int(look["outline"]) if look["border"] == 1 else 0
+    pad = int(look["outline"]) if look["border"] == 3 else 0  # the box reaches this far past the words
+    shadow = int(look["shadow"])
+    fill = _ass_rgba(look["primary"])
+    edge = _ass_rgba(look["outline_c"])
+
+    def runs_width(runs):
+        return sum(esz + round(esz * 0.08) if e else font.getlength(t) for t, e in runs)
+
+    laid = [emoji_runs(ln) for ln in lines]
+    widths = [runs_width(r) for r in laid]
+    margin = outline + pad + shadow + 4
+    W = int(max(widths) + 2 * margin)
+    H = int(len(lines) * line_h + 2 * margin)
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    pictures = {}
+    for li, (runs, w) in enumerate(zip(laid, widths)):
+        x0 = margin if align == "left" else (W - margin - w if align == "right" else (W - w) / 2)
+        y0 = margin + li * line_h
+        if look["border"] == 3 and w:
+            draw.rectangle((x0 - pad, y0 - pad * 0.35, x0 + w + pad, y0 + line_h + pad * 0.35), fill=edge)
+        x = x0
+        for piece, is_emoji in runs:
+            if is_emoji:
+                if piece not in pictures:
+                    png = emoji_png(piece, workdir)
+                    pic = Image.open(png).convert("RGBA") if png else None
+                    if pic is not None:
+                        pic.thumbnail((esz, esz), Image.LANCZOS)  # flags are wider than tall: fit, don't stretch
+                    pictures[piece] = pic
+                pic = pictures[piece]
+                if pic is not None:
+                    img.alpha_composite(pic, (round(x + (esz - pic.size[0]) / 2 + esz * 0.04),
+                                              round(y0 + (line_h - pic.size[1]) / 2)))
+                x += esz + round(esz * 0.08)
+                continue
+            if shadow:
+                draw.text((x + shadow, y0 + shadow), piece, font=font, fill=(0, 0, 0, 110),
+                          stroke_width=outline, stroke_fill=(0, 0, 0, 110))
+            draw.text((x, y0), piece, font=font, fill=fill, stroke_width=outline, stroke_fill=edge)
+            x += font.getlength(piece)
+    dest = workdir / f"{name}.png"
+    img.save(dest)
+    return dest
+
+
+def emoji_text_pictures(timeline: list[tuple[float, float, str, dict]], style: dict, layout: dict,
+                        workdir: Path, prefix: str = "text") -> tuple[list, list[dict]]:
+    """Splits the text timeline: lines with emoji become pictures placed where libass would draw them
+    (same position and alignment, a quick fade in and out); the rest stay as text."""
+    from PIL import Image
+
+    look = text_look(style, layout["textScale"])
+    keep, pictures = [], []
+    for k, (start, end, text, lay) in enumerate(timeline):
+        if not has_emoji(" ".join(lay["lines"])):
+            keep.append((start, end, text, lay))
+            continue
+        try:
+            png = text_picture(lay["lines"], look, lay["size"], lay["align"], workdir, f"{prefix}{k:02d}")
+        except Exception as e:  # noqa: BLE001
+            print(f"emoji text {text!r}: drawn without emoji ({type(e).__name__}: {e})")
+            keep.append((start, end, text, lay))
+            continue
+        w = Image.open(png).size[0]
+        cx = lay["x"] + {"left": w / 2 / OUT_W, "right": -w / 2 / OUT_W}.get(lay["align"], 0.0)
+        pictures.append({"path": png, "start": start, "end": end, "x": cx, "y": lay["y"], "w": w,
+                         "rise": style.get("animation") in ("pop", "slide_up")})
+    return keep, pictures
 
 
 def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layout: dict,
@@ -4799,6 +4939,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
 # ---- pictures on top of the video: emoji pop-ups, proof screenshots, the series label
 
 EMOJI_PNG_URL = "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e07d3d1fe1bdbcdb14964547f0fd592966f/2D/png/512/emoji_u{}.png"  # pinned: the repo moves folders
+FLAG_PNG_URL = "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e07d3d1fe1bdbcdb14964547f0fd592966f/third_party/region-flags/png/{}.png"
 PROOF_KEY_RE = r"^u/[A-Za-z0-9-]+/p/[A-Za-z0-9-]+/proofs/[A-Za-z0-9-]+\.(png|jpg|jpeg|webp)$"
 
 
@@ -4829,14 +4970,19 @@ def emoji_png(emoji: str, workdir: Path) -> Path | None:
     """The emoji as a picture (Google's Noto Emoji, Apache 2.0), or None if it can't be had."""
     import urllib.request
 
-    cps = [f"{ord(c):x}" for c in emoji.strip() if ord(c) not in (0xFE0F, 0x200D)]
-    if not cps or len(cps) > 4:
+    cps = [f"{ord(c):x}" for c in emoji.strip() if ord(c) != 0xFE0F]
+    if not cps or len(cps) > 8:
         return None
     name = "_".join(cps)
+    url = EMOJI_PNG_URL.format(name)
+    letters = [ord(c) - 0x1F1E6 for c in emoji.strip()]
+    if len(letters) == 2 and all(0 <= x < 26 for x in letters):
+        # A flag (two regional letters): Noto keeps those as country pictures.
+        url = FLAG_PNG_URL.format("".join(chr(65 + x) for x in letters))
     dest = workdir / f"emoji_{name}.png"
     if not dest.exists():
         try:
-            with urllib.request.urlopen(EMOJI_PNG_URL.format(name), timeout=8) as r:
+            with urllib.request.urlopen(url, timeout=8) as r:
                 data = r.read(2_000_000)
             if not data.startswith(b"\x89PNG"):
                 return None
@@ -5556,7 +5702,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         return cap_ys[i]
 
     report("editing", 85)
-    ass = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions, caption_y_at)
+    # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
+    text_timeline, emoji_texts = emoji_text_pictures(overlay_timeline(plan, plan_texts, lays), style, layout, workdir)
+    ass = build_ass(text_timeline, style, layout, words, shown_captions, caption_y_at)
 
     # Pictures on top of the video: emoji pop-ups, proof screenshots and the series label.
     proofs = clean_proofs(carry.get("proofs"))
@@ -5565,7 +5713,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         heard = own_audio if use_own_audio else joined
         spoken = [w for seg in transcribe(heard, speech_hint)["segments"] for w in seg.get("words") or []
                   if w.get("w") and w["e"] <= total + 0.5]
-    pictures: list[dict] = []
+    pictures: list[dict] = list(emoji_texts)
     if (options["captions"].get("emojis") and words) and shown_captions:
         try:
             emojis, emoji_cost = emoji_overlays(words, caption_y_at, total, workdir, guide)
@@ -5744,6 +5892,7 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
         out = workdir / f"sb{i:02d}.jpg"
         text = (plan_texts[i] or "").strip()
         timeline = [(0.0, 30.0, text, lays[i])] if text and lays[i] else []
+        timeline, pics = emoji_text_pictures(timeline, style, layout, workdir, f"sb{i:02d}t")
         ass = build_ass(timeline, style, layout, sample if caption_style else [], caption_style,
                         lambda _t, y=cap_ys[i]: y)
         if ass:
@@ -5751,6 +5900,18 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-i", raw.name, "-vf",
                         (f"ass=sb{i:02d}.ass," if ass else "") + "scale=540:-2", "-ss", "1.0", "-frames:v", "1",
                         "-q:v", "3", out.name], cwd=workdir, capture_output=True)
+        if pics and out.exists():
+            # Text with emoji, drawn as a picture (as in the video), at the frame's scale.
+            from PIL import Image
+
+            frame_img = Image.open(out).convert("RGBA")
+            k = frame_img.size[0] / OUT_W
+            for pic in pics:
+                im = Image.open(pic["path"]).convert("RGBA")
+                im = im.resize((max(1, round(im.size[0] * k)), max(1, round(im.size[1] * k))), Image.LANCZOS)
+                frame_img.alpha_composite(im, (max(0, round(pic["x"] * frame_img.size[0] - im.size[0] / 2)),
+                                               max(0, round(pic["y"] * frame_img.size[1] - im.size[1] / 2))))
+            frame_img.convert("RGB").save(out, quality=88)
         key = f"{folder}/shot{i:02d}.jpg"
         if out.exists():
             store(out, key)
