@@ -4527,8 +4527,12 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
                 "but it shows the same thing twice: " + "; ".join(fix[1]) + ". fix only that (use other clips or "
                 "moments, or drop shots) and keep everything else as it is."]
     content.append({"type": "text", "text": "\n" + "\n".join(ask)})
+    # A first version plans everything from the clips: think hardest. A change to a version is a
+    # targeted edit of a plan that's already there: "high" does it well in a fraction of the time
+    # (xhigh spent 3-5 minutes thinking on each change).
     return ask_claude(with_playbook(DIRECTOR_SYSTEM, False), content, DIRECTOR_SCHEMA,
-                      "we couldn’t make a video from that. try different clips or a different prompt.", effort="xhigh")
+                      "we couldn’t make a video from that. try different clips or a different prompt.",
+                      effort="high" if (previous and request) else "xhigh")
 
 
 def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, talking: set[int] | None = None) -> dict:
@@ -4996,18 +5000,28 @@ FLAG_PNG_URL = "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e0
 PROOF_KEY_RE = r"^u/[A-Za-z0-9-]+/p/[A-Za-z0-9-]+/proofs/[A-Za-z0-9-]+\.(png|jpg|jpeg|webp)$"
 
 
+def picture_clip(o: dict, dest: Path) -> Path:
+    """A picture as a short clip of its own (with transparency) that fades in and out: the final
+    encode takes these instead of looping still images, which once left it stuck at the end."""
+    dur = max(0.2, o["end"] - o["start"])
+    fade_out = max(0.0, dur - 0.12)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", str(OUT_FPS), "-t", f"{dur:.3f}",
+                    "-i", str(o["path"]), "-vf", f"scale={int(o['w'])}:-1,format=rgba,fade=t=in:st=0:d=0.12:alpha=1,"
+                    f"fade=t=out:st={fade_out:.3f}:d=0.12:alpha=1", "-c:v", "qtrle", "-an", str(dest)],
+                   check=True, capture_output=True, timeout=120)
+    return dest
+
+
 def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str) -> list[str]:
     """Filters putting each picture on the video from `start` to `end`, centered at (x, y) as
     fractions of the frame, `w` pixels wide: it fades in with a little rise, and fades out.
-    Adds the pictures to `inputs`."""
+    Adds the pictures (as short clips, see picture_clip) to `inputs`."""
     graph, cur = [], base
     for k, o in enumerate(overlays):
-        dur = max(0.2, o["end"] - o["start"])
+        clip = o.get("clip") or picture_clip(o, Path(o["path"]).with_name(f"pic{k:02d}.mov"))
         idx = inputs.count("-i")
-        inputs += ["-loop", "1", "-framerate", str(OUT_FPS), "-t", f"{dur:.3f}", "-i", str(o["path"])]
-        fade_out = max(0.0, dur - 0.12)
-        graph.append(f"[{idx}:v]scale={int(o['w'])}:-1,format=rgba,fade=t=in:st=0:d=0.12:alpha=1,"
-                     f"fade=t=out:st={fade_out:.3f}:d=0.12:alpha=1,setpts=PTS+{o['start']:.3f}/TB[ov{k}]")
+        inputs += ["-i", str(clip)]
+        graph.append(f"[{idx}:v]setpts=PTS+{o['start']:.3f}/TB[ov{k}]")
         nxt = out if k == len(overlays) - 1 else f"ovb{k}"
         rise = 28 if o.get("rise", True) else 0
         graph.append(f"[{cur}][ov{k}]overlay=x=W*{o['x']:.4f}-w/2:"
@@ -5828,45 +5842,67 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             print(f"proof moments skipped: {type(e).__name__}: {e}")
 
     out = workdir / "final.mp4"
-    inputs = ["-i", joined.name]
-    if music == "none":
-        inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
-        main = "[1:a]anull[m]"
-    elif use_inspo_audio:
-        # Same timing as the inspo, so its audio lines up from the first frame.
-        inputs += ["-i", inspo_path.name]
-        main = "[1:a]aresample=48000,apad[m]"
-    elif use_own_audio:
-        # Plays from the start; cut at the video's end, or silence after it if it's shorter.
-        inputs += ["-i", own_audio.name]
-        main = "[1:a]aresample=48000,apad[m]"
-    else:
-        # The clips' own audio ("original", and anything unknown).
-        main = "[0:a]anull[m]"
-    # Sound effects: the inspo's are already in its own audio, so only add the ones asked for then.
-    sounds = sfx_times([e for e in effects["sfx"] if not (use_inspo_audio and e.get("source") == "inspo")],
-                       starts, durations, total)
-    sounds += [(pic["start"], "pop", 0.6) for pic in proof_pics]
-    graph = [main]
-    first_sfx = 1 if main.startswith("[0:a]") else 2  # input number of the first sound effect
-    for k, (t, name, vol) in enumerate(sounds):
-        inputs += ["-i", str(sfx_file(name, workdir))]
-        ms = round(max(0.0, t) * 1000)
-        head = f"atrim=start={-t:.3f},asetpts=PTS-STARTPTS," if t < 0 else ""
-        graph.append(f"[{first_sfx + k}:a]{head}aresample=48000,aformat=channel_layouts=stereo,"
-                     f"volume={vol * SFX_GAIN:.2f},adelay={ms}|{ms}[x{k}]")
-    graph.append("[m]" + "".join(f"[x{k}]" for k in range(len(sounds)))
-                 + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
-    graph += fire_overlays(cuts, starts, inputs)
-    graph += look_graph(effects["looks"], "fired", "looked")
-    graph += overlay_graph(pictures, inputs, "looked", "pictured")
-    if ass:
-        (workdir / "text.ass").write_text(ass, encoding="utf-8")
-    graph.append("[pictured]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
-    cmd = ["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
-           *FINAL_X264, "-pix_fmt", "yuv420p", "-profile:v", "high",
-           "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
-    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
+
+    def final_encode(pictures: list[dict], ass: str | None, limit: float) -> subprocess.CompletedProcess:
+        inputs = ["-i", joined.name]
+        if music == "none":
+            inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+            main = "[1:a]anull[m]"
+        elif use_inspo_audio:
+            # Same timing as the inspo, so its audio lines up from the first frame.
+            inputs += ["-i", inspo_path.name]
+            main = "[1:a]aresample=48000,apad[m]"
+        elif use_own_audio:
+            # Plays from the start; cut at the video's end, or silence after it if it's shorter.
+            inputs += ["-i", own_audio.name]
+            main = "[1:a]aresample=48000,apad[m]"
+        else:
+            # The clips' own audio ("original", and anything unknown).
+            main = "[0:a]anull[m]"
+        # Sound effects: the inspo's are already in its own audio, so only add the ones asked for then.
+        sounds = sfx_times([e for e in effects["sfx"] if not (use_inspo_audio and e.get("source") == "inspo")],
+                           starts, durations, total)
+        sounds += [(pic["start"], "pop", 0.6) for pic in proof_pics if pic in pictures]
+        graph = [main]
+        first_sfx = 1 if main.startswith("[0:a]") else 2  # input number of the first sound effect
+        for k, (t, name, vol) in enumerate(sounds):
+            inputs += ["-i", str(sfx_file(name, workdir))]
+            ms = round(max(0.0, t) * 1000)
+            head = f"atrim=start={-t:.3f},asetpts=PTS-STARTPTS," if t < 0 else ""
+            graph.append(f"[{first_sfx + k}:a]{head}aresample=48000,aformat=channel_layouts=stereo,"
+                         f"volume={vol * SFX_GAIN:.2f},adelay={ms}|{ms}[x{k}]")
+        graph.append("[m]" + "".join(f"[x{k}]" for k in range(len(sounds)))
+                     + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
+        graph += fire_overlays(cuts, starts, inputs)
+        graph += look_graph(effects["looks"], "fired", "looked")
+        graph += overlay_graph(pictures, inputs, "looked", "pictured")
+        if ass:
+            (workdir / "text.ass").write_text(ass, encoding="utf-8")
+        graph.append("[pictured]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
+        cmd = ["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
+               *FINAL_X264, "-pix_fmt", "yuv420p", "-profile:v", "high",
+               "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
+        return subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=limit)
+
+    # Normally well under a minute; ffmpeg once stalled at the very end, so it's watched: a stuck
+    # encode is stopped and tried again, and then made without the pictures (emoji in text drop
+    # out, the text stays) rather than the video failing.
+    limit = min(480.0, max(240.0, total * 4))
+    result = None
+    for attempt in range(3):
+        try:
+            if attempt < 2:
+                result = final_encode(pictures, ass, limit)
+            else:
+                plain = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions,
+                                  caption_y_at)
+                result = final_encode([], plain, limit)
+            break
+        except subprocess.TimeoutExpired:
+            print(f"WARNING final encode stalled (attempt {attempt + 1}, {len(pictures)} pictures); "
+                  + ("trying again" if attempt == 0 else "making it without the pictures" if attempt == 1 else "giving up"))
+    if result is None:
+        raise JobError("making this video took too long. please try again.")
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
     # The post caption, written from the finished video (a change request keeps the one it has,
@@ -5902,7 +5938,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
           f"faces={sum(map(len, faces))}, transitions={sum(1 for c in cuts if c)}, motions={sum(m != 'none' for m in motions)}, "
           f"color={color}, font={style['font']}, animation={style['animation']}, "
           f"cuts={[c['name'] if c else 'cut' for c in cuts]}, speeds={effects['speeds']}, effects={effects['shotEffects']}, "
-          f"looks={effects['looks']}, sfx={[(t, nm) for t, nm, _ in sounds]}")
+          f"looks={effects['looks']}, sfx={[(e.get('name'), e.get('index')) for e in effects['sfx']]}")
     out = {
         "storageKey": req["outputKey"],
         "width": OUT_W,
@@ -6141,7 +6177,7 @@ def notify_job(url: str, payload: dict) -> None:
             time.sleep(5 * (attempt + 1))
 
 
-@app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=900)
+@app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=1800)
 def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
