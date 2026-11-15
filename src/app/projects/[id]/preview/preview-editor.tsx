@@ -13,6 +13,7 @@ import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit } from "@/lib/p
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 import { ProofPanel } from "./proof-panel";
+import { ShotPreview } from "./shot-preview";
 
 /** "repost with a new hook": what the editor is asked to do (a normal change). */
 const REPOST_REQUEST =
@@ -24,6 +25,8 @@ interface EditorClip {
   label: string;
   durationS: number;
   previewUrl: string;
+  /** A still of the clip, shown until it plays. */
+  thumbUrl?: string | null;
 }
 
 const secondaryButton =
@@ -336,6 +339,19 @@ export function PreviewEditor({
                         </p>
                       );
                     })()}
+                  {clip && (
+                    <ShotPreview
+                      key={clip.id}
+                      label={`shot ${shot.index + 1}`}
+                      src={clip.previewUrl}
+                      poster={clip.thumbUrl ?? null}
+                      durationS={clip.durationS}
+                      start={edit.trimStartS}
+                      end={edit.trimEndS}
+                      onSetStart={(t) => setShot(shot.index, { trimStartS: t })}
+                      onSetEnd={(t) => setShot(shot.index, { trimEndS: t })}
+                    />
+                  )}
                   {clip && (
                     <fieldset className="flex items-end gap-2">
                       <legend className="sr-only">trim shot {shot.index + 1}</legend>

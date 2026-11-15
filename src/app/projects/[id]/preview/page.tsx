@@ -6,6 +6,7 @@ import { changesLeft, getMembership } from "@/lib/membership";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips, listRenders } from "@/lib/projects";
 import { syncUnfinished } from "@/lib/renders";
+import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import type { Shot } from "@/lib/processing/types";
 import { PreviewEditor } from "./preview-editor";
@@ -69,6 +70,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
         label: `clip ${i + 1}`,
         durationS: c.durationS ?? 0,
         previewUrl: await createDownloadUrl(c.storageKey, { expiresIn: 6 * 3600 }),
+        thumbUrl: await clipThumbUrl(c.storageKey),
       })),
     ),
   ]);
