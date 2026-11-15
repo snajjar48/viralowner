@@ -6501,6 +6501,11 @@ def api():
             output = call.get(timeout=0)
         except modal.exception.OutputExpiredError:
             return {"state": "failed", "stage": None, "progress": 0, "error": "this took too long. please try again."}
+        except modal.exception.FunctionTimeoutError:
+            # The job itself ran out of time (it's a TimeoutError too, so it's caught first: otherwise
+            # it would look like a job that's still running, forever).
+            return {"state": "failed", "stage": None, "progress": 0,
+                    "error": "this took longer than it should. please try again: it’s free."}
         except (TimeoutError, modal.exception.TimeoutError):
             p = progress_store.get(job_id) or {"stage": None, "progress": 0}
             state = "queued" if p["stage"] is None else "processing"
