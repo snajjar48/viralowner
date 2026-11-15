@@ -373,6 +373,71 @@ def transition_cuts(path: Path, duration: float) -> list[float]:
     return cuts
 
 
+def _picture_match(a, b, mask) -> tuple[int, float]:
+    """How well two frames line up: (matched points spread over the picture, their median movement
+    in pixels). Points only in a band or corner (burned-in text, a logo) don't count."""
+    import cv2
+    import numpy as np
+
+    orb = cv2.ORB_create(1000, fastThreshold=10)
+    ka, da = orb.detectAndCompute(a, mask)
+    kb, db = orb.detectAndCompute(b, mask)
+    if da is None or db is None or len(ka) < 10 or len(kb) < 10:
+        return 0, 0.0
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(da, db, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < 0.8 * p[1].distance]
+    if len(good) < 8:
+        return 0, 0.0
+    src = np.float32([ka[g.queryIdx].pt for g in good])
+    dst = np.float32([kb[g.trainIdx].pt for g in good])
+    _m, inl = cv2.estimateAffinePartial2D(src, dst, ransacReprojThreshold=3)
+    if inl is None:
+        return 0, 0.0
+    inl = inl.ravel().astype(bool)
+    if len({(int(x * 4 / SIG_W), int(y * 6 / SIG_H)) for x, y in src[inl]}) < 6:
+        return 0, 0.0
+    return int(inl.sum()), float(np.median(np.linalg.norm(dst[inl] - src[inl], axis=1)))
+
+
+def same_take(path: Path, t: float) -> bool:
+    """Whether a cut found at `t` is really the camera moving fast within one continuous take (a
+    handheld follow, a quick pan or tilt, a push in): the picture just after it lines up with the
+    picture just before, moved no faster than the camera was already moving. A real cut, even a jump
+    cut between two similar angles, never does. Burned-in text and logos are left out of the check."""
+    import cv2
+    import numpy as np
+
+    g = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY) for f in read_frames(path, t - 0.8, 1.6)]
+    if len(g) < 30:
+        return False
+    # What stays perfectly still around the cut while the picture changes: text, watermarks, logos.
+    still = np.std(np.stack(g).astype(np.float32), axis=0) < 5
+    still = cv2.dilate(still.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    mask = np.where(still, 0, 255).astype(np.uint8)
+    if not (mask > 0).any():
+        return False
+    # The exact frame the picture jumps at (the detector's time can be a few frames off).
+    m = mask > 0
+    diff = [float(np.mean(cv2.absdiff(g[k], g[k + 1])[m])) for k in range(len(g) - 1)]
+    mid = len(g) // 2
+    k = max(range(max(6, mid - 12), min(len(g) - 7, mid + 12)), key=lambda x: diff[x])
+    # How fast the camera moves away from the cut, on both sides.
+    steps = [_picture_match(g[x], g[x + 1], mask) for x in [*range(max(0, k - 9), k - 3), *range(k + 4, min(len(g) - 1, k + 10))]]
+    moving = [mv for n, mv in steps if n >= 30]
+    if not moving:
+        return False
+    usual = float(np.median(moving))
+    # The best line-up across the jump (a few frames either side, to get past motion blur).
+    for i in range(k - 3, k + 1):
+        for j in range(k + 1, min(len(g), k + 5)):
+            if j - i > 5:
+                continue
+            n, mv = _picture_match(g[i], g[j], mask)
+            if n >= 30 and mv / (j - i) <= 2.5 * usual + 3:
+                return True
+    return False
+
+
 def detect_shots(path: Path, duration: float) -> list[tuple[float, float]]:
     """Where the cuts are, as (start, end) seconds, tidied up so every shot is filmable."""
     from scenedetect import AdaptiveDetector, detect
@@ -388,7 +453,17 @@ def detect_shots(path: Path, duration: float) -> list[tuple[float, float]]:
     extra = [t for t in extra if 0.2 < t < duration - 0.2]
     hard = [c for c in found if all(abs(c - t) > 0.4 for t in extra)]
     cuts = sorted(hard + extra)
-    print(f"cuts: {len(found)} hard, {len(extra)} from transitions, {len(cuts)} total")
+    # Fast camera moves inside one take look like cuts to both detectors: keep only real cuts.
+    takes = []
+    for c in cuts:
+        try:
+            if same_take(path, c):
+                takes.append(c)
+        except Exception as e:  # noqa: BLE001
+            print(f"take check at {c:.2f}s failed: {type(e).__name__}: {e}")
+    cuts = [c for c in cuts if c not in takes]
+    print(f"cuts: {len(found)} hard, {len(extra)} from transitions, {len(takes)} were camera moves "
+          f"within one take, {len(cuts)} total")
     bounds = [0.0, *cuts, duration]
     shots = [[a, b] for a, b in zip(bounds, bounds[1:]) if b > a]
 
