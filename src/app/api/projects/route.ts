@@ -10,7 +10,7 @@ import { DEFAULT_OPTIONS, PROMPT_MAX } from "@/lib/video-options";
 /**
  * Starts a new video.
  *   { kind: "scratch", prompt, category }  "start from scratch" (Pro): returns the new project's id.
- *   otherwise (an inspo's file details and category): creates the project and returns where to upload the inspo.
+ *   otherwise (an inspo's file details, maybe its category): creates the project and returns where to upload the inspo.
  * `category`: the kind of video (lib/categories.ts).
  */
 export async function POST(request: Request) {
@@ -24,8 +24,10 @@ export async function POST(request: Request) {
     }
 
     const kind = body.kind === "scratch" ? "scratch" : "inspo";
-    if (!isCategory(body.category)) return jsonError(CATEGORY_REQUIRED, 400);
-    const category = body.category;
+    // Scratch: picked with the prompt. An inspo starts uploading as soon as it's picked, so its
+    // category can come with the analysis instead (inspo/complete).
+    const category = isCategory(body.category) ? body.category : null;
+    if (kind === "scratch" && !category) return jsonError(CATEGORY_REQUIRED, 400);
     const blocked = await canCreateProject(userId, kind);
     if (blocked) return Response.json({ error: blocked.message, reason: blocked.reason }, { status: blocked.status });
 

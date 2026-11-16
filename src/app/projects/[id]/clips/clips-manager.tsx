@@ -72,7 +72,7 @@ interface Item {
 }
 
 // Clips uploading at once. Big clips upload several parts at once too (uploadInParts).
-const CONCURRENCY = 2;
+const CONCURRENCY = 3;
 type SignedPut = { url: string; headers: Record<string, string> };
 const inFlight = (s: ItemStatus) => s === "queued" || s === "uploading" || s === "verifying";
 
@@ -275,8 +275,9 @@ export function ClipsManager({
       picked = picked.slice(0, Math.max(0, room));
     }
     const added: Item[] = [];
-    // Read every picked file's length at once (one at a time made picking 20 clips slow).
-    const durations = await Promise.all(picked.map((f) => (checkClip(f, null) ? null : readVideoDuration(f))));
+    // Read every picked file's length at once (one at a time made picking 20 clips slow). A clip
+    // this browser can't read doesn't hold the others up for long: the server reads it anyway.
+    const durations = await Promise.all(picked.map((f) => (checkClip(f, null) ? null : readVideoDuration(f, 3_000))));
     for (const [i, file] of picked.entries()) {
       const durationS = durations[i];
       const problem = checkClip(file, durationS);

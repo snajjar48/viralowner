@@ -107,6 +107,8 @@ function send(
 
 /** Parts uploading at once for one file. More parallel streams fill the connection better. */
 const PART_CONCURRENCY = 4;
+/** For a file uploading on its own (the inspo): more at once. */
+export const SOLO_PART_CONCURRENCY = 6;
 
 /**
  * Uploads a big file in parts, several at once (to URLs signed per part), with real progress.
@@ -117,6 +119,7 @@ export async function uploadInParts(
   multipart: { partBytes: number; urls: string[] },
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
+  concurrency = PART_CONCURRENCY,
 ): Promise<void> {
   const fileInfo = () => ({
     fileType: file.type,
@@ -173,7 +176,7 @@ export async function uploadInParts(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, urls.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
   onProgress(100);
 }
 

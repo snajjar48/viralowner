@@ -56,10 +56,13 @@ export async function createUploadUrl(
 
 // ---- Big files upload in parts, several at once (much faster than one long upload).
 
-/** Every part but the last is this size (R2 needs them equal, and at least 5 MB). */
-export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
-/** Files at least this big upload in parts; smaller ones in one go. */
-export const MULTIPART_MIN_BYTES = 16 * 1024 * 1024;
+/**
+ * Every part but the last is this size (R2 needs them equal, and at least 5 MB). Smaller parts mean
+ * more of the file goes up at once; very big files use bigger parts (fewer requests).
+ */
+export const uploadPartBytes = (sizeBytes: number) => (sizeBytes <= 512 * 1024 * 1024 ? 6 : 16) * 1024 * 1024;
+/** Files at least this big upload in parts (several at once); smaller ones in one go. */
+export const MULTIPART_MIN_BYTES = 8 * 1024 * 1024;
 
 const xmlValue = (xml: string, tag: string) => new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml)?.[1] ?? null;
 
@@ -79,7 +82,8 @@ export async function createMultipartUpload(
   const xml = await res.text();
   const uploadId = xmlValue(xml, "UploadId");
   if (!res.ok || !uploadId) throw new Error(`Storage multipart start failed (${res.status})`);
-  const count = Math.max(1, Math.ceil(sizeBytes / UPLOAD_PART_BYTES));
+  const partBytes = uploadPartBytes(sizeBytes);
+  const count = Math.max(1, Math.ceil(sizeBytes / partBytes));
   const urls = await Promise.all(
     Array.from({ length: count }, async (_, i) => {
       const url = new URL(objectUrl(key));
@@ -89,7 +93,7 @@ export async function createMultipartUpload(
       return (await r2().client.sign(url.toString(), { method: "PUT", aws: { signQuery: true } })).url;
     }),
   );
-  return { uploadId, partBytes: UPLOAD_PART_BYTES, urls };
+  return { uploadId, partBytes, urls };
 }
 
 /** Joins the uploaded parts into the file. The parts' ETags come from storage, not the browser. */

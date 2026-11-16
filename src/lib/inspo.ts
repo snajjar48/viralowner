@@ -48,9 +48,6 @@ export async function startInspoUpload(
     }
   | Fail
 > {
-  if (body.styleReferenceConfirmed !== true) {
-    return { status: 400, error: "please confirm you’re using this video only as a style reference." };
-  }
   const fileName = typeof body.fileName === "string" ? body.fileName.slice(0, 200) : "";
   const sizeBytes = typeof body.sizeBytes === "number" && Number.isInteger(body.sizeBytes) ? body.sizeBytes : -1;
   const durationS =
@@ -80,6 +77,8 @@ export async function startInspoUpload(
 
 type CompleteResult = { status: number; body: Record<string, unknown> };
 
+export const CONFIRM_STYLE_REFERENCE = "please confirm you’re using this video only as a style reference.";
+
 const ANALYSIS_FAILED = "we couldn’t analyze that video. please try again.";
 
 /**
@@ -90,9 +89,19 @@ const ANALYSIS_FAILED = "we couldn’t analyze that video. please try again.";
  *     read from the file itself) and starts the analysis job
  *   - running: checks on the job, and saves the breakdown when it's done
  */
-export async function completeInspo(userId: string, projectId: string, uploadId?: string): Promise<CompleteResult> {
+export async function completeInspo(
+  userId: string,
+  projectId: string,
+  uploadId?: string,
+  confirmed = false,
+): Promise<CompleteResult> {
   const current = await getInspiration(userId, projectId);
   if (!current) return { status: 404, body: { error: "upload a video first." } };
+  // The file starts uploading as soon as it's picked; it's only analyzed once the user has
+  // confirmed it's a style reference (and picked the kind of video).
+  if (current.status === "uploading" && !confirmed) {
+    return { status: 400, body: { error: CONFIRM_STYLE_REFERENCE, code: "needs_confirm" } };
+  }
   if (uploadId && current.status === "uploading") {
     // Uploaded in parts: join them into the file first.
     try {

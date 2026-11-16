@@ -28,7 +28,8 @@ async function Breakdown({ id }: { id: string }) {
   const { userId, project } = await loadProject(id, `/projects/${id}/breakdown`);
   if (project.kind === "scratch") redirect(`/projects/${id}/create`); // "start from scratch" has no inspo steps
   const inspo = await getInspiration(userId, id);
-  if (!inspo) redirect(`/projects/${id}/inspo`);
+  // No inspo, or one picked and uploaded but never confirmed for analysis: pick it (again).
+  if (!inspo || inspo.status === "uploading") redirect(`/projects/${id}/inspo`);
 
   if (inspo.status !== "ready" || !inspo.breakdown) {
     return (

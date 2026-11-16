@@ -8,18 +8,28 @@ import { DropZone } from "@/components/drop-zone";
 import { buttonClass } from "@/components/form";
 import { AlertIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { ProgressBar } from "@/components/progress-bar";
-import { postJson, readVideoDuration, uploadInParts, uploadToSignedUrl, UploadError } from "@/lib/upload-client";
+import {
+  postJson,
+  readVideoDuration,
+  SOLO_PART_CONCURRENCY,
+  uploadInParts,
+  uploadToSignedUrl,
+  UploadError,
+} from "@/lib/upload-client";
 import type { VideoCategory } from "@/lib/categories";
 import { checkInspo, formatBytes, VIDEO_ACCEPT } from "@/lib/video-files";
 import { formatDuration } from "@/lib/video-options";
 
 type Upload = { url: string; headers: Record<string, string> };
 type Picked = { file: File; durationS: number | null; previewUrl: string };
+type Background = { state: "idle" | "uploading" | "done" | "failed"; percent: number; message?: string };
 type Phase =
   | { name: "pick" }
   | { name: "reading" }
   | { name: "ready" }
   | { name: "uploading"; percent: number }
+  /** The button was tapped; the upload that started on picking is finishing. */
+  | { name: "waiting" }
   | { name: "analyzing" }
   | { name: "failed"; message: string; retry: "upload" | "analyze" | "pick" };
 
@@ -46,6 +56,9 @@ export function InspoUploader({
   const abort = useRef<AbortController | null>(null);
   // A parts upload still to be joined by the server (kept for "try again").
   const partsUploadId = useRef<string | undefined>(undefined);
+  // The file's upload, started as soon as it's picked (new videos).
+  const uploading = useRef<Promise<string | undefined> | null>(null);
+  const [bg, setBg] = useState<Background>({ state: "idle", percent: 0 });
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => () => {
@@ -63,7 +76,7 @@ export function InspoUploader({
       setPhase({ name: "pick" });
       return;
     }
-    const durationS = await readVideoDuration(file);
+    const durationS = await readVideoDuration(file, 4_000); // (the server reads it too)
     const problem = checkInspo(file, durationS);
     if (problem) {
       setPicked(null);
@@ -73,12 +86,80 @@ export function InspoUploader({
     }
     setPicked({ file, durationS, previewUrl: URL.createObjectURL(file) });
     setPhase({ name: "ready" });
+    // A new video: upload right away. (Replacing an inspo waits for the button, so the current
+    // one stays until the user confirms the new one.)
+    if (!existingProjectId) void startUpload(file, durationS).catch(() => {});
+  }
+
+  /**
+   * Uploads the picked file. For a new video it starts the moment the file is picked, while the
+   * user picks the kind of video and confirms: by the time they tap the button it's often done.
+   * Resolves to the parts upload's id (to be joined by the server), if it went up in parts.
+   */
+  function startUpload(file: File, durationS: number | null): Promise<string | undefined> {
+    abort.current?.abort();
+    const controller = new AbortController();
+    abort.current = controller;
+    partsUploadId.current = undefined;
+    setBg({ state: "uploading", percent: 0 });
+    const details = { fileName: file.name, contentType: file.type, sizeBytes: file.size, durationS, ...(category ? { category } : {}) };
+    const run = async () => {
+      type Started = { upload: Upload; multipart: { uploadId: string; partBytes: number; urls: string[] } | null };
+      let started: Started;
+      if (projectId.current) {
+        started = await postJson<Started>(`/api/projects/${projectId.current}/inspo`, details);
+      } else {
+        const res = await postJson<Started & { projectId: string }>("/api/projects", details);
+        projectId.current = res.projectId;
+        started = res;
+      }
+      const onProgress = (percent: number) => {
+        if (abort.current === controller) setBg({ state: "uploading", percent });
+      };
+      if (started.multipart) {
+        try {
+          // Big file: several parts at once.
+          await uploadInParts(file, started.multipart, onProgress, controller.signal, SOLO_PART_CONCURRENCY);
+          partsUploadId.current = started.multipart.uploadId;
+          return started.multipart.uploadId;
+        } catch (e) {
+          if (controller.signal.aborted) throw e;
+          onProgress(0);
+        }
+      }
+      await uploadToSignedUrl(file, started.upload, onProgress, controller.signal);
+      return undefined;
+    };
+    const promise = run();
+    promise.then(
+      () => abort.current === controller && setBg({ state: "done", percent: 100 }),
+      (error) => {
+        if (abort.current !== controller) return; // replaced by a newer upload
+        if (controller.signal.aborted) {
+          // Canceled: the button starts it again.
+          uploading.current = null;
+          setBg({ state: "idle", percent: 0 });
+          return;
+        }
+        setBg({
+          state: "failed",
+          percent: 0,
+          message: error instanceof UploadError ? error.message : "the upload didn’t go through. please try again.",
+        });
+      },
+    );
+    uploading.current = promise;
+    return promise;
   }
 
   async function analyze(uploadId?: string) {
     setPhase({ name: "analyzing" });
     try {
-      await postJson(`/api/projects/${projectId.current}/inspo/complete`, uploadId ? { uploadId } : undefined);
+      await postJson(`/api/projects/${projectId.current}/inspo/complete`, {
+        ...(uploadId ? { uploadId } : {}),
+        category,
+        styleReferenceConfirmed: true,
+      });
       router.push(`/projects/${projectId.current}/breakdown`);
     } catch (error) {
       const code = (error as { data?: { code?: string } }).data?.code;
@@ -91,7 +172,6 @@ export function InspoUploader({
             contentType: picked.file.type,
             sizeBytes: picked.file.size,
             durationS: picked.durationS,
-            styleReferenceConfirmed: true,
             single: true,
           });
           setPhase({ name: "uploading", percent: 0 });
@@ -109,46 +189,16 @@ export function InspoUploader({
     }
   }
 
+  /** The button: finishes the upload (usually already done) and starts the analysis. */
   async function upload() {
     if (!picked || !confirmed || !category) return;
-    const { file, durationS } = picked;
-    const details = {
-      fileName: file.name,
-      contentType: file.type,
-      sizeBytes: file.size,
-      durationS,
-      styleReferenceConfirmed: true,
-      category,
-    };
-    setPhase({ name: "uploading", percent: 0 });
-    abort.current = new AbortController();
+    // Not started yet (replacing an inspo), or it stopped: (re)start it now.
+    const pending =
+      uploading.current && (bg.state === "uploading" || bg.state === "done") ? uploading.current : startUpload(picked.file, picked.durationS);
+    setPhase({ name: "waiting" });
     let uploadId: string | undefined;
-    partsUploadId.current = undefined;
     try {
-      type Started = { upload: Upload; multipart: { uploadId: string; partBytes: number; urls: string[] } | null };
-      let started: Started;
-      if (projectId.current) {
-        started = await postJson<Started>(`/api/projects/${projectId.current}/inspo`, details);
-      } else {
-        const res = await postJson<Started & { projectId: string }>("/api/projects", details);
-        projectId.current = res.projectId;
-        started = res;
-      }
-      const onProgress = (percent: number) => setPhase({ name: "uploading", percent });
-      if (started.multipart) {
-        try {
-          // Big file: several parts at once.
-          await uploadInParts(file, started.multipart, onProgress, abort.current.signal);
-          uploadId = started.multipart.uploadId;
-          partsUploadId.current = uploadId;
-        } catch (e) {
-          if (abort.current.signal.aborted) throw e;
-          onProgress(0);
-          await uploadToSignedUrl(file, started.upload, onProgress, abort.current.signal);
-        }
-      } else {
-        await uploadToSignedUrl(file, started.upload, onProgress, abort.current.signal);
-      }
+      uploadId = await pending;
     } catch (error) {
       if (abort.current?.signal.aborted) {
         setPhase({ name: "ready" });
@@ -165,6 +215,9 @@ export function InspoUploader({
   }
 
   function startOver() {
+    abort.current?.abort();
+    uploading.current = null;
+    setBg({ state: "idle", percent: 0 });
     setPicked(null);
     setPhase({ name: "pick" });
   }
@@ -186,7 +239,7 @@ export function InspoUploader({
     );
   }
 
-  const busy = phase.name === "uploading" || phase.name === "reading";
+  const busy = phase.name === "uploading" || phase.name === "reading" || phase.name === "waiting";
 
   return (
     <div className="flex flex-col gap-5">
@@ -228,6 +281,16 @@ export function InspoUploader({
               {picked.durationS !== null ? `${formatDuration(picked.durationS)} · ` : ""}
               {formatBytes(picked.file.size)}
             </p>
+            {bg.state === "uploading" && phase.name !== "waiting" && (
+              <div className="flex flex-col gap-1" aria-live="polite">
+                <ProgressBar value={bg.percent} label="uploading" />
+                <p className="text-xs text-muted">uploading while you finish below</p>
+              </div>
+            )}
+            {bg.state === "done" && <p className="text-xs text-emerald-300">uploaded</p>}
+            {bg.state === "failed" && phase.name !== "failed" && (
+              <p className="text-xs text-coral">{bg.message} we’ll try again when you tap the button.</p>
+            )}
             {!busy && (
               <button
                 type="button"
@@ -251,9 +314,9 @@ export function InspoUploader({
         i’m using this video only as a style reference.
       </ConsentCheckbox>
 
-      {phase.name === "uploading" && (
+      {(phase.name === "uploading" || phase.name === "waiting") && (
         <div className="flex flex-col gap-3" aria-live="polite">
-          <ProgressBar value={phase.percent} label="uploading your inspo" />
+          <ProgressBar value={phase.name === "uploading" ? phase.percent : bg.percent} label="uploading your inspo" />
           <button
             type="button"
             onClick={() => abort.current?.abort()}
@@ -291,14 +354,14 @@ export function InspoUploader({
         </div>
       )}
 
-      {phase.name !== "uploading" && phase.name !== "failed" && (
+      {phase.name !== "uploading" && phase.name !== "waiting" && phase.name !== "failed" && (
         <button
           type="button"
           onClick={upload}
           disabled={!picked || !confirmed || !category || busy}
           className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
         >
-          upload & analyze
+          {bg.state === "done" ? "analyze my inspo" : "upload & analyze"}
         </button>
       )}
     </div>
