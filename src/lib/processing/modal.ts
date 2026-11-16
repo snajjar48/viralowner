@@ -1,5 +1,6 @@
 import "server-only";
 import { emojiKitKeyFor } from "../emoji-kit-store";
+import { latestLessons } from "../lessons";
 import { WorkerError, workerFetch } from "../worker";
 import { siteUrl } from "../site-url";
 import { CAPTION_STYLES } from "../video-options";
@@ -214,6 +215,7 @@ export async function startStoryboardJob(input: RenderInput, storyboardId: strin
       storyboard: true,
       // The maker's own device's emoji, when it has sent them (components/emoji-kit-sync.tsx).
       emojiKit: await emojiKitKeyFor(folder),
+      lessons: await latestLessons(),
     },
   });
 }
@@ -302,6 +304,8 @@ export const modalEngine: ProcessingEngine = {
         outputKey: outputKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey, input.version, input.renderId),
         ...renderFields(input),
         emojiKit: await emojiKitKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey),
+        // What the editor learned from everyone's requests and feedback (lib/lessons.ts).
+        lessons: await latestLessons(),
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
     });

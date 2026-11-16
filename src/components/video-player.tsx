@@ -18,6 +18,8 @@ export function VideoPlayer({
   label,
   autoPlay = false,
   className = "",
+  videoRef,
+  overlay,
 }: {
   src: string | null;
   poster?: string;
@@ -26,6 +28,10 @@ export function VideoPlayer({
   label: string;
   autoPlay?: boolean;
   className?: string;
+  /** To read the playhead or seek from outside. */
+  videoRef?: React.Ref<HTMLVideoElement>;
+  /** Drawn over the picture (not over the controls), e.g. a live preview of text. */
+  overlay?: React.ReactNode;
 }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
 
@@ -36,6 +42,7 @@ export function VideoPlayer({
       {src ? (
         <video
           key={src}
+          ref={videoRef}
           src={src}
           poster={poster}
           aria-label={label}
@@ -51,6 +58,11 @@ export function VideoPlayer({
           className="size-full object-cover"
         />
       ) : null}
+      {overlay && (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 [container-type:size]">
+          {overlay}
+        </div>
+      )}
       {(state === "loading" || !src) && state !== "error" && (
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-white/[0.04]" />
       )}

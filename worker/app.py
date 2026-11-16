@@ -1102,6 +1102,22 @@ def understand(shots: list[tuple[float, float]], frames: list[list[Path]], trans
     return ask_claude(SYSTEM_PROMPT, content, ANALYSIS_SCHEMA, "we couldn’t analyze that video. try a different one.")
 
 
+# Per job (each container runs one job at a time): what the editor learned from everyone's requests,
+# and the heads-ups to show the user with the finished version.
+JOB: dict = {"lessons": "", "heads_up": []}
+
+
+def start_job(req: dict | None = None) -> None:
+    lessons = (req or {}).get("lessons")
+    JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
+    JOB["heads_up"] = []
+    JOB["slowmo_asked"] = False
+
+
+def job_heads_up() -> list[str]:
+    return list(JOB["heads_up"])
+
+
 def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
     """One structured-output request. Returns the parsed JSON plus usage and cost.
     `effort`: how hard Claude thinks. "high" for analysis and planning; "xhigh" where getting
@@ -1109,6 +1125,12 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
     import anthropic
 
     client = anthropic.Anthropic(max_retries=3, timeout=900)
+    editing = "heads_up" in schema.get("properties", {})
+    if editing and JOB["lessons"]:
+        # Learned from everyone's change requests and feedback: defaults, below the user's own words.
+        system += ("\n\nWhat users of the app keep asking for or correcting (lessons learned from everyone's change "
+                   "requests and feedback; apply them by default so the first version is already right, unless this "
+                   "user said otherwise):\n" + JOB["lessons"])
     # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
     with client.beta.messages.stream(
         model=CLAUDE_MODEL,
@@ -1134,7 +1156,12 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
     }
     cost = sum(usage[k] * PRICES[k] for k in usage) / 1_000_000
-    return {"data": json.loads(text), "usage": usage, "cost_usd": round(cost, 4), "model": response.model}
+    data = json.loads(text)
+    if editing:
+        h = data.get("heads_up") if isinstance(data, dict) else None
+        if isinstance(h, str) and h.strip() and h.strip() not in JOB["heads_up"]:
+            JOB["heads_up"].append(h.strip())
+    return {"data": data, "usage": usage, "cost_usd": round(cost, 4), "model": response.model}
 
 
 # ---------------------------------------------------------------- the whole analysis
@@ -1390,6 +1417,8 @@ def catalog(info: dict[str, str]) -> str:
 # font key -> (family, bold, rough character width as a fraction of the font size)
 FONTS = {
     "clean_sans": ("Montserrat", True, 0.60),
+    # The outline captions' font: classic on-screen text matches them exactly.
+    "semibold_sans": ("Montserrat SemiBold", False, 0.59),
     "heavy_sans": ("Archivo Black", False, 0.66),
     "condensed": ("Anton", False, 0.46),
     "tall_caps": ("Bebas Neue", False, 0.42),
@@ -1405,8 +1434,8 @@ TEXT_SIZES = {"small": 0.028, "medium": 0.038, "large": 0.052, "xl": 0.075}
 TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"]
 # The on-screen text looks the user can pick (the website's TEXT_STYLES). "auto" (or none) keeps the inspo's / ours.
 TEXT_PRESETS = {
-    # classic: a slightly thinner stroke than the rest (thin = the standard stroke every text gets).
-    "classic": {"font": "clean_sans", "color": "#FFFFFF", "outline": "thin", "outlineColor": "#000000", "box": False, "shadow": False},
+    # classic: exactly the "outline" captions' look (same font, white, the same black stroke for its size).
+    "classic": {"font": "semibold_sans", "color": "#FFFFFF", "outline": "caption", "outlineColor": "#000000", "box": False, "shadow": False},
     "bold-pop": {"font": "heavy_sans", "color": "#FFD84D", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
     "boxed": {"font": "clean_sans", "color": "#000000", "outline": "none", "box": True, "boxColor": "#FFFFFF", "shadow": False},
     "dark-box": {"font": "clean_sans", "color": "#FFFFFF", "outline": "none", "box": True, "boxColor": "#000000", "shadow": False},
@@ -1822,7 +1851,7 @@ def clean_style(data: dict, n: int, heard: dict | None = None) -> dict:
         "text": {
             "font": pick(t.get("font"), FONTS, "clean_sans"),
             "color": color(t.get("color"), "#FFFFFF"),
-            "outline": pick(t.get("outline"), ["none", "thin", "thick"], "thick"),
+            "outline": pick(t.get("outline"), ["none", "thin", "thick", "caption"], "thick"),
             "outlineColor": color(t.get("outline_color"), "#000000"),
             "box": bool(t.get("box")),
             "boxColor": color(t.get("box_color"), "#FFFFFF"),
@@ -1926,13 +1955,22 @@ FONT = "Montserrat"
 FONT_DIR = "/usr/share/fonts/opentype/montserrat"
 KEY_PREFIX_RE = r"^u/[A-Za-z0-9_-]+/p/[A-Za-z0-9_-]+/"
 
+# The user's own words come first, over every rule below, the inspo and the playbooks.
+USER_FIRST = """
+
+The user's own words come first: their request, their notes and the settings they chose win over every rule in these instructions, over matching the inspo and over any playbook or lesson. Do exactly what they ask, all of it, never refusing, skipping or watering it down (emoji in the text, text near the edges, words they want said a certain way, slow motion, a different number of shots...). When what they ask goes against how the app normally works and might not turn out as well (for example text where TikTok's buttons will cover it, or slow motion on 30fps footage), still do it, and add a short, friendly heads-up in heads_up (one sentence, all lowercase, "we" voice) saying what to watch for. heads_up is empty when there's nothing to flag, and it never replaces doing what they asked."""
+
+HEADS_UP_FIELD = {"type": "string", "description": (
+    "a one-sentence heads-up to the user when something they asked for goes against how the app normally works "
+    "or might not look as good (it's done anyway). empty string when there's nothing to flag.")}
+
 MATCH_SYSTEM = """You edit short-form videos for ViralOwner, an app that helps creators and small business owners remake a proven viral video (the "inspo") with their own footage. The finished video keeps the inspo's exact shot timing; your job is choosing what fills each shot and writing the words.
 
 You get the inspo's shot list with one frame from each shot, then frames sampled from each of the user's clips (with timestamps) and what's said in them.
 
 Picking footage: for every shot, choose the clip and the start time whose footage best does that shot's job (hook, reveal, payoff...) and best matches its look (framing, action, energy). The shot plays from that start time for the shot's length, so pick a start where the action is about to happen. Prefer moments that are in focus with the subject in frame; avoid the first and last half second of a clip, where people fumble with the phone. Never show the same footage twice: give each shot its own clip whenever there are enough clips; when a clip has to fill more than one shot, use clearly different portions of it, at least 1 second apart. Skip clips that don't belong in the video (screen recordings, accidental footage, blurry or black clips): a good clip at a different moment is better than a bad clip. When the user already chose a clip or a moment for a shot, keep it exactly as given.
 
-Writing: everything is about the user's business or topic, as their clips show it. The video will be posted on TikTok and Instagram, whose buttons and captions cover the top, bottom and right edge of the screen; the app places the text in the safe area, so keep on-screen text short enough to fit there. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
+Writing: everything is about the user's business or topic, as their clips show it. The video will be posted on TikTok and Instagram, whose buttons and captions cover the top, bottom and right edge of the screen; the app places the text in the safe area, so keep on-screen text short enough to fit there. Never invent facts, prices, results or claims the footage doesn't support. No emoji or hashtags in on-screen text unless the user asks for them. Keep the inspo's casing style (all lowercase if the inspo uses lowercase)."""
 
 TEXT_RULES = {
     "adapt": (
@@ -2232,6 +2270,70 @@ def clip_words(clip: dict) -> list[dict]:
             clip["speech"] = segs
         clip["words"] = [w for seg in segs for w in seg.get("words") or [] if w.get("w")]
     return clip["words"]
+
+
+def sound_envelope(path: Path, rate: int = 100):
+    """How the loudness rises over time (onsets: syllables, beats), `rate` values a second. Comparing
+    these rather than the raw sound still matches a song recorded off a phone speaker in a room."""
+    import numpy as np
+
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                         capture_output=True).stdout
+    a = np.frombuffer(raw[: len(raw) // 4 * 4], np.float32)
+    hop = 8000 // rate
+    n = len(a) // hop
+    if n < 10:
+        return np.zeros(0, np.float32)
+    rms = np.sqrt(np.mean(a[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-9)
+    loud = np.log(rms + 1e-4)
+    rise = np.maximum(0, np.diff(loud, prepend=loud[0]))
+    return (0.6 * rise / (rise.std() + 1e-6) + 0.4 * (loud - loud.mean()) / (loud.std() + 1e-6)).astype(np.float32)
+
+
+def lip_sync(plan: list[dict], clips: list[dict], sound: Path, pinned: list[bool]) -> tuple[list[dict], int]:
+    """When the video plays a soundtrack (the inspo's sound or the user's audio file) and someone in a
+    clip mouths or sings along to it, they filmed it with the sound playing: the clip's own audio has the
+    same sound in it. Each such shot starts at the moment in its clip that lines its sound up with the
+    soundtrack at that point of the video, so their lips match the words. Only on a clear match.
+    Returns (plan, how many shots were lined up)."""
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    ref = sound_envelope(sound)
+    if len(ref) < 50:
+        return plan, 0
+    envs: dict[int, np.ndarray] = {}
+    synced, t = 0, 0.0
+    for i, p in enumerate(plan):
+        dur = p["duration"]
+        here = t
+        t += dur
+        clip = clips[p["clip"]]
+        if pinned[i] or not clip.get("has_audio") or dur < 0.7 or abs(p["take"] - dur) > 0.05:
+            continue
+        seg = ref[int(here * 100): int((here + dur) * 100)]
+        if len(seg) < 60 or seg.std() < 0.2:
+            continue
+        if p["clip"] not in envs:
+            envs[p["clip"]] = sound_envelope(clip["path"])
+        env = envs[p["clip"]]
+        if len(env) < len(seg) + 1:
+            continue
+        win = sliding_window_view(env, len(seg))
+        a = (seg - seg.mean()) / (seg.std() + 1e-6)
+        wm, ws = win.mean(axis=1), win.std(axis=1) + 1e-6
+        score = ((win - wm[:, None]) @ a) / (len(seg) * ws)
+        best = int(np.argmax(score))
+        others = np.concatenate([score[: max(0, best - 30)], score[best + 31:]])
+        runner = float(others.max()) if len(others) else 0.0
+        start = best / 100
+        if score[best] >= 0.5 and score[best] - runner >= 0.12 and start + dur <= clip["duration"] - 0.02:
+            if abs(start - p["start"]) > 0.03:
+                print(f"lip sync: shot {i + 1} starts at {start:.2f}s in its clip (was {p['start']:.2f}s, "
+                      f"match {score[best]:.2f} vs {runner:.2f})")
+                plan[i] = {**p, "start": start}
+            synced += 1
+    return plan, synced
 
 
 def fit_speech(plan: list[dict], clips: list[dict], pinned: list[bool], rates: list[float]) -> list[dict]:
@@ -2688,7 +2790,13 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     if speed < 1:
         # Never slower than the footage has real frames for: past that it gets choppy or smeared.
         smoothest = min(1.0, SMOOTH_SLOWMO_FPS / max(float(clip.get("fps") or OUT_FPS), 1.0))
-        if speed < smoothest:
+        if speed < smoothest and JOB.get("slowmo_asked"):
+            # The user asked for slow motion: they get it (frames shown twice, never blended).
+            h = ("heads-up: your clips were filmed at about 30fps, so the slow motion can look a little choppy. "
+                 "filming at 60fps or more makes it silky smooth.")
+            if not any("slow" in x.lower() for x in JOB["heads_up"]):
+                JOB["heads_up"].append(h)
+        elif speed < smoothest:
             print(f"slow motion eased from {speed}x to {smoothest:.2f}x to stay smooth ({clip.get('fps')} fps clip)")
             speed = smoothest
     if speed > 1:
@@ -2698,6 +2806,8 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     stretch = duration / take if abs(take - duration) > 0.02 else 1.0
     # Slowing down shows each real frame longer: only as far as stays smooth (no blended frames).
     fill_max = max(1.0, float(clip.get("fps") or OUT_FPS) / FILL_MIN_FPS)
+    if speed < 1 and JOB.get("slowmo_asked"):
+        fill_max = max(fill_max, 1 / speed)
     stretch = min(MAX_SLOWDOWN, fill_max, max(0.55, stretch))
     total = duration + tail
     # Never hold a frame: the picture keeps moving to the very end of the shot (and its blend tail).
@@ -3200,7 +3310,9 @@ def text_look(style: dict, scale: float) -> dict:
         # Always a stroke, like TikTok's classic text, so the words read over any footage: at least a
         # solid outline, dark around light text and light around dark text.
         outline = max(max(3, round(size * 0.07)),
-                      {"none": 0, "thin": round(size * 0.05), "thick": round(size * 0.09)}.get(style.get("outline"), 0))
+                      {"none": 0, "thin": round(size * 0.05), "thick": round(size * 0.09),
+                       # the outline captions' stroke: 6 on their size of 76
+                       "caption": round(size * 6 / 76)}.get(style.get("outline"), 0))
         text_light = luminance(style.get("color", "#FFFFFF")) >= 0.5
         stroke = style.get("outlineColor") or "#000000"
         if (luminance(stroke) >= 0.5) == text_light:
@@ -3211,8 +3323,8 @@ def text_look(style: dict, scale: float) -> dict:
             "border": border, "outline": outline, "shadow": 3 if style.get("shadow") else 0}
 
 
-def text_style_line(look: dict) -> str:
-    return (f"Style: Text,{look['family']},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},"
+def text_style_line(look: dict, name: str = "Text") -> str:
+    return (f"Style: {name},{look['family']},{look['size']},{look['primary']},{look['primary']},{look['outline_c']},"
             f"{SHADOW},{-1 if look['bold'] else 0},0,0,0,100,100,0,0,{look['border']},{look['outline']},"
             f"{look['shadow']},5,{MARGIN_L},{MARGIN_R},0,1")
 
@@ -3380,7 +3492,11 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
                 y = {"top": TOP_TEXT_Y + h / 2, "middle": 0.45}.get(position, 0.45 if caption_style else cap_default)
                 band = [(cap_default - cap_h / 2, cap_default + cap_h / 2)] if caption_style else []
                 y = free_spot(y, h, f + band) or y
-            x, y = clamp_to_safe(align, x, y, w, h)
+            if asked_y is None and asked_x is None:
+                x, y = clamp_to_safe(align, x, y, w, h)
+            else:
+                # Placed on purpose (asked for): it stays there, only kept inside the frame.
+                y = min(max(y, h / 2 + 0.005), 1 - h / 2 - 0.005)
             lay = {"x": x, "y": y, "lines": lines, "size": size, "align": align, "h": h}
         lays.append(lay)
         cy = layout["captionYs"][i]
@@ -3388,8 +3504,10 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
         cap_blocked.append(blocked)
         if caption_style and cy is None:
             cy = free_spot(cap_default, cap_h, blocked)
-        if cy is not None:
-            cy = min(max(cy, SAFE["top"] + cap_h / 2), SAFE["bottom"] - cap_h / 2)
+            if cy is not None:
+                cy = min(max(cy, SAFE["top"] + cap_h / 2), SAFE["bottom"] - cap_h / 2)
+        elif cy is not None:
+            cy = min(max(cy, cap_h / 2 + 0.005), 1 - cap_h / 2 - 0.005)  # asked for: kept, inside the frame
         cap_ys.append(cy)
     auto = [i for i in range(len(plan)) if layout["captionYs"][i] is None]
     if caption_style and len(auto) > 1:
@@ -3408,6 +3526,37 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
             for i in auto:
                 cap_ys[i] = y
     return lays, cap_ys
+
+
+def apply_asked_look(data: dict, by_index: dict, style: dict, layout: dict, n: int) -> None:
+    """The text and caption settings a user asked for in their notes (first version)."""
+    import re
+
+    for i in range(n):
+        y = (by_index.get(i + 1) or {}).get("text_y")
+        if isinstance(y, (int, float)) and 0 <= y <= 1:
+            layout["textYs"][i] = float(y)
+    cy = data.get("caption_y")
+    if isinstance(cy, (int, float)) and 0 <= cy <= 1:
+        layout["captionYs"] = [float(cy)] * n
+    for key, field in (("text_scale", "textScale"), ("caption_scale", "captionScale")):
+        v = data.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            layout[field] = min(2.5, max(0.4, float(v)))
+    if data.get("font") in FONTS:
+        style["font"] = data["font"]
+    if isinstance(data.get("text_color"), str) and re.match(COLOR_RE, data["text_color"]):
+        style["color"] = data["text_color"].upper()
+    if data.get("text_look") == "box":
+        style["box"] = True
+    elif data.get("text_look") == "outline":
+        style.update(box=False, outline=style.get("outline") if style.get("outline") not in (None, "none") else "thick")
+    elif data.get("text_look") == "plain":
+        style.update(box=False, outline="none", shadow=True)
+    if data.get("text_align") in TEXT_ALIGNS:
+        style["align"] = data["text_align"]
+    if data.get("text_animation") in TEXT_ANIMATIONS:
+        style["animation"] = data["text_animation"]
 
 
 def overlay_timeline(plan: list[dict], texts: list[str], lays: list) -> list[tuple[float, float, str, dict]]:
@@ -3430,7 +3579,91 @@ def overlay_timeline(plan: list[dict], texts: list[str], lays: list) -> list[tup
     return out
 
 
-def text_events(start: float, end: float, lay: dict, look: dict, animation: str) -> list[str]:
+TEXT_ITEM_LOOKS = ("outline", "box", "plain")
+
+
+def clean_text_items(raw, total: float) -> list[dict] | None:
+    """On-screen text set in the editor: each line of text with its own time on screen (any time,
+    across any number of shots), place and look. None if there are none (the per-shot text is used)."""
+    import re
+
+    if not isinstance(raw, list):
+        return None
+    out = []
+    for x in raw[:40]:
+        if not isinstance(x, dict) or not isinstance(x.get("text"), str) or not x["text"].strip():
+            continue
+        try:
+            a, b = float(x.get("start", 0)), float(x.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        a, b = max(0.0, a), min(total, b)
+        if b - a < 0.1:
+            continue
+        num = lambda k, lo, hi: (min(hi, max(lo, float(x[k]))) if isinstance(x.get(k), (int, float)) else None)  # noqa: E731
+        out.append({
+            "text": x["text"].strip()[:300], "start": round(a, 2), "end": round(b, 2),
+            "y": num("y", 0.0, 1.0), "x": num("x", 0.0, 1.0),
+            "align": x.get("align") if x.get("align") in TEXT_ALIGNS else None,
+            "size": num("size", 0.4, 2.5) or 1.0,
+            "color": x["color"].upper() if isinstance(x.get("color"), str) and re.match(COLOR_RE, x["color"]) else None,
+            "font": x.get("font") if x.get("font") in FONTS else None,
+            "look": x.get("look") if x.get("look") in TEXT_ITEM_LOOKS else None,
+            "animation": x.get("animation") if x.get("animation") in TEXT_ANIMATIONS else None,
+        })
+    return sorted(out, key=lambda t: t["start"])
+
+
+def item_style(style: dict, item: dict) -> dict:
+    st = {**style}
+    if item.get("font"):
+        st["font"] = item["font"]
+    if item.get("color"):
+        st["color"] = item["color"]
+    if item.get("align"):
+        st["align"] = item["align"]
+    if item.get("animation"):
+        st["animation"] = item["animation"]
+    lk = item.get("look")
+    if lk == "box":
+        st.update(box=True, boxColor=st.get("boxColor") or "#000000", outline="none")
+    elif lk == "outline":
+        st.update(box=False, outline=st.get("outline") if st.get("outline") not in (None, "none") else "thick")
+    elif lk == "plain":
+        st.update(box=False, outline="none", shadow=True)
+    return st
+
+
+def items_timeline(items: list[dict], style: dict, layout: dict, position: str) -> list[tuple[float, float, str, dict]]:
+    """The editor's text items as timeline entries, each with its own look and place."""
+    out = []
+    for it in items:
+        st = item_style(style, it)
+        look = text_look(st, layout["textScale"] * it["size"])
+        align = st.get("align", "center")
+        x = it["x"] if it["x"] is not None else default_x(align)
+        if align == "center" and it["x"] is None:
+            x = CENTER_X
+        lines, size = fit_lines(it["text"], look, available_width(align, x), "\n" in it["text"])
+        w, h = block_size(lines, look, size)
+        y = it["y"] if it["y"] is not None else ({"top": TOP_TEXT_Y + h / 2, "middle": 0.45}.get(position, 0.32))
+        if it["y"] is None and it["x"] is None:
+            x, y = clamp_to_safe(align, x, y, w, h)
+        else:
+            y = min(max(y, h / 2 + 0.005), 1 - h / 2 - 0.005)  # placed by the user: kept, inside the frame
+        out.append((it["start"], it["end"], it["text"], {"x": x, "y": y, "lines": lines, "size": size, "align": align,
+                                                          "h": h, "look": look, "animation": st.get("animation", "none")}))
+    return out
+
+
+def timeline_items(timeline: list[tuple[float, float, str, dict]]) -> list[dict]:
+    """What was drawn, as editor text items (so the editor shows the video's text as it is)."""
+    return [{"text": "\n".join(lay["lines"]) if lay.get("lines") else text, "start": round(a, 2), "end": round(b, 2),
+             "y": round(lay["y"], 3), "x": round(lay["x"], 3), "align": lay.get("align", "center")}
+            for a, b, text, lay in timeline]
+
+
+def text_events(start: float, end: float, lay: dict, look: dict, animation: str, style_name: str = "Text") -> list[str]:
     an = {"left": 4, "right": 6}.get(lay["align"], 5)
     px, py = round(lay["x"] * OUT_W), round(lay["y"] * OUT_H)
     size = f"\\fs{lay['size']}" if lay["size"] != look["size"] else ""
@@ -3438,7 +3671,7 @@ def text_events(start: float, end: float, lay: dict, look: dict, animation: str)
     dur = end - start
 
     def event(a: float, b: float, tags: str, body: str) -> str:
-        return f"Dialogue: 1,{ass_time(a)},{ass_time(b)},Text,,0,0,0,,{{\\an{an}\\q2{size}{tags}}}{body}"
+        return f"Dialogue: 1,{ass_time(a)},{ass_time(b)},{style_name},,0,0,0,,{{\\an{an}\\q2{size}{tags}}}{body}"
 
     if animation in ("typewriter", "word_by_word"):
         # Reveal letters (or words) one at a time; hidden ones are drawn invisible, so nothing moves.
@@ -3586,7 +3819,7 @@ def emoji_text_pictures(timeline: list[tuple[float, float, str, dict]], style: d
             keep.append((start, end, text, lay))
             continue
         try:
-            png = text_picture(lay["lines"], look, lay["size"], lay["align"], workdir, f"{prefix}{k:02d}")
+            png = text_picture(lay["lines"], lay.get("look") or look, lay["size"], lay["align"], workdir, f"{prefix}{k:02d}")
         except Exception as e:  # noqa: BLE001
             print(f"emoji text {text!r}: drawn without emoji ({type(e).__name__}: {e})")
             keep.append((start, end, text, lay))
@@ -3604,8 +3837,18 @@ def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layou
     events = []
     look = text_look(style, layout["textScale"])
     styles = [text_style_line(look)]
+    named: dict[str, str] = {}
     for start, end, _text, lay in timeline:
-        events += text_events(start, end, lay, look, style.get("animation", "none"))
+        own = lay.get("look")
+        if own:
+            # A text item with its own look (font, color, stroke or box): its own style.
+            key = json.dumps(own, sort_keys=True)
+            if key not in named:
+                named[key] = f"Text{len(named) + 1}"
+                styles.append(text_style_line(own, named[key]))
+            events += text_events(start, end, lay, own, lay.get("animation") or style.get("animation", "none"), named[key])
+        else:
+            events += text_events(start, end, lay, look, style.get("animation", "none"))
 
     if caption_style and words:
         cap = scaled(CAPTION_LOOKS.get(caption_style, CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
@@ -3714,7 +3957,7 @@ You get the inspo (what's said, its structure and length, its on-screen text) an
 - lines play in the order they were first said (a chosen take plays where that line first appears), so don't worry about where a later take was recorded.
 - if the take has much more material than the inspo, aim for a length near the inspo's, but don't cut real content just to hit it.
 
-Writing: everything is about the user's business or topic. Never invent facts, prices or claims. No emoji or hashtags in on-screen text."""
+Writing: everything is about the user's business or topic. Never invent facts, prices or claims. No emoji or hashtags in on-screen text unless the user asks for them."""
 
 JUMPCUT_SCHEMA = {
     "type": "object",
@@ -4010,11 +4253,11 @@ You get the user's request, frames from every shot of the current version exactl
 Make the change the user asks for and keep everything else exactly as it is. A question or complaint ("why is the text covering her face?", "why is it not bold pop?") is a request to fix that thing: fix it, and say in the summary what you changed. The user's request always wins over matching the inspo: the inspo is only where the video started, so never refuse or water down a change because it makes the video differ from the inspo. A request about the text or captions in general ("make the words smaller", "move the text up") applies to every shot that has them, unless the user names specific shots. When moving text, give its new position in every shot it appears in.
 
 You can change: how long each shot lasts (length_s: when the user asks to extend, lengthen, shorten or trim a shot or clip, or to make a part longer or shorter, change those shots' lengths by what they ask, or by a clear amount like 1-2 seconds if they don't say; the shots after it simply move later or earlier); which clip and moment fills a shot (to show more of a moment when a shot gets longer, start it earlier in the clip if the clip runs out); the on-screen text of each shot; where the on-screen text sits in each shot; its size, font, color, look (outline, box or plain), alignment (left, center, right) and how it animates in; where captions sit in each shot; the caption size; the caption style (caption_style: when the user asks for a different look, like a stroke or outline, bolder, a box, or turning captions off or on, pick the style that gives it); which words appear together in one caption (caption_together); the words in the captions (caption_fixes: when the user says a word in the captions is wrong, or tells you what a word should say or how to spell it, add it as wrong -> right exactly as they want it, using the current captions below to find the words as they appear now); the post caption and hashtags.
-You can't change: the number of shots, the music or audio (the user changes that in the options under the video), or add stickers.
+You can't change here: the number of shots (if they ask, say in heads_up that the trash button on a shot in the editor below removes it, and that the shot count can be set when choosing the inspo), the music or audio (the user changes that in the options under the video), or add stickers.
 The picture quality, smoothness, glitches or blur aren't something to plan: every version is made at the best quality the clips allow, so for those just keep everything as it is and don't mention them. If the request needs something you can't do, do what you can and say what isn't possible in the summary.
 Transitions, sound effects, speed (slow motion, sped up), zooms, shakes, filters, looks and other video effects are handled by a separate step: never call them impossible and leave them out of your summary. If the request is only about those, change nothing and return an empty summary.
 
-Positions are fractions of the frame: x from 0 (left edge) to 1 (right edge), y from 0 (top) to 1 (bottom). text_x is the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text; text_y and caption_y are the vertical center. """ + SAFE_ZONE_RULE + """ Use -1 to leave a position as it is, and "keep" to leave a setting as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text."""
+Positions are fractions of the frame: x from 0 (left edge) to 1 (right edge), y from 0 (top) to 1 (bottom). text_x is the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text; text_y and caption_y are the vertical center. """ + SAFE_ZONE_RULE + """ Use -1 to leave a position as it is, and "keep" to leave a setting as it is. Never invent facts, prices or claims the footage doesn't support. No emoji in on-screen text unless the user asks for them."""
 
 REVISE_SCHEMA = {
     "type": "object",
@@ -4038,6 +4281,12 @@ REVISE_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "text_items_changed": {"type": "boolean", "description": "only for free-timed text (see the request): true if you changed it."},
+        "text_items": {"type": "array", "description": "only for free-timed text: the whole new list when text_items_changed; else empty.",
+                       "items": {"type": "object", "properties": {
+                           "text": {"type": "string"}, "start_s": {"type": "number"}, "end_s": {"type": "number"},
+                           "y": {"type": "number", "description": "vertical center 0-1, or -1 to keep."}},
+                           "required": ["text", "start_s", "end_s", "y"], "additionalProperties": False}},
         "text_scale": {"type": "number", "description": "on-screen text size, where 1 is the standard size."},
         "caption_scale": {"type": "number", "description": "caption size, where 1 is the standard size."},
         "font": {"type": "string", "enum": ["keep", *FONTS]},
@@ -4069,7 +4318,8 @@ REVISE_SCHEMA = {
         },
     },
     "required": ["shots", "text_scale", "caption_scale", "font", "text_color", "text_look", "text_align",
-                 "text_animation", "caption", "hashtags", "caption_fixes", "caption_together", "take_cut", "caption_style", "summary"],
+                 "text_animation", "caption", "hashtags", "caption_fixes", "caption_together", "take_cut", "caption_style", "summary",
+                 "text_items_changed", "text_items"],
     "additionalProperties": False,
 }
 
@@ -4084,7 +4334,8 @@ def style_summary(style: dict) -> str:
 def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], current: list[dict],
                 texts: list[str], layout: dict, style: dict, post: dict, lays: list, cap_ys: list,
                 faces: list, frames: list[Path | None], caption_style: str | None, text_rule: str | None,
-                one_take: bool = False, caption_text: str = "", caption_fixes: list[dict] | None = None) -> dict:
+                one_take: bool = False, caption_text: str = "", caption_fixes: list[dict] | None = None,
+                text_items: list[dict] | None = None) -> dict:
     cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
     cap_default = caption_center(cap)
     content: list[dict] = [{"type": "text", "text": (
@@ -4124,6 +4375,15 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
                    "never say the timing is locked.")
     if text_rule:
         ask.append("the user also changed their text settings: " + text_rule)
+    if text_items:
+        # Text set in the editor: free-timed, not tied to shots. The per-shot text above is ignored.
+        listing = "\n".join(f"{k + 1}. {t['start']:.1f}s-{t['end']:.1f}s at y={(t['y'] if t['y'] is not None else -1)}: "
+                            f"{json.dumps(t['text'], ensure_ascii=False)}" for k, t in enumerate(text_items))
+        ask.append("this video's on-screen text is free-timed (set by the user in the editor), not per shot. it is:\n"
+                   + listing + "\nleave each shot's text as an empty string. if the request is about the on-screen "
+                   "text, set text_items_changed to true and return the whole new list in text_items (times in "
+                   "seconds of the video; y the vertical center 0-1, or -1 to leave it where it is); otherwise set "
+                   "text_items_changed to false and return an empty list.")
     content.append({"type": "text", "text": "\n".join(ask)})
     return ask_claude(with_playbook(REVISE_SYSTEM, True), content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.",
                       effort="xhigh")
@@ -4341,7 +4601,7 @@ def layout_from(src: dict | None, n: int) -> dict:
 
     def scale(key: str) -> float:
         v = src.get(key)
-        return min(1.6, max(0.5, float(v))) if isinstance(v, (int, float)) else 1.0
+        return min(2.5, max(0.4, float(v))) if isinstance(v, (int, float)) else 1.0
 
     return {"textXs": per_shot("textXs"), "textYs": per_shot("textYs"), "captionYs": per_shot("captionYs"),
             "textScale": scale("textScale"), "captionScale": scale("captionScale")}
@@ -4362,7 +4622,7 @@ def clean_text_style(src: dict | None) -> dict:
                 out[k] = v.upper()
         elif k in ("box", "shadow"):
             out[k] = bool(v)
-        elif k in out and v in {"font": FONTS, "outline": ["none", "thin", "thick"], "align": TEXT_ALIGNS,
+        elif k in out and v in {"font": FONTS, "outline": ["none", "thin", "thick", "caption"], "align": TEXT_ALIGNS,
                                 "size": TEXT_SIZES, "animation": TEXT_ANIMATIONS}.get(k, []):
             out[k] = v
     return out
@@ -4407,7 +4667,7 @@ Editing craft:
 - Length: what the prompt asks for; otherwise what the content needs, usually 7-40 seconds. Never over 180 seconds. With the user's audio file, never longer than the file.
 - Transitions: hard cuts are the default and what most viral edits use. Use other transitions where they add something or where the user asks, and fit them to the moment (whip or zoom for energy, flash on a beat drop, fire for a dramatic transformation or reveal, a crossfade for calm). Pair them with fitting sound effects.
 - Sound effects: use them where they help (a whoosh on whips, a pop when text appears, a boom on a big reveal, a riser building into a moment) and never so many that they get annoying. A riser starts about 1.2s before the cut it builds to (offset -1.2); most sounds sit right on the cut (offset 0, or about -0.1 for a whoosh). A fire transition goes best with a fire whoosh (offset -0.05), a flash with a flash sound.
-- On-screen text is short and punchy, and it never repeats what's being said (speech captions are added separately when they're turned on, so don't put the spoken words in on-screen text). TikTok and Instagram cover the top ~12%, the bottom ~25% and the right edge of the screen with their own buttons, so keep text short enough to sit in the area left over. Use \\n for line breaks. No emoji or hashtags in on-screen text. A line can stay on screen across several shots: repeat it for each of those shots. Placement: by default (text_y -1) the app puts text at the chosen position and moves it off faces and captions automatically. Set text_y yourself (the vertical center, between 0.15 and 0.72) when the frame needs it, looking at the clip's frames. text_y is the center of the whole block: one line of large text is about 0.06 of the frame tall, two lines about 0.13, so keep half the block's height clear on each side of anything you're avoiding, plus a little margin. if the footage already has text or captions burned into it, never cover them; put your text in the clear space (for example between a burned-in title and the speaker's face), or leave it off. When speech captions are on, they sit around 0.6-0.7 from the top, so keep your text above them.
+- On-screen text is short and punchy, and it never repeats what's being said (speech captions are added separately when they're turned on, so don't put the spoken words in on-screen text). TikTok and Instagram cover the top ~12%, the bottom ~25% and the right edge of the screen with their own buttons, so keep text short enough to sit in the area left over. Use \\n for line breaks. No emoji or hashtags in on-screen text unless the user asks for them. A line can stay on screen across several shots: repeat it for each of those shots. Placement: by default (text_y -1) the app puts text at the chosen position and moves it off faces and captions automatically. Set text_y yourself (the vertical center, between 0.15 and 0.72) when the frame needs it, looking at the clip's frames. text_y is the center of the whole block: one line of large text is about 0.06 of the frame tall, two lines about 0.13, so keep half the block's height clear on each side of anything you're avoiding, plus a little margin. if the footage already has text or captions burned into it, never cover them; put your text in the clear space (for example between a burned-in title and the speaker's face), or leave it off. When speech captions are on, they sit around 0.6-0.7 from the top, so keep your text above them.
 - Text style: pick the font, color, look, size, animation and position that fit the video's vibe (a bold condensed or heavy font for hype, a serif or script for aesthetic, a typewriter for storytelling). position: top (the upper safe area, the usual place for a hook), middle, or bottom (just above where the app's caption sits).
 - Never invent facts, prices, results or claims the clips or the prompt don't support.
 - Write the post caption (one or two lines, in the user's voice, with a hook) and 3-8 hashtags.
@@ -4504,6 +4764,42 @@ DIRECTOR_SCHEMA = {
     "required": ["summary", "shots", "text_style", "looks", "color_filter", "sfx", "caption", "hashtags", "caption_fixes"],
     "additionalProperties": False,
 }
+
+# The first version follows the user's notes about the look and place of the text too, not just the words.
+MATCH_SYSTEM += """
+
+Settings the user asks for in their notes go in these fields (leave them as they are otherwise: -1, 0 or "keep"): where each shot's text sits (text_y, the vertical center 0-1; the very top edge is about 0.05, the bottom about 0.95), its size (text_scale, 1 = standard), font, color, look (outline, box or plain), alignment and animation, and the captions' size (caption_scale) and height (caption_y)."""
+_m = MATCH_SCHEMA["properties"]
+_m["shots"]["items"]["properties"]["text_y"] = {
+    "type": "number", "description": "vertical center of this shot's text when the user asked for a place, else -1."}
+_m["shots"]["items"]["required"].append("text_y")
+_m.update({
+    "text_scale": {"type": "number", "description": "text size the user asked for (1 = standard), or 0 to leave it."},
+    "caption_scale": {"type": "number", "description": "caption size the user asked for (1 = standard), or 0 to leave it."},
+    "caption_y": {"type": "number", "description": "vertical center of the captions if the user asked, else -1."},
+    "font": {"type": "string", "enum": ["keep", *FONTS]},
+    "text_color": {"type": "string", "description": "#RRGGBB if the user asked for a color, or 'keep'."},
+    "text_look": {"type": "string", "enum": ["keep", "outline", "box", "plain"]},
+    "text_align": {"type": "string", "enum": ["keep", *TEXT_ALIGNS]},
+    "text_animation": {"type": "string", "enum": ["keep", *TEXT_ANIMATIONS]},
+})
+MATCH_SCHEMA["required"] += ["text_scale", "caption_scale", "caption_y", "font", "text_color", "text_look", "text_align",
+                             "text_animation"]
+# Each step flags only what it handles, so the note doesn't say the same thing three times.
+EFFECTS_SYSTEM += "\n\nYour heads_up is only about the edit you set here (transitions, speed, motion, effects, looks, sound effects), never about text or footage."
+MATCH_SYSTEM += "\n\nYour heads_up is only about the footage you picked and the on-screen text, never about speed or effects."
+
+# Every step that acts on what the user asked puts their words first and can flag a heads-up.
+MATCH_SYSTEM += USER_FIRST
+JUMPCUT_SYSTEM += USER_FIRST
+REVISE_SYSTEM += USER_FIRST
+EFFECTS_SYSTEM += USER_FIRST
+DIRECTOR_SYSTEM += USER_FIRST
+for _schema in (MATCH_SCHEMA, JUMPCUT_SCHEMA, REVISE_SCHEMA, EFFECTS_SCHEMA, DIRECTOR_SCHEMA):
+    _schema["properties"]["heads_up"] = HEADS_UP_FIELD
+    if "heads_up" not in _schema["required"]:
+        _schema["required"].append("heads_up")
+
 
 _STYLE_LOOK = {"outline": {"box": False, "outline": "thick", "shadow": False},
                "box": {"box": True, "outline": "none", "shadow": False},
@@ -5100,7 +5396,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     out = render_video(req2, workdir, fetch=fetch_once, store=store)
     if req.get("storyboard"):
         out["directed"] = directed_out(cleaned, clips, caption_fixes)
-    out["plan"]["note"] = cleaned["summary"] or None
+    out["plan"]["note"] = " ".join(x for x in (cleaned["summary"], *job_heads_up()) if x) or None
     out["plan"]["scratch"] = {"roles": [s["role"] for s in cleaned["shots"]],
                               "descriptions": [s["description"] for s in cleaned["shots"]]}
     meta = out.setdefault("meta", {})
@@ -5508,7 +5804,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # "match": the inspo's own words; "adapt": the inspo's style, words about the user; "custom": the user's lines.
     text_choice = text_opts.get("mode") if text_opts.get("mode") in ("match", "adapt", "custom") else "match"
     align_choice = text_opts.get("align") if text_opts.get("align") in TEXT_ALIGNS else None
-    notes = (options.get("notes") or "").strip()[:600]
+    notes = (options.get("notes") or "").strip()[:1500]
     # What this user has asked for before, applied without them having to ask again.
     prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
     # The user's business profile (name, what they sell, words to always spell their way).
@@ -5520,9 +5816,11 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # What the video is about, so captions spell the business, products and names right.
     speech_hint = "\n".join(x for x in ((req.get("business") or "") if isinstance(req.get("business"), str) else "",
                                          (req.get("speechHint") or notes or "")) if x.strip()).strip()[:900]
-    request = (req.get("request") or "").strip()[:600]
+    request = (req.get("request") or "").strip()[:1500]
     previous = req.get("previous") if request else None
     cost = 0.0
+    # Slow motion the user asked for is made even on footage that can't keep it perfectly smooth.
+    JOB["slowmo_asked"] = bool(re.search(r"slo[ -]?mo|slow[ -]?motion|slow (it|this|that|the)\b|slower", f"{request} {notes}", re.I))
 
     # ---- analyzing: get everything and look at the clips
     report("analyzing", 3)
@@ -5598,6 +5896,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         fixes_from_edit(str(edit.get("before") or ""), str(edit.get("after") or "")) if edit else None)
     caption_groups = clean_caption_groups(((previous or {}).get("plan") or {}).get("captionGroups"), carry.get("captionGroups"))
     inspo_lengths = [s["durationS"] for s in shots]
+    # On-screen text set in the editor (free-timed): from this edit, else kept from the version edited.
+    text_items_raw = carry.get("textItems") if isinstance(carry.get("textItems"), list) else (
+        ((previous or {}).get("plan") or {}).get("textItems") or (keep or {}).get("textItems"))
     lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
     lengths_ok = isinstance(lengths, list) and all(isinstance(x, (int, float)) and x > 0 for x in lengths)
     if not jump and lengths_ok and len(lengths) == n:
@@ -5797,11 +6098,18 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         result = revise_plan(request, guide, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
                              plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule,
                              one_take=jump, caption_text=str(previous["plan"].get("captionText") or ""),
-                             caption_fixes=caption_fixes)
+                             caption_fixes=caption_fixes, text_items=clean_text_items(text_items_raw, 3600.0) or None)
         cost += result["cost_usd"]
         data = result["data"]
         caption_fixes = clean_caption_fixes(caption_fixes, data.get("caption_fixes"))
         caption_groups = clean_caption_groups(caption_groups, data.get("caption_together"))
+        if text_items_raw and data.get("text_items_changed") and isinstance(data.get("text_items"), list):
+            # The request changed the free-timed text: new words and times, each keeping its look.
+            old = [x for x in text_items_raw if isinstance(x, dict)]
+            text_items_raw = [{**(old[k] if k < len(old) else {}), "text": t.get("text", ""), "start": t.get("start_s", 0),
+                               "end": t.get("end_s", 0),
+                               **({"y": t["y"]} if isinstance(t.get("y"), (int, float)) and 0 <= t["y"] <= 1 else {})}
+                              for k, t in enumerate(data["text_items"]) if isinstance(t, dict)]
         if data.get("caption_style") == "off":
             caption_style = None
         elif data.get("caption_style") in CAPTION_LOOKS:
@@ -5853,8 +6161,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         if new_lengths != [s["durationS"] for s in shots]:
             print(f"revise: shot lengths {[r2(s['durationS']) for s in shots]} -> {[r2(x) for x in new_lengths]}")
             shots = with_lengths(shots, new_lengths)
-        layout["textScale"] = min(1.6, max(0.5, float(data["text_scale"])))
-        layout["captionScale"] = min(1.6, max(0.5, float(data["caption_scale"])))
+        layout["textScale"] = min(2.5, max(0.4, float(data["text_scale"])))
+        layout["captionScale"] = min(2.5, max(0.4, float(data["caption_scale"])))
         if data["font"] in FONTS:
             style["font"] = data["font"]
         if isinstance(data["text_color"], str) and re.match(COLOR_RE, data["text_color"]):
@@ -5892,6 +6200,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         cost += result["cost_usd"]
         data = result["data"]
         picked = {s["index"]: s for s in data["shots"]}
+        apply_asked_look(data, picked, style, layout, n)
         if text_mode == "adapt":
             plan_texts = [(picked.get(i + 1) or {}).get("text", "").strip() for i in range(n)]
         if text_mode != "keep":
@@ -5899,9 +6208,20 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"matching: ${result['cost_usd']}, usage={result['usage']}")
 
     plan = resolve_plan(shots, clips, fixed, picked, keep_timing, rates)
+    pinned = [f["clip"] is not None and f["start"] is not None and f.get("end") is not None for f in fixed]
     if music == "original" and not jump:
         # The clips' own sound is heard: never cut someone off mid-word or mid-sentence.
         plan = fit_speech(plan, clips, [f["clip"] is not None and f["start"] is not None for f in fixed], rates)
+    elif music in ("inspo", "upload") and not jump:
+        # A soundtrack plays over the clips: anyone lip-syncing to it says the words on time.
+        track = inspo_path if music == "inspo" else own_audio
+        try:
+            if track.exists() and track.stat().st_size > 0:
+                plan, synced = lip_sync(plan, clips, track, pinned)
+                if synced:
+                    print(f"lip sync: {synced} shot(s) lined up with the soundtrack")
+        except Exception as e:  # noqa: BLE001
+            print(f"lip sync skipped: {type(e).__name__}: {e}")
     durations = [p["duration"] for p in plan]
     cuts = transition_plan(durations, effects["transitions"])
     motions = effects["motions"]
@@ -5995,7 +6315,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     report("editing", 85)
     # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
-    text_timeline, emoji_texts = emoji_text_pictures(overlay_timeline(plan, plan_texts, lays), style, layout, workdir)
+    text_items = clean_text_items(text_items_raw, sum(durations))
+    # The editor's free-timed text when there is some, else each shot's text over its shot.
+    # (An empty list is a choice too: the user removed all the text.)
+    base_timeline = (items_timeline(text_items, style, layout, position) if text_items is not None
+                     else overlay_timeline(plan, plan_texts, lays))
+    text_timeline, emoji_texts = emoji_text_pictures(base_timeline, style, layout, workdir)
     ass = build_ass(text_timeline, style, layout, words, shown_captions, caption_y_at)
 
     # Pictures on top of the video: emoji pop-ups, proof screenshots and the series label.
@@ -6083,7 +6408,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             if attempt < 2:
                 result = final_encode(pictures, ass, limit)
             else:
-                plain = build_ass(overlay_timeline(plan, plan_texts, lays), style, layout, words, shown_captions,
+                plain = build_ass(base_timeline, style, layout, words, shown_captions,
                                   caption_y_at)
                 result = final_encode([], plain, limit)
             break
@@ -6142,6 +6467,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             ],
             **({"removedShots": req["_removedShots"]} if req.get("_removedShots") else {}),
             "texts": plan_texts,
+            **({"textItems": text_items} if text_items is not None else {}),
+            # What's on screen and when, for the editor's text list.
+            "textTimeline": timeline_items(base_timeline),
             "textPosition": position,
             "textLook": look_name(style),
             "textStyle": style,
@@ -6153,7 +6481,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             "captionYs": layout["captionYs"],
             "textScale": layout["textScale"],
             "captionScale": layout["captionScale"],
-            "note": " ".join(x for x in (note, effects_note if request else "") if x) or None,
+            "note": " ".join(x for x in (note, effects_note if request else "", *job_heads_up()) if x) or None,
             "effects": effects,
             **({"captionFixes": caption_fixes} if caption_fixes else {}),
             **({"captionGroups": caption_groups} if caption_groups else {}),
@@ -6373,6 +6701,7 @@ def notify_job(url: str, payload: dict) -> None:
 def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
+        start_job(req)
         with tempfile.TemporaryDirectory() as tmp:
             install_emoji_kit(req, Path(tmp))
             if isinstance(req.get("scratch"), dict):
@@ -6390,6 +6719,32 @@ def render_job(req: dict) -> dict:
                 notify_job.spawn(*target)
             except Exception as e:  # noqa: BLE001
                 print(f"couldn't schedule notify: {e}")
+
+
+LESSONS_SYSTEM = """You help the editor behind ViralOwner (an app that turns people's own clips into short-form videos, remaking a viral video or from scratch) get each video right the first time. You get what users asked to change after seeing a version, the notes they wrote before it was made, and feedback they left on finished videos, from everyone recently.
+
+Find the patterns: what the editor keeps getting wrong or missing, so users have to ask for it again (text covering faces, captions too small, wrong music timing, cuts too fast, not following an instruction...), and what they keep asking for. Turn them into short, concrete lessons the editor applies by default, each one a rule it can act on ("put on-screen text above the captions, never on top of a face", "when a user writes the exact on-screen words, use them word for word"). Most common and most fixable first; only patterns that several requests share (not one person's taste); about the editing, never about a specific user, business, product or clip. Never include names, businesses, places, prices or anything personal. Up to 20 lessons, one line each. If there isn't enough to go on, return fewer."""
+
+LESSONS_SCHEMA = {
+    "type": "object",
+    "properties": {"lessons": {"type": "array", "items": {"type": "string"}, "description": "one lesson per item."}},
+    "required": ["lessons"],
+    "additionalProperties": False,
+}
+
+
+@app.function(image=image, secrets=secrets, timeout=600)
+def lessons_job(req: dict) -> dict:
+    """What the editor should learn from everyone's recent change requests, notes and feedback."""
+    items = [str(x)[:500] for x in (req.get("items") or []) if isinstance(x, str) and x.strip()][:1500]
+    if len(items) < 5:
+        return {"lessons": []}
+    text = "\n".join(f"- {x}" for x in items)
+    result = ask_claude(LESSONS_SYSTEM, [{"type": "text", "text": f"{len(items)} requests, notes and feedback:\n{text}"}],
+                        LESSONS_SCHEMA, "couldn't learn from these.", effort="high")
+    lessons = [x.strip() for x in result["data"]["lessons"] if isinstance(x, str) and x.strip()][:20]
+    print(f"lessons: {len(lessons)} from {len(items)} items, ${result['cost_usd']}")
+    return {"lessons": lessons, "count": len(items)}
 
 
 @app.function(**job_resources, timeout=300)
@@ -6678,6 +7033,11 @@ def api():
             "about": str(req.get("about") or "")[:800],
             "business": str(req.get("business") or "")[:2200],
         }))
+
+    @web.post("/jobs/lessons", dependencies=[Depends(require_token)])
+    def start_lessons(req: dict = Body(...)) -> dict:
+        items = req.get("items") if isinstance(req.get("items"), list) else []
+        return started(lessons_job.spawn({"items": [str(x)[:500] for x in items[:1500]]}))
 
     @web.post("/jobs/ping", dependencies=[Depends(require_token)])
     def start_ping() -> dict:

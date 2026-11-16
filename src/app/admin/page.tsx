@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { overview, recentVersions } from "@/lib/admin-data";
 import { requireAdmin } from "@/lib/admin-auth";
+import { lessonsHistory } from "@/lib/lessons";
 import { TIER_NAMES, parsePlanId } from "@/lib/plan-format";
 import { AdminShell, Badge, Card, Stat, bytes, money } from "./ui";
 import { VersionTable } from "./version-table";
@@ -26,7 +27,7 @@ const planName = (id: string) => {
 
 async function Overview() {
   await requireAdmin();
-  const [o, recent] = await Promise.all([overview(), recentVersions(12)]);
+  const [o, recent, lessons] = await Promise.all([overview(), recentVersions(12), lessonsHistory(1)]);
   const s = o.stripe;
   return (
     <>
@@ -44,6 +45,11 @@ async function Overview() {
         />
         <Stat label="typical time to make a video" value={o.renders.medianS === null ? "—" : `${Math.round(o.renders.medianS / 6) / 10} min`} note="median, 7 days" />
         <Stat label="clip storage" value={bytes(o.storage.bytes)} note={`${o.storage.clips} clips`} />
+        <Stat
+          label="feedback"
+          value={<Link href="/admin/feedback" className="hover:underline">{o.feedback.total}</Link>}
+          note={`+${o.feedback.week} this week · ${o.feedback.unhappy} “not quite”`}
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -90,6 +96,23 @@ async function Overview() {
           )}
         </Card>
       </div>
+
+      <Card title="what the editor has learned from everyone">
+        {lessons[0] ? (
+          <>
+            <ol className="flex list-decimal flex-col gap-1 pl-5 text-sm">
+              {lessons[0].lessons.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ol>
+            <p className="text-xs text-muted">
+              from {lessons[0].count} change requests, notes and feedback · updated daily · every new version uses these, below the user’s own words.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-muted">nothing yet: it learns once a day from everyone’s change requests, notes and feedback.</p>
+        )}
+      </Card>
 
       <Card title="latest versions" aside={<Link href="/admin/videos" className="text-sm text-muted underline underline-offset-4 hover:text-foreground">see all</Link>}>
         <VersionTable rows={recent} />

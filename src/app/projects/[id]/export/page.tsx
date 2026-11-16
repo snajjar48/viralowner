@@ -9,6 +9,7 @@ import { Section } from "@/components/options-fields";
 import { loadProject } from "@/lib/project-page";
 import { listRenders } from "@/lib/projects";
 import type { MusicMode } from "@/lib/video-options";
+import { FeedbackBox } from "./feedback-box";
 import { SaveVideo } from "./save-video";
 
 export const metadata: Metadata = {
@@ -104,6 +105,10 @@ async function Export({ id, version }: { id: string; version: number | null }) {
           </div>
         </Section>
       )}
+
+      <Section title="help us improve">
+        <FeedbackBox projectId={id} version={render.version} />
+      </Section>
 
       <Section title="posting tips">
         <ul className="flex list-disc flex-col gap-2 pl-5 text-sm text-foreground/90 marker:text-coral">

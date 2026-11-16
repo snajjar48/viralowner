@@ -3,8 +3,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { requireAdmin } from "@/lib/admin-auth";
-import { userDetail } from "@/lib/admin-data";
+import { listFeedback, userDetail } from "@/lib/admin-data";
 import { TIER_NAMES } from "@/lib/plan-format";
+import { FeedbackPeople } from "../../feedback/feedback-people";
 import { AdminShell, Badge, Card, bytes, money, statusTone, when } from "../../ui";
 
 export const metadata: Metadata = { title: "admin · user", robots: { index: false, follow: false } };
@@ -33,7 +34,7 @@ function Row({ k, v }: { k: string; v: React.ReactNode }) {
 async function User({ id }: { id: string }) {
   await requireAdmin();
   if (!/^[0-9a-f-]{36}$/i.test(id)) notFound();
-  const d = await userDetail(id);
+  const [d, feedback] = await Promise.all([userDetail(id), listFeedback(id)]);
   if (!d) notFound();
   const p = d.profile;
   const m = d.membership;
@@ -145,6 +146,8 @@ async function User({ id }: { id: string }) {
           </div>
         )}
       </Card>
+
+      {feedback.length > 0 && <FeedbackPeople people={feedback} showPerson={false} />}
 
       <Card title={`projects (${d.projects.length})`}>
         <div className="flex flex-col gap-3">

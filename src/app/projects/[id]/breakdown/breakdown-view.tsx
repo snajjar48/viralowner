@@ -5,7 +5,9 @@ import { ArrowRightIcon, SparkleIcon } from "@/components/icons";
 import { ShotList } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
 import { isOneTake, type Breakdown, type InspoStyle } from "@/lib/processing/types";
+import { shotCountRange } from "@/lib/shot-count";
 import { formatDuration } from "@/lib/video-options";
+import { ShotCount } from "./shot-count";
 
 const TRANSITION_NAMES: Record<string, string> = {
   crossfade: "crossfade",
@@ -119,7 +121,18 @@ function styleStats(st: InspoStyle) {
 }
 
 /** The finished breakdown: summary, why it works, and the shot list. */
-export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId: string; breakdown: Breakdown; videoUrl: string }) {
+export function BreakdownView({
+  projectId,
+  breakdown: b,
+  videoUrl,
+  hasVersions = false,
+}: {
+  projectId: string;
+  breakdown: Breakdown;
+  videoUrl: string;
+  hasVersions?: boolean;
+}) {
+  const range = shotCountRange(b);
   const stats = [
     { label: "length", value: formatDuration(b.durationS) },
     { label: "shots", value: String(b.shotCount) },
@@ -212,6 +225,10 @@ export function BreakdownView({ projectId, breakdown: b, videoUrl }: { projectId
             ))}
           </dl>
         </section>
+      )}
+
+      {!oneTake && (
+        <ShotCount projectId={projectId} count={b.shotCount} min={range.min} max={range.max} inspo={range.inspo} locked={hasVersions} />
       )}
 
       {oneTake ? (

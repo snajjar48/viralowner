@@ -679,3 +679,15 @@ export async function saveInspoStyle(projectId: string, style: InspoStyle) {
     SET breakdown_json = jsonb_set(breakdown_json, '{style}', ${JSON.stringify(style)}::jsonb), updated_at = now()
     WHERE project_id = ${projectId} AND breakdown_json IS NOT NULL AND NOT (breakdown_json ? 'style')`;
 }
+
+/**
+ * A new shot list for the inspo (the user chose fewer or more shots). Clips come off their shots,
+ * since the shots they were on changed.
+ */
+export async function saveReshapedBreakdown(projectId: string, breakdown: Breakdown) {
+  await getSql()`
+    UPDATE inspirations SET breakdown_json = ${JSON.stringify(breakdown)}::jsonb, updated_at = now()
+    WHERE project_id = ${projectId} AND status = 'ready'`;
+  await getSql()`UPDATE clips SET shot_index = NULL WHERE project_id = ${projectId}`;
+  await clearShotLists(projectId);
+}

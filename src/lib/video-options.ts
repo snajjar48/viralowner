@@ -25,9 +25,9 @@ export interface VideoOptions {
 }
 
 export const TEXT_MAX = 300;
-export const NOTES_MAX = 500;
+export const NOTES_MAX = 1500;
 /** A typed "request a change" in the preview editor. */
-export const REQUEST_MAX = 500;
+export const REQUEST_MAX = 1500;
 /** "Start from scratch": the user's description of the video they want. */
 export const PROMPT_MAX = 2000;
 

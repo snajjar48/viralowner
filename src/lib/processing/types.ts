@@ -161,6 +161,26 @@ export interface Carry {
   captionEdit?: { before: string; after: string };
   /** Screenshots the user added to prove what they say, shown on those words. */
   proofs?: Proof[];
+  /** On-screen text set in the editor: free-timed, not tied to shots ([] = no text). */
+  textItems?: TextItem[];
+}
+
+/** One piece of on-screen text, on screen from `start` to `end` (seconds of the video), anywhere. */
+export interface TextItem {
+  text: string;
+  start: number;
+  end: number;
+  /** Vertical center (0 top, 1 bottom); null = the default spot. */
+  y?: number | null;
+  /** Horizontal anchor (see align); null = the default for the alignment. */
+  x?: number | null;
+  align?: "left" | "center" | "right" | null;
+  /** 1 = standard size. */
+  size?: number;
+  color?: string | null;
+  font?: string | null;
+  look?: "outline" | "box" | "plain" | null;
+  animation?: string | null;
 }
 
 /** A screenshot shown on the words it proves ("2 million views"). */
@@ -276,6 +296,9 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   proofMoments?: ProofMoment[];
   captionGroups?: string[];
   captionText?: string;
+  /** The editor's free-timed text this version used, and what was on screen and when (any version). */
+  textItems?: TextItem[];
+  textTimeline?: TextItem[];
   /** The caption style this version used, when a request changed it from the one in the options. */
   captionStyle?: CaptionStyleId | "off";
   /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */

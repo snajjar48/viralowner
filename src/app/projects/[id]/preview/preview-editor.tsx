@@ -2,18 +2,19 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { PageTitle } from "@/components/flow-shell";
 import { buttonClass, inputClass } from "@/components/form";
 import { ArrowRightIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem, Section } from "@/components/options-fields";
 import { ROLE_LABELS } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
-import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit } from "@/lib/processing/types";
+import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit, TextItem } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 import { ProofPanel } from "./proof-panel";
 import { ShotPreview } from "./shot-preview";
+import { TextItemsEditor, TextPreview, usePlayhead } from "./text-items";
 
 /** "repost with a new hook": what the editor is asked to do (a normal change). */
 const REPOST_REQUEST =
@@ -61,6 +62,8 @@ export function PreviewEditor({
     proofMoments: ProofMoment[];
     /** Shots deleted in this version (inspo shot numbers). */
     removedShots: number[];
+    /** The on-screen text, as pieces with their own times (null: an older version, not editable here). */
+    textItems: TextItem[] | null;
   };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
@@ -90,13 +93,18 @@ export function PreviewEditor({
   );
   const [options, setOptions] = useState(current.settings.options);
   const [shotEdits, setShotEdits] = useState(initialShots);
+  const [textItems, setTextItems] = useState<TextItem[] | null>(current.textItems);
+  const textChanged = JSON.stringify(textItems) !== JSON.stringify(current.textItems);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const { t, duration } = usePlayhead(videoRef);
   const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | null>(null);
   const [request, setRequest] = useState("");
   const [error, setError] = useState("");
 
   const dirty =
     JSON.stringify(options) !== JSON.stringify(current.settings.options) ||
-    JSON.stringify(shotEdits) !== JSON.stringify(initialShots);
+    JSON.stringify(shotEdits) !== JSON.stringify(initialShots) ||
+    textChanged;
   const trimProblem = shotEdits.find((e) => {
     if (e.removed || !e.clipId || (e.trimStartS === null && e.trimEndS === null)) return false;
     const d = clips.find((c) => c.id === e.clipId)?.durationS ?? 0;
@@ -104,7 +112,9 @@ export function PreviewEditor({
     const end = e.trimEndS ?? d;
     return start < 0 || end > d + 0.05 || end - start < 0.3;
   });
+  const badText = textChanged ? textItems?.find((x) => x.text.trim() && x.end <= x.start) : undefined;
   const problem =
+    (badText ? `“${badText.text.slice(0, 30)}”: the end needs to be after the start.` : null) ??
     optionsProblem(options, !!uploadedAudio) ??
     (trimProblem ? `shot ${trimProblem.shotIndex + 1}: the trim needs to be at least 0.3s and inside the clip.` : null);
 
@@ -132,7 +142,14 @@ export function PreviewEditor({
     try {
       const body =
         kind === "apply"
-          ? { mode: "edit", options, shots: shotEdits, fromVersion: current.version, request: request.trim() || undefined }
+          ? {
+              mode: "edit",
+              options,
+              shots: shotEdits,
+              fromVersion: current.version,
+              request: request.trim() || undefined,
+              ...(textChanged && textItems ? { textItems } : {}),
+            }
           : kind === "repost"
             ? {
                 mode: "edit",
@@ -161,7 +178,13 @@ export function PreviewEditor({
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,auto)_1fr] lg:items-start">
       <div className="flex flex-col items-center gap-4 lg:sticky lg:top-6">
-        <VideoPlayer src={current.videoUrl} size="fit" label={`your video, version ${current.version}`} />
+        <VideoPlayer
+          src={current.videoUrl}
+          size="fit"
+          label={`your video, version ${current.version}`}
+          videoRef={videoRef}
+          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} /> : undefined}
+        />
 
         {versions.length > 1 && (
           <nav aria-label="versions" className="flex max-w-full flex-wrap justify-center gap-2">
@@ -245,6 +268,13 @@ export function PreviewEditor({
             )}
           </div>
         )}
+        {!current.settings.request && current.note && (
+          // A first version's heads-up (something asked for that might not look its best).
+          <p className="rounded-xl border border-amber-300/25 bg-amber-300/[0.06] p-3 text-sm">
+            <span className="text-muted">from your editor: </span>
+            {current.note}
+          </p>
+        )}
 
         {prompt && (
           <details className="group rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
@@ -271,6 +301,22 @@ export function PreviewEditor({
           moments={current.proofMoments}
           proofs={current.proofs}
         />
+
+        <Section title="on-screen text">
+          {textItems ? (
+            <TextItemsEditor items={textItems} onChange={setTextItems} videoRef={videoRef} t={t} duration={duration} disabled={locked} />
+          ) : (
+            <p className="text-sm text-muted">
+              text editing here works on versions made from now on. ask for any change below (or regenerate) and the next
+              version’s text will be editable piece by piece.
+            </p>
+          )}
+          {textChanged && (
+            <p className="text-xs text-muted">
+              your text edits show over the video as a preview. apply your changes below to make the new version.
+            </p>
+          )}
+        </Section>
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">

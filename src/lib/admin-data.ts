@@ -118,7 +118,7 @@ export async function stripeSummary() {
 
 export async function overview() {
   const sql = getSql();
-  const [profiles, waitlist, projects, renders, storage, health, stripe] = await Promise.all([
+  const [profiles, waitlist, projects, renders, storage, health, stripe, feedback] = await Promise.all([
     allProfiles(),
     sql`SELECT count(*)::int n, count(*) FILTER (WHERE created_at > ${since(7)})::int week FROM waitlist_signups`,
     sql`SELECT count(*)::int n, count(*) FILTER (WHERE created_at > ${since(7)})::int week,
@@ -135,6 +135,8 @@ export async function overview() {
     sql`SELECT coalesce(sum(size_bytes), 0)::bigint bytes, count(*)::int clips FROM clips WHERE status = 'uploaded'`,
     workerHealth().catch(() => null),
     stripeSummary(),
+    sql`SELECT count(*)::int n, count(*) FILTER (WHERE created_at > ${since(7)})::int week,
+               count(*) FILTER (WHERE rating = 'not_quite')::int unhappy FROM feedback`.catch(() => [{ n: 0, week: 0, unhappy: 0 }]),
   ]);
   const plans: Record<string, number> = {};
   for (const p of profiles) {
@@ -143,6 +145,7 @@ export async function overview() {
   return {
     users: { total: profiles.length, week: profiles.filter((p) => p.created_at > since(7)).length, plans },
     waitlist: { total: num(waitlist[0].n), week: num(waitlist[0].week) },
+    feedback: { total: num(feedback[0].n), week: num(feedback[0].week), unhappy: num(feedback[0].unhappy) },
     projects: { total: num(projects[0].n), week: num(projects[0].week), scratch: num(projects[0].scratch), counted: num(projects[0].counted) },
     renders: {
       done7: num(renders[0].done7),
@@ -381,4 +384,122 @@ export function services() {
     { name: "Anthropic", what: "the AI editor: usage, credits, auto-reload", url: "https://console.anthropic.com/settings/billing" },
     { name: "Resend", what: "emails: sign-up, video ready", url: "https://resend.com/emails" },
   ];
+}
+
+// ---- feedback from the download page
+
+export interface FeedbackItem {
+  id: string;
+  rating: string | null;
+  message: string;
+  createdAt: string;
+}
+export interface FeedbackVideo {
+  projectId: string | null;
+  projectName: string;
+  kind: string;
+  deleted: boolean;
+  version: number | null;
+  status: string | null;
+  request: string | null;
+  url: string | null;
+  items: FeedbackItem[];
+}
+export interface FeedbackPerson {
+  userId: string;
+  name: string;
+  email: string;
+  projects: number;
+  versions: number;
+  lastActive: string | null;
+  videos: FeedbackVideo[];
+  latest: string;
+}
+
+/** All feedback, by person, then by the video (version) it was left on, newest first. */
+export async function listFeedback(userId?: string): Promise<FeedbackPerson[]> {
+  const sql = getSql();
+  let rows: Record<string, unknown>[];
+  try {
+    rows = userId
+      ? await sql`
+          SELECT f.*, r.storage_key, r.status r_status, r.settings ->> 'request' request,
+                 coalesce(to_jsonb(p) ->> 'name', '') project_name, coalesce(to_jsonb(p) ->> 'kind', 'remake') kind,
+                 p.id IS NULL OR to_jsonb(p) ->> 'deleted_at' IS NOT NULL deleted, left(coalesce(p.prompt, ''), 80) prompt
+          FROM feedback f LEFT JOIN renders r ON r.id = f.render_id LEFT JOIN projects p ON p.id = f.project_id
+          WHERE f.user_id = ${userId} ORDER BY f.created_at DESC LIMIT 500`
+      : await sql`
+          SELECT f.*, r.storage_key, r.status r_status, r.settings ->> 'request' request,
+                 coalesce(to_jsonb(p) ->> 'name', '') project_name, coalesce(to_jsonb(p) ->> 'kind', 'remake') kind,
+                 p.id IS NULL OR to_jsonb(p) ->> 'deleted_at' IS NOT NULL deleted, left(coalesce(p.prompt, ''), 80) prompt
+          FROM feedback f LEFT JOIN renders r ON r.id = f.render_id LEFT JOIN projects p ON p.id = f.project_id
+          ORDER BY f.created_at DESC LIMIT 2000`;
+  } catch (error) {
+    if (/relation "feedback" does not exist/.test(String(error))) return []; // before the migration
+    throw error;
+  }
+  if (!rows.length) return [];
+  const users = [...new Set(rows.map((r) => String(r.user_id)))];
+  const [profiles, activity] = await Promise.all([
+    allProfiles(),
+    sql`
+      SELECT p.user_id, count(DISTINCT p.id) projects, count(r.id) versions,
+             greatest(max(p.updated_at), max(r.created_at)) last_active
+      FROM projects p LEFT JOIN renders r ON r.project_id = p.id
+      WHERE p.user_id = ANY(${users}::uuid[]) GROUP BY p.user_id`,
+  ]);
+  const who = new Map(profiles.map((p) => [p.id, p]));
+  const act = new Map(activity.map((a) => [String(a.user_id), a]));
+  const people = new Map<string, FeedbackPerson>();
+  const urls = new Map<string, Promise<string | null>>();
+  for (const r of rows) {
+    const uid = String(r.user_id);
+    const prof = who.get(uid);
+    const a = act.get(uid);
+    let person = people.get(uid);
+    if (!person) {
+      person = {
+        userId: uid,
+        name: prof ? `${prof.first_name ?? ""} ${prof.last_name ?? ""}`.trim() : "",
+        email: prof?.email ?? "",
+        projects: num(a?.projects),
+        versions: num(a?.versions),
+        lastActive: a?.last_active ? new Date(a.last_active as string).toISOString() : null,
+        videos: [],
+        latest: new Date(r.created_at as string).toISOString(),
+      };
+      people.set(uid, person);
+    }
+    const key = `${r.project_id ?? "none"}:${r.version ?? ""}`;
+    let video = person.videos.find((v) => `${v.projectId ?? "none"}:${v.version ?? ""}` === key);
+    if (!video) {
+      const storageKey = r.storage_key ? String(r.storage_key) : null;
+      if (storageKey && r.r_status === "done" && !urls.has(storageKey)) {
+        urls.set(storageKey, createDownloadUrl(storageKey, { expiresIn: 3600 }).catch(() => null));
+      }
+      video = {
+        projectId: r.project_id ? String(r.project_id) : null,
+        projectName: String(r.project_name || r.prompt || ""),
+        kind: r.kind === "scratch" ? "scratch" : "remake",
+        deleted: Boolean(r.deleted),
+        version: r.version === null ? null : num(r.version),
+        status: (r.r_status as string | null) ?? null,
+        request: (r.request as string | null) ?? null,
+        url: storageKey,
+        items: [],
+      };
+      person.videos.push(video);
+    }
+    video.items.push({
+      id: String(r.id),
+      rating: (r.rating as string | null) ?? null,
+      message: String(r.message ?? ""),
+      createdAt: new Date(r.created_at as string).toISOString(),
+    });
+  }
+  // Signed links to watch each video (the storage key stood in until now).
+  for (const person of people.values()) {
+    for (const v of person.videos) v.url = v.url && urls.has(v.url) ? await urls.get(v.url)! : null;
+  }
+  return [...people.values()];
 }

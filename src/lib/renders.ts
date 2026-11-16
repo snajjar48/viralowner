@@ -1,7 +1,7 @@
 import "server-only";
 import { businessText, getBusinessForProject } from "./business";
 import { resetRenderEmail } from "./notify";
-import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit } from "./processing";
+import { getJobStatus, startRender, type RenderInput, type RenderSettings, type ShotEdit, type TextItem } from "./processing";
 import { getStoryboardJob, startStoryboardJob, type StoryboardResult } from "./processing/modal";
 import {
   createRender,
@@ -442,6 +442,39 @@ export function carryFrom(from: Render | undefined): Pick<RenderSettings, "carry
     ...(plan?.captionFixes?.length ? { captionFixes: plan.captionFixes } : {}),
     ...(plan?.captionGroups?.length ? { captionGroups: plan.captionGroups } : {}),
     ...(plan?.proofs?.length ? { proofs: plan.proofs } : {}),
+    ...(Array.isArray(plan?.textItems) ? { textItems: plan.textItems } : {}),
   };
   return Object.keys(carry).length ? { carry } : {};
+}
+
+export const TEXT_FONTS = ["clean_sans", "semibold_sans", "heavy_sans", "condensed", "tall_caps", "serif", "typewriter", "marker", "script", "rounded"];
+export const TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"];
+
+/** Validates the editor's on-screen text items. undefined = not sent (keep the version's text). */
+export function parseTextItems(input: unknown): TextItem[] | undefined | Fail {
+  if (input === undefined || input === null) return undefined;
+  if (!Array.isArray(input) || input.length > 40) return { status: 400, error: "invalid text." };
+  const out: TextItem[] = [];
+  const num = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null);
+  for (const raw of input as Record<string, unknown>[]) {
+    const text = typeof raw?.text === "string" ? raw.text.replace(/\r/g, "").trim().slice(0, 300) : "";
+    const start = num(raw?.start, 0, 600);
+    const end = num(raw?.end, 0, 600);
+    if (!text) continue;
+    if (start === null || end === null || end - start < 0.1) return { status: 400, error: `“${text.slice(0, 30)}” needs an end after its start.` };
+    out.push({
+      text,
+      start: Math.round(start * 100) / 100,
+      end: Math.round(end * 100) / 100,
+      y: num(raw?.y, 0, 1),
+      x: num(raw?.x, 0, 1),
+      align: raw?.align === "left" || raw?.align === "right" || raw?.align === "center" ? raw.align : null,
+      size: num(raw?.size, 0.4, 2.5) ?? 1,
+      color: typeof raw?.color === "string" && /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toUpperCase() : null,
+      font: typeof raw?.font === "string" && TEXT_FONTS.includes(raw.font) ? raw.font : null,
+      look: raw?.look === "outline" || raw?.look === "box" || raw?.look === "plain" ? raw.look : null,
+      animation: typeof raw?.animation === "string" && TEXT_ANIMATIONS.includes(raw.animation) ? raw.animation : null,
+    });
+  }
+  return out;
 }

@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
-import { getInspiration } from "@/lib/projects";
+import { getInspiration, listRenders } from "@/lib/projects";
 import { createDownloadUrl } from "@/lib/storage";
 import { BreakdownView } from "./breakdown-view";
 import { InspoStatus } from "./inspo-status";
@@ -37,10 +37,13 @@ async function Breakdown({ id }: { id: string }) {
     );
   }
 
-  const videoUrl = await createDownloadUrl(inspo.storageKey, { expiresIn: 6 * 3600 });
+  const [videoUrl, versions] = await Promise.all([
+    createDownloadUrl(inspo.storageKey, { expiresIn: 6 * 3600 }),
+    listRenders(userId, id),
+  ]);
   return (
     <FlowShell step={1} projectId={id}>
-      <BreakdownView projectId={id} breakdown={inspo.breakdown} videoUrl={videoUrl} />
+      <BreakdownView projectId={id} breakdown={inspo.breakdown} videoUrl={videoUrl} hasVersions={versions.length > 0} />
     </FlowShell>
   );
 }

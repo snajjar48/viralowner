@@ -1,7 +1,7 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
 import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "@/lib/membership";
 import { listClips, listRenders, saveSettings, type Project, type Render } from "@/lib/projects";
-import type { Carry, Proof } from "@/lib/processing/types";
+import type { Carry, Proof, RenderSettings, TextItem } from "@/lib/processing/types";
 import { headObject } from "@/lib/storage";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
@@ -9,6 +9,7 @@ import {
   getStillActiveRender,
   newSeed,
   parseShotEdits,
+  parseTextItems,
   settingsFor,
   shotsFromAssignments,
   previousFor,
@@ -119,6 +120,9 @@ async function makeVersion(userId: string, project: Project, body: Record<string
     if (request && !previous) {
       return jsonError("this version can’t take requests. tap regenerate to make a new one, then ask again.", 400);
     }
+    // On-screen text set in the editor (free-timed).
+    const textItems = body.mode === "edit" ? parseTextItems(body.textItems) : undefined;
+    if (textItems && "error" in textItems) return jsonError(textItems.error, textItems.status);
     result = await startNewRender(
       userId,
       project,
@@ -128,7 +132,7 @@ async function makeVersion(userId: string, project: Project, body: Record<string
         if ("error" in shots) return shots;
         return {
           ...settingsFor(options, shots),
-          ...carryFrom(from),
+          ...withTextItems(carryFrom(from), textItems),
           ...(request ? { request, fromVersion: from!.version } : {}),
         };
       },
@@ -253,10 +257,17 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
       const uploaded = (await listClips(userId, project.id)).filter((c) => c.status === "uploaded");
       const shots = parseShotEdits(body.shots, from.plan?.shots.length ?? 0, uploaded);
       if ("error" in shots) return jsonError(shots.error, shots.status);
+      const textItems = parseTextItems(body.textItems);
+      if (textItems && "error" in textItems) return jsonError(textItems.error, textItems.status);
       result = await startScratchRender(
         userId,
         project,
-        { ...settingsFor(options, shots), ...carryFrom(from), fromVersion: from.version, ...(request ? { request } : {}) },
+        {
+          ...settingsFor(options, shots),
+          ...withTextItems(carryFrom(from), textItems),
+          fromVersion: from.version,
+          ...(request ? { request } : {}),
+        },
         { previous, ...(request ? { request } : {}), ...(request && body.repost === true ? { writePost: true } : {}) },
       );
     }
@@ -271,4 +282,9 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
   }
   if ("error" in result) return jsonError(result.error, result.status);
   return Response.json({ renderId: result.render.id, version: result.render.version });
+}
+
+/** The version's carried details, with the editor's text items when it sent some. */
+function withTextItems(carried: Pick<RenderSettings, "carry">, items: TextItem[] | undefined): Pick<RenderSettings, "carry"> {
+  return items === undefined ? carried : { carry: { ...(carried.carry ?? {}), textItems: items } };
 }
