@@ -55,6 +55,7 @@ export const WHO = [
   "gyms & trainers",
   "boutiques & shops",
   "real estate",
+  "travel agents",
   "creators",
   "agencies & social media managers",
 ];
