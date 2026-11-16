@@ -22,7 +22,9 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 export function PlanPill({ m }: { m: Membership }) {
-  const text = m.unlimited
+  const text = m.tester
+    ? "tester · free"
+    : m.unlimited
     ? "unlimited"
     : m.plan && m.videos
       ? `${TIER_NAMES[m.plan.tier]} · ${Math.max(0, m.videos.limit - m.videos.used)} left`
@@ -191,7 +193,7 @@ export function ProfileCard({ profile }: { profile: BusinessProfile | null }) {
 export function Account({ m, email }: { m: Membership; email: string }) {
   const rows: [string, string][] = [];
   if (m.unlimited) {
-    rows.push(["Plan", "Owner · unlimited"]);
+    rows.push(["Plan", m.tester ? "Tester · free access" : "Owner · unlimited"]);
     rows.push(["Videos", "unlimited"]);
     rows.push(["Changes", "unlimited"]);
   } else if (m.plan) {

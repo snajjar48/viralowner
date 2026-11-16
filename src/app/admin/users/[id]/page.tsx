@@ -64,7 +64,9 @@ async function User({ id }: { id: string }) {
           <Row
             k="plan"
             v={
-              m?.unlimited
+              m?.tester
+                ? "tester · free access"
+                : m?.unlimited
                 ? "owner · unlimited"
                 : m?.plan
                   ? `${TIER_NAMES[m.plan.tier]} ${m.plan.interval} · ${m.plan.status}${m.plan.cancelAtPeriodEnd ? " (cancels at period end)" : ""}`

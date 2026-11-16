@@ -11,6 +11,7 @@ import {
 } from "./plan-format";
 import type { Project } from "./projects";
 import { createAdminClient } from "./supabase/server";
+import { isTester } from "./testers";
 
 /**
  * What an account can do right now:
@@ -35,8 +36,10 @@ export interface Membership {
   /** This month's videos on the paid plan. */
   videos: { limit: number; used: number; resetsAt: string } | null;
   hasCustomer: boolean;
-  /** Owner account(s) in UNLIMITED_EMAILS: no limits, no trial or plan needed. */
+  /** Owner account(s) in UNLIMITED_EMAILS, and free testers: no limits, no trial or plan needed. */
   unlimited: boolean;
+  /** A free tester the owner added in the admin dashboard (lib/testers.ts). */
+  tester: boolean;
 }
 
 /** Accounts with unlimited access, from the UNLIMITED_EMAILS env var (comma-separated). */
@@ -58,6 +61,8 @@ export async function getMembership(userId: string): Promise<Membership> {
     sql`SELECT 1 FROM projects WHERE user_id = ${userId} AND billing = 'trial' LIMIT 1`,
   ]);
   if (error) throw error;
+  const owner = isUnlimitedEmail(profile?.email as string | null);
+  const tester = !owner && (await isTester(profile?.email as string | null));
 
   const parsed = parsePlanId(profile?.plan);
   const status = (profile?.subscription_status as string | null) ?? null;
@@ -83,7 +88,8 @@ export async function getMembership(userId: string): Promise<Membership> {
     trial: trialProjects.length ? "used" : claims.length ? "available" : "none",
     videos,
     hasCustomer: Boolean(profile?.stripe_customer_id),
-    unlimited: isUnlimitedEmail(profile?.email as string | null),
+    unlimited: owner || tester,
+    tester,
   };
 }
 
