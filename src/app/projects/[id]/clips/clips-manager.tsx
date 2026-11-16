@@ -34,9 +34,11 @@ import {
   postJson,
   readVideoDuration,
   uploadInParts,
+  uploadSpeed,
   uploadToSignedUrl,
   UploadError,
 } from "@/lib/upload-client";
+import { planShrink, shrinkClip, worthShrinking, type ShrinkPlan } from "@/lib/shrink-clip";
 import { checkClip, MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
 
 export interface InitialClip {
@@ -53,7 +55,7 @@ export interface InitialClip {
   thumbUrl?: string | null;
 }
 
-type ItemStatus = "queued" | "uploading" | "verifying" | "uploaded" | "failed";
+type ItemStatus = "queued" | "shrinking" | "uploading" | "verifying" | "uploaded" | "failed";
 interface Item {
   key: string;
   clipId: string | null;
@@ -74,7 +76,7 @@ interface Item {
 // Clips uploading at once. Big clips upload several parts at once too (uploadInParts).
 const CONCURRENCY = 3;
 type SignedPut = { url: string; headers: Record<string, string> };
-const inFlight = (s: ItemStatus) => s === "queued" || s === "uploading" || s === "verifying";
+const inFlight = (s: ItemStatus) => s === "queued" || s === "shrinking" || s === "uploading" || s === "verifying";
 
 export function ClipsManager({
   projectId,
@@ -133,6 +135,13 @@ export function ClipsManager({
   const aborts = useRef(new Map<string, AbortController>());
   const queue = useRef<string[]>([]);
   const active = useRef(0);
+  // Big vertical clips that could be made smaller first, on a slow connection (lib/shrink-clip.ts).
+  const plans = useRef(new Map<string, ShrinkPlan>());
+  const planning = useRef(new Map<string, Promise<ShrinkPlan | null>>());
+  // Uploads sending bytes right now (their progress measures this device's upload speed).
+  const sending = useRef(0);
+  // One clip is shrunk at a time (each takes the phone's video encoder).
+  const shrinking = useRef<Promise<unknown>>(Promise.resolve());
   const itemsRef = useRef(items);
   useEffect(() => {
     itemsRef.current = items;
@@ -145,14 +154,68 @@ export function ClipsManager({
   const patch = (key: string, change: Partial<Item>) =>
     setItems((list) => list.map((it) => (it.key === key ? { ...it, ...change } : it)));
 
+  /**
+   * On a slow connection, a big vertical clip is made smaller before it uploads, when that's
+   * quicker overall (lib/shrink-clip.ts). Returns the file to upload: the smaller one, or the
+   * original whenever shrinking isn't worth it or doesn't work.
+   */
+  async function maybeShrink(key: string, file: File, signal: AbortSignal): Promise<File> {
+    const plan = plans.current.get(key);
+    if (!plan) return file;
+    // No speed measured yet: while other clips upload, wait a few seconds for one.
+    for (let waited = 0; !uploadSpeed() && sending.current > 0 && waited < 12; waited++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      if (signal.aborted) return file;
+    }
+    const speed = uploadSpeed();
+    if (!speed || !worthShrinking(file, plan, speed)) return file;
+    let release = () => {};
+    const turn = shrinking.current;
+    shrinking.current = new Promise<void>((r) => (release = r));
+    try {
+      await turn;
+      if (signal.aborted) return file;
+      patch(key, { status: "shrinking", percent: 0 });
+      const smaller = await shrinkClip(file, plan, speed, (percent) => patch(key, { percent }), signal);
+      plans.current.delete(key);
+      files.current.set(key, smaller); // (a retry uploads the smaller one too)
+      return smaller;
+    } catch {
+      plans.current.delete(key);
+      return file;
+    } finally {
+      release();
+    }
+  }
+
   async function uploadOne(key: string) {
-    const file = files.current.get(key);
+    let file = files.current.get(key);
     const item = itemsRef.current.find((i) => i.key === key);
     if (!file || !item) return;
     const controller = new AbortController();
     aborts.current.set(key, controller);
-    patch(key, { status: "uploading", percent: 0, error: null });
+    let counted = false;
     try {
+      // Whether it could be made smaller (worked out when it was picked; never waited on for long).
+      const pending = planning.current.get(key);
+      if (pending) {
+        planning.current.delete(key);
+        const plan = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), 4000))]);
+        if (plan) plans.current.set(key, plan);
+      }
+      // Nothing has measured the upload speed yet: this one goes as is and measures it for the rest.
+      if (plans.current.has(key) && !uploadSpeed() && sending.current === 0) plans.current.delete(key);
+      if (!plans.current.has(key)) {
+        sending.current++;
+        counted = true;
+      }
+      file = await maybeShrink(key, file, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!counted) {
+        sending.current++;
+        counted = true;
+      }
+      patch(key, { status: "uploading", percent: 0, error: null });
       const { clip, upload, multipart, thumb } = await postJson<{
         clip: { id: string };
         upload: SignedPut;
@@ -210,6 +273,7 @@ export function ClipsManager({
         error: e instanceof UploadError ? e.message : "the upload didn’t go through.",
       });
     } finally {
+      if (counted) sending.current--;
       aborts.current.delete(key);
     }
   }
@@ -306,6 +370,11 @@ export function ClipsManager({
     if (!added.length) return;
     setItems((list) => [...list, ...added]);
     itemsRef.current = [...itemsRef.current, ...added];
+    // Big vertical clips: could they be made smaller (only used on a slow connection)?
+    for (const a of added) {
+      const f = files.current.get(a.key);
+      if (f && f.size > 40 * 1024 * 1024) planning.current.set(a.key, planShrink(f));
+    }
     queue.current.push(...added.map((a) => a.key));
     pump();
     void makeThumbs(added.map((a) => a.key));
@@ -683,7 +752,15 @@ function ClipTile({
             ) : (
               <ProgressBar
                 value={item.status === "verifying" ? 100 : item.percent}
-                label={item.status === "queued" ? "waiting…" : item.status === "verifying" ? "checking…" : "uploading"}
+                label={
+                  item.status === "queued"
+                    ? "waiting…"
+                    : item.status === "shrinking"
+                      ? "making it quicker to upload…"
+                      : item.status === "verifying"
+                        ? "checking…"
+                        : "uploading"
+                }
               />
             )}
           </span>

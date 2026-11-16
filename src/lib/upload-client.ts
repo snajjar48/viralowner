@@ -30,6 +30,34 @@ export function readVideoDuration(file: File, timeoutMs = 10_000): Promise<numbe
 
 export class UploadError extends Error {}
 
+// ---- How fast this device uploads (all uploads together), measured from their progress.
+
+const sentLog: { t: number; bytes: number }[] = [];
+
+function noteSent(bytes: number) {
+  if (bytes <= 0) return;
+  const now = Date.now();
+  sentLog.push({ t: now, bytes });
+  while (sentLog.length && sentLog[0].t < now - 8000) sentLog.shift();
+}
+
+/**
+ * Bytes per second this device is uploading at, over the last few seconds of uploading; null until
+ * there's enough to go on (a few seconds and a megabyte).
+ */
+let lastSpeed: number | null = null;
+
+export function uploadSpeed(): number | null {
+  const now = Date.now();
+  const recent = sentLog.filter((x) => x.t >= now - 8000);
+  if (recent.length >= 3) {
+    const span = (now - recent[0].t) / 1000;
+    const bytes = recent.reduce((a, x) => a + x.bytes, 0);
+    if (span >= 3 && bytes >= 1024 * 1024) lastSpeed = bytes / span;
+  }
+  return lastSpeed; // (the last measurement, once uploads have paused)
+}
+
 /**
  * PUTs a file to a signed URL with real progress (0–100). XMLHttpRequest,
  * because fetch can't report upload progress.
@@ -83,6 +111,7 @@ function send(
     xhr.open("PUT", upload.url);
     for (const [k, v] of Object.entries(upload.headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => {
+      noteSent(e.loaded - loaded);
       loaded = e.loaded;
       if (e.lengthComputable) onProgress(Math.min(99, Math.floor((e.loaded / e.total) * 100)));
     };
@@ -144,7 +173,10 @@ export async function uploadInParts(
     new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", urls[i]);
+      let partLoaded = 0;
       xhr.upload.onprogress = (e) => {
+        noteSent(e.loaded - partLoaded);
+        partLoaded = e.loaded;
         sent[i] = e.loaded;
         tell();
       };
