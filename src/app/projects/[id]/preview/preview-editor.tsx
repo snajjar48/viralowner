@@ -14,7 +14,7 @@ import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 import { ProofPanel } from "./proof-panel";
 import { ShotPreview } from "./shot-preview";
-import { TextItemsEditor, TextPreview, usePlayhead } from "./text-items";
+import { TextItemsEditor, TextPreview, usePlayhead, type TextContext } from "./text-items";
 
 /** "repost with a new hook": what the editor is asked to do (a normal change). */
 const REPOST_REQUEST =
@@ -66,6 +66,8 @@ export function PreviewEditor({
     textItems: TextItem[] | null;
     /** How this version draws text without a look of its own. */
     textDefaults: TextDefaults | null;
+    /** The version's text style, size and spot (the preview draws text exactly as the next version will). */
+    textContext: TextContext;
   };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
@@ -185,7 +187,7 @@ export function PreviewEditor({
           size="fit"
           label={`your video, version ${current.version}`}
           videoRef={videoRef}
-          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} defaults={current.textDefaults} /> : undefined}
+          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} context={current.textContext} /> : undefined}
         />
 
         {versions.length > 1 && (

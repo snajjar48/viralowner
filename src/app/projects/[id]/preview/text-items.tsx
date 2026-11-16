@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState, type RefObject } from "react";
-import type { TextDefaults, TextItem } from "@/lib/processing/types";
+import type { TextDefaults, TextItem, TextStyle } from "@/lib/processing/types";
+import { FONT_METRICS, FRAME_H, placeItem, type Measure } from "@/lib/text-layout";
+import { videoFont } from "./video-fonts";
 
 /**
  * On-screen text, edited directly: each piece of text has its own time on screen (any moment, over
@@ -37,20 +39,9 @@ const LOOKS = [
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
-const luminance = (hex: string) => {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
-  return Number.isFinite(r + g + b) ? 0.2126 * r + 0.7152 * g + 0.0722 * b : 1;
-};
-
-/** How a piece of text is drawn: its own look, else the video's (as the finished video draws it). */
+/** A piece's look as the editor shows it: its own, else the video's. */
 function resolved(it: TextItem, d: TextDefaults | null | undefined) {
-  const color = it.color ?? d?.color ?? "#FFFFFF";
-  const look = it.look ?? d?.look ?? "outline";
-  const dark = luminance(color) < 0.5;
-  // The video's box color unless it's about the text's own color, else black behind light text, white behind dark.
-  const own = (d?.look === "box" ? d.boxColor : null) ?? "#FFFFFF";
-  const box = Math.abs(luminance(own) - luminance(color)) >= 0.12 ? own : dark ? "#FFFFFF" : "#000000";
-  return { color, look, dark, box, font: it.font ?? d?.font ?? FONTS[0].id, animation: it.animation ?? d?.animation ?? "none" };
+  return { color: it.color ?? d?.color ?? "#FFFFFF", look: it.look ?? d?.look ?? "outline" };
 }
 
 /** The video's playhead, updated while it plays or seeks. */
@@ -77,43 +68,107 @@ export function usePlayhead(videoRef: RefObject<HTMLVideoElement | null>) {
   return { t, duration };
 }
 
-/** A rough preview of the text on the video at time `t` (the finished video is drawn exactly). */
-export function TextPreview({ items, t, defaults }: { items: TextItem[]; t: number; defaults?: TextDefaults | null }) {
+/** What the preview needs to draw text exactly as the video will: the version's text style, size and spot. */
+export type TextContext = { style?: TextStyle | null; textScale?: number | null; position?: string | null };
+
+/** Measures text with the video's own fonts; `ready` turns true once the fonts in use have loaded. */
+function useMeasure(fonts: string[]) {
+  const [loaded, setLoaded] = useState(0);
+  const key = [...new Set(fonts)].sort().join(",");
+  useEffect(() => {
+    let live = true;
+    const wanted = key.split(",").filter(Boolean).map((f) => videoFont(f));
+    Promise.all(wanted.map((f) => document.fonts.load(`${f.weight} 100px ${f.family}`).catch(() => [])))
+      .then(() => live && setLoaded((n) => n + 1));
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  const [measure] = useState(() => {
+    const cache = new Map<string, number>();
+    let ctx: CanvasRenderingContext2D | null = null;
+    const fn: Measure & { reset: () => void } = Object.assign(
+      (text: string, font: string, px: number) => {
+        const k = `${font}|${text}`;
+        let w = cache.get(k);
+        if (w === undefined) {
+          ctx ??= document.createElement("canvas").getContext("2d");
+          if (!ctx) return text.length * px * 0.55;
+          const f = videoFont(font);
+          ctx.font = `${f.weight} 100px ${f.family}`;
+          w = ctx.measureText(text).width;
+          cache.set(k, w);
+        }
+        return (w * px) / 100;
+      },
+      { reset: () => cache.clear() },
+    );
+    return fn;
+  });
+  // Widths measured before a font arrived were of the fallback font.
+  useEffect(() => measure.reset(), [loaded, measure]);
+  return { measure, ready: loaded > 0 };
+}
+
+const fu = (px: number) => `${(px / FRAME_H) * 100}cqh`; // px of the 1080×1920 frame, on the preview
+
+/** libass's round outline (a ring of copies around the letters; a CSS stroke has sharp corners), and its drop shadow. */
+function outlineShadow(width: number, color: string, shadow: boolean) {
+  const ring = Array.from({ length: 24 }, (_, k) => {
+    const a = (k / 24) * 2 * Math.PI;
+    return `${fu(Math.cos(a) * width)} ${fu(Math.sin(a) * width)} 0 ${color}`;
+  });
+  const inner = Array.from({ length: 12 }, (_, k) => {
+    const a = (k / 12) * 2 * Math.PI;
+    return `${fu(Math.cos(a) * width * 0.5)} ${fu(Math.sin(a) * width * 0.5)} 0 ${color}`;
+  });
+  return [...inner, ...ring, ...(shadow ? [`${fu(3 + width)} ${fu(3 + width)} 0 rgba(0,0,0,0.44)`] : [])].join(", ");
+}
+
+/** The text on the video at time `t`, drawn as the finished video will draw it (font, size, wrapping, place). */
+export function TextPreview({ items, t, context }: { items: TextItem[]; t: number; context?: TextContext }) {
+  const showing = items.filter((it) => it.text.trim() && t >= it.start && t < it.end);
+  const { measure, ready } = useMeasure(showing.map((it) => it.font ?? context?.style?.font ?? "clean_sans"));
+  if (!ready) return null;
   return (
     <>
-      {items
-        .filter((it) => t >= it.start && t < it.end)
-        .map((it, k) => {
-          const align = it.align ?? "center";
-          const { look, color, dark, box, font } = resolved(it, defaults);
-          return (
-            <div
-              key={k}
-              className="absolute w-full px-[7%] leading-tight font-bold whitespace-pre-line"
-              style={{
-                top: `${(it.y ?? 0.32) * 100}%`,
-                transform: "translateY(-50%)",
-                textAlign: align,
-                fontSize: `${4.6 * (it.size ?? 1)}cqh`,
-                fontFamily: FONTS.find((f) => f.id === font)?.css ?? FONTS[0].css,
-                color,
-              }}
-            >
+      {showing.map((it, k) => {
+        const p = placeItem(it, context ?? {}, measure);
+        const font = videoFont(p.look.font);
+        const em = FONT_METRICS[p.look.font].draw;
+        const shift = p.align === "left" ? "0" : p.align === "right" ? "-100%" : "-50%";
+        return (
+          <div
+            key={k}
+            className="absolute flex flex-col whitespace-pre"
+            style={{
+              left: `${p.x * 100}%`,
+              top: `${p.y * 100}%`,
+              transform: `translate(${shift}, -50%)`,
+              alignItems: p.align === "left" ? "flex-start" : p.align === "right" ? "flex-end" : "center",
+              fontFamily: font.family,
+              fontWeight: font.weight,
+              fontSize: fu(p.size * em),
+              lineHeight: fu(p.size),
+              color: p.look.color,
+            }}
+          >
+            {p.lines.map((line, j) => (
               <span
-                className={look === "box" ? "rounded-[0.15em] px-[0.25em] py-[0.05em] [box-decoration-break:clone]" : ""}
+                key={j}
                 style={
-                  look === "box"
-                    ? { background: box }
-                    : look === "outline"
-                      ? { WebkitTextStroke: `0.12em ${dark ? "#FFFFFF" : "#000000"}`, paintOrder: "stroke fill" }
-                      : { textShadow: "0 0.05em 0.2em rgba(0,0,0,0.7)" }
+                  p.look.box
+                    ? // libass's box: the line's height and width, grown by the box size on every side.
+                      { background: p.look.edge, boxShadow: `0 0 0 ${fu(p.look.outline)} ${p.look.edge}` }
+                    : { textShadow: outlineShadow(p.look.outline, p.look.edge, p.look.shadow) }
                 }
               >
-                {it.text}
+                {line}
               </span>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+        );
+      })}
     </>
   );
 }
