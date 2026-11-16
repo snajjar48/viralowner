@@ -39,6 +39,17 @@ gave (it isn't sent to the editor). Make them again with:
 modal run scripts/study-talking.py --folder "<folder of videos>" --out <dir>
 ```
 
+## Travel playbook
+
+`travel-playbook.md` comes from studies of 51 real viral travel videos (resorts, cruises, theme parks, destinations,
+pick-one / choose-your-vibe videos, tips and tours) and leads every video in the travel category. Its study looks
+closely at action shots, view reveals, the multiple choice formats and the info that gets videos saved and booked.
+Make it again with (the videos go up to a Modal volume first, `modal volume put viralowner-study-travel ...`):
+
+```
+modal run scripts/study-travel.py --folder "<folder of videos>" --out <dir>
+```
+
 ## Categories
 
 People pick a category when they start a video (`src/lib/categories.ts`, `CATEGORIES` in `worker/app.py`). The
@@ -53,7 +64,7 @@ is added and the worker is deployed. The admin dashboard's categories page shows
 | talking head / yapping | `talking-playbook.md` |
 | influencer / vlog | `influencer-playbook.md` (not written yet) |
 | event recap | `event-playbook.md` (not written yet) |
-| travel / destination / vacation | `travel-playbook.md` (not written yet) |
+| travel / destination / vacation | `travel-playbook.md` |
 
 Each category also learns every day from the change requests, notes and feedback on its own videos (`src/lib/lessons.ts`);
 those lessons go with that category's videos, after the lessons for every video.
