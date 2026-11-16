@@ -47,9 +47,9 @@ function resolved(it: TextItem, d: TextDefaults | null | undefined) {
   const color = it.color ?? d?.color ?? "#FFFFFF";
   const look = it.look ?? d?.look ?? "outline";
   const dark = luminance(color) < 0.5;
-  // The video's box color when it reads behind the text, else black behind light text, white behind dark.
-  const own = d?.look === "box" ? d.boxColor : null;
-  const box = own && luminance(own) < 0.5 !== dark ? own : dark ? "#FFFFFF" : "#000000";
+  // The video's box color unless it's about the text's own color, else black behind light text, white behind dark.
+  const own = (d?.look === "box" ? d.boxColor : null) ?? "#FFFFFF";
+  const box = Math.abs(luminance(own) - luminance(color)) >= 0.12 ? own : dark ? "#FFFFFF" : "#000000";
   return { color, look, dark, box, font: it.font ?? d?.font ?? FONTS[0].id, animation: it.animation ?? d?.animation ?? "none" };
 }
 

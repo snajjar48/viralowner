@@ -3829,17 +3829,20 @@ def item_style(style: dict, item: dict) -> dict:
         st["animation"] = item["animation"]
     lk = item.get("look")
     if lk == "box":
-        # The video's own box color when it has one that reads behind the text; else black behind
-        # light text and white behind dark text (as the editor's preview shows it).
-        dark_text = luminance(st.get("color", "#FFFFFF")) < 0.5
-        box_c = st.get("boxColor") if style.get("box") else None
-        if not box_c or (luminance(box_c) < 0.5) == dark_text:
-            box_c = "#FFFFFF" if dark_text else "#000000"
-        st.update(box=True, boxColor=box_c, outline="none")
+        st.update(box=True, boxColor=st.get("boxColor") if style.get("box") else None, outline="none")
     elif lk == "outline":
         st.update(box=False, outline=st.get("outline") if st.get("outline") not in (None, "none") else "thick")
     elif lk == "plain":
         st.update(box=False, outline="none", shadow=True)
+    if st.get("box"):
+        # The box must read behind the text (yellow text on the video's yellow box would vanish): the
+        # video's box color unless it's about the text's own, else black behind light text, white
+        # behind dark (as the editor's preview shows it).
+        text_l = luminance(st.get("color", "#FFFFFF"))
+        box_c = st.get("boxColor") or "#FFFFFF"
+        if abs(luminance(box_c) - text_l) < 0.12:
+            box_c = "#FFFFFF" if text_l < 0.5 else "#000000"
+        st["boxColor"] = box_c
     return st
 
 
@@ -7025,7 +7028,8 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
 @app.local_entrypoint()
 def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = "",
                notes: str = "", music: str = "original", request: str = "", audio: str = "", transitions: str = "",
-               sfx: str = "", speeds: str = "", effects: str = "", looks: str = "", breakdown_json: str = ""):
+               sfx: str = "", speeds: str = "", effects: str = "", looks: str = "", breakdown_json: str = "",
+               items: str = ""):
     """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
     With --request, also makes a second version with that change (saved as <dest>-changed.mp4).
     To test the edit, override the inspo's: --transitions whip_left,zoom_in (cycled over the cuts),
@@ -7077,10 +7081,13 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
     out, video = render_upload.remote(req, files)
     Path(dest).write_bytes(video)
     print(json.dumps(out, indent=2, ensure_ascii=False))
-    if request:
+    if request or items:
+        # --items '[{"text": "...", "start": 0, "end": 2, ...}]': text set in the editor for the next version.
         files[req["outputKey"]] = video
-        req2 = {**req, "shots": out["plan"]["shots"], "request": request,
-                "previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"]}}
+        req2 = {**req, "shots": out["plan"]["shots"], "request": request or None,
+                **({"carry": {"textItems": json.loads(items)}} if items else {}),
+                **({"previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"]}}
+                   if request else {"reuse": {**out["plan"], "postCopy": out["postCopy"]}})}
         out2, video2 = render_upload.remote(req2, files)
         Path(dest.removesuffix(".mp4") + "-changed.mp4").write_bytes(video2)
         print(json.dumps(out2, indent=2, ensure_ascii=False))
