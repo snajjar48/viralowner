@@ -194,3 +194,13 @@ export async function deletePrefix(prefix: string): Promise<number> {
 function unescapeXml(s: string) {
   return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
+
+/** Every file in a user's emoji kit folder ("u/<user>/emoji/"). */
+export async function listEmojiKitKeys(prefix: string): Promise<string[]> {
+  if (!/^u\/[A-Za-z0-9-]+\/emoji\/$/.test(prefix)) throw new Error("Refusing to list outside an emoji kit folder");
+  const { client, base } = r2();
+  const res = await client.fetch(`${base}?list-type=2&prefix=${encodeURIComponent(prefix)}&max-keys=1000`);
+  if (!res.ok) throw new Error(`Storage LIST failed (${res.status})`);
+  const xml = await res.text();
+  return [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => unescapeXml(m[1])).filter((k) => k.startsWith(prefix));
+}

@@ -6,23 +6,23 @@
  */
 
 /** Bump when the list or the drawing changes: every kit is drawn again. */
-export const EMOJI_KIT_VERSION = 1;
+export const EMOJI_KIT_VERSION = 2;
 /** Each emoji's square in the sheet, in pixels. */
-export const EMOJI_KIT_CELL = 160;
+export const EMOJI_KIT_CELL = 128;
 export const EMOJI_KIT_COLS = 16;
 /** At most this many per sheet (keeps every sheet under phones' canvas size limits). */
-export const EMOJI_KIT_PER_SHEET = 320;
+export const EMOJI_KIT_PER_SHEET = 288;
 
-// The emojis people actually use in short-form videos: faces, hands, hearts, food and drink,
-// money and business, celebration, nature, travel, symbols.
+// The emojis people actually use in short-form videos, most used first (kept short: every device
+// draws and uploads these once). Anything else comes out in Google's style.
 const COMMON = `
-😀 😃 😄 😁 😆 😅 🤣 😂 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😗 😚 😙 🥲 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🫢 🤫 🤔 🫡 🤐 🤨 😐 😑 😶 🫥 😏 😒 🙄 😬 😮‍💨 🤥 😌 😔 😪 🤤 😴 😷 🤒 🤕 🤢 🤮 🥵 🥶 🥴 😵 😵‍💫 🤯 🤠 🥳 🥸 😎 🤓 🧐 😕 🫤 😟 🙁 😮 😯 😲 😳 🥺 🥹 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 👿 💀 ☠️ 💩 🤡 👻 👽 🤖 😺 😸 😹 😻 🙈 🙉 🙊
-👋 🤚 ✋ 🖖 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊ 👊 🤛 🤜 👏 🙌 🫶 👐 🤲 🤝 🙏 ✍️ 💅 💪 🦾 🧠 👀 👁️ 👅 👄 🫦 🗣️ 👶 🧒 👦 👧 🧑 👨 👩 🧓 👴 👵 🙋 🙅 🙆 🤷 🤦 💁 🧑‍🍳 👨‍🍳 👩‍🍳 🧑‍💻 🧑‍💼 💃 🕺 🏃 🚶 🧘 🏋️ 👑 💍 👟 👠 👗 👕 🧢 🕶️ 💄 🎒 👜
-❤️ 🧡 💛 💚 🩵 💙 💜 🖤 🩶 🤍 🤎 💔 ❤️‍🔥 ❣️ 💕 💞 💓 💗 💖 💘 💝 💯 💢 💥 💫 💦 💨 🕳️ 💬 💭 💤 ✨ 🌟 ⭐ ⚡ 🔥 🌈 ☀️ 🌙 ☁️ 🌧️ ❄️ 🌊 💧 🌸 🌹 🌺 🌻 🌷 🌱 🌿 🍀 🍁 🌴 🌵 🐶 🐱 🐭 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🐔 🐧 🐦 🦄 🐝 🦋 🐢 🐍 🐙 🦀 🐟 🐬 🐳 🦈 🐎 🐐
-🍏 🍎 🍐 🍊 🍋 🍌 🍉 🍇 🍓 🫐 🍈 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🍆 🥑 🥦 🥬 🥒 🌶️ 🫑 🌽 🥕 🧄 🧅 🥔 🍠 🥐 🥯 🍞 🥖 🥨 🧀 🥚 🍳 🧈 🥞 🧇 🥓 🥩 🍗 🍖 🌭 🍔 🍟 🍕 🫓 🥪 🥙 🧆 🌮 🌯 🫔 🥗 🥘 🫕 🍝 🍜 🍲 🍛 🍣 🍱 🥟 🍤 🍙 🍚 🍘 🥠 🍢 🍡 🍧 🍨 🍦 🥧 🧁 🍰 🎂 🍮 🍭 🍬 🍫 🍿 🍩 🍪 🌰 🥜 🍯 🥛 🍼 ☕ 🫖 🍵 🧃 🥤 🧋 🍶 🍺 🍻 🥂 🍷 🥃 🍸 🍹 🧉 🍾 🧊 🥄 🍴 🍽️ 🥡 🥢 🧂
-💰 💵 💸 💳 🪙 💎 📈 📉 📊 💼 📱 💻 🖥️ ⌚ 📷 📸 🎥 🎬 📺 🎙️ 🎧 🎤 🎵 🎶 📣 📢 🔔 🔕 💡 🔦 🕯️ 🛒 🛍️ 🏷️ 📦 📝 ✏️ 📌 📍 📅 🗓️ ⏰ ⏳ ⌛ 🔑 🔒 🔓 🔨 🛠️ ⚙️ 🧲 🧪 💊 🩹 🧴 🧼 🪥 🧽 🧹 🛁 🚿 🪴 🛋️ 🛏️ 🚪 🏠 🏡 🏢 🏪 🏬 🏥 🏦 🏨 🏫 ⛪ 🏰 🗽 🗼 🌍 🌎 🌏 🗺️ 🏖️ 🏝️ ⛰️ 🏔️ 🏕️
-🚗 🚕 🚙 🚌 🏎️ 🚓 🚑 🚒 🚚 🚜 🏍️ 🛵 🚲 🛴 🚂 🚆 ✈️ 🛫 🛬 🚀 🛸 🚁 ⛵ 🚤 🛳️ ⚓ 🚦 🚧 ⛽ 🎉 🎊 🎈 🎁 🎀 🪄 🎯 🎮 🕹️ 🎲 🧩 🎨 🎭 🎪 🎟️ 🏆 🥇 🥈 🥉 🏅 🎖️ ⚽ 🏀 🏈 ⚾ 🎾 🏐 🏉 🎱 🏓 🏸 🥊 🥋 ⛳ 🎣 🛹 ⛸️ 🎿 🏂 🏄 🏊 🚴 🧗
-✅ ☑️ ✔️ ❌ ❎ ⛔ 🚫 ⚠️ ❗ ❕ ❓ ❔ ‼️ ⁉️ 💲 ➕ ➖ ➗ ✖️ 🟰 ♾️ 🔝 🔜 🆕 🆓 🆒 🆗 🆙 🆘 🔴 🟠 🟡 🟢 🔵 🟣 🟤 ⚫ ⚪ 🟥 🟧 🟨 🟩 🟦 🟪 ⬛ ⬜ 🔺 🔻 🔸 🔹 ▶️ ⏸️ ⏩ ⏪ 🔁 🔄 ⬆️ ⬇️ ⬅️ ➡️ ↗️ ↘️ ↙️ ↖️ ↩️ ↪️ 🔀 🎦 📶 #️⃣ *️⃣ 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 8️⃣ 9️⃣ 🔟 💤 🚨 🏁 🚩 🏳️ 🏴 🏳️‍🌈 🏴‍☠️
+😂 🤣 😭 🥹 😍 🥰 😘 😊 😁 😀 😅 😆 😉 😋 😎 🤩 🥳 😇 🙂 🙃 😏 😌 😜 🤪 😛 🤑 🤗 🤭 🫢 🤫 🤔 🫡 🤨 😐 😑 😶 🙄 😬 😮‍💨 😴 🤤 😷 🤢 🤮 🥵 🥶 😵‍💫 🤯 🤠 🧐 😕 😟 😮 😲 😳 🥺 😢 😩 😫 😤 😡 🤬 😈 💀 ☠️ 💩 🤡 👻 👽 🤖 🙈 🙉 🙊
+👋 ✋ 👌 🤌 🤏 ✌️ 🤞 🫰 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ 👍 👎 ✊ 👊 👏 🙌 🫶 🤝 🙏 ✍️ 💅 💪 🧠 👀 👄 🫦 🗣️ 🙋 🤷 🤦 💁 🧑‍🍳 👨‍🍳 👩‍🍳 💃 🕺 🏃 🧘 👑 💍
+❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 ❤️‍🔥 💕 💞 💖 💘 💯 💥 💫 💦 💨 💬 💭 💤 ✨ 🌟 ⭐ ⚡ 🔥 🌈 ☀️ 🌙 ❄️ 🌊 🌸 🌹 🌻 🌱 🍀 🐶 🐱 🦄 🐝 🦋
+🍎 🍋 🍌 🍉 🍇 🍓 🍒 🍑 🥭 🍍 🥥 🥑 🌶️ 🌽 🥕 🧄 🥐 🍞 🧀 🥚 🍳 🥞 🧇 🥓 🥩 🍗 🍖 🌭 🍔 🍟 🍕 🥪 🌮 🌯 🥗 🍝 🍜 🍲 🍛 🍣 🍱 🥟 🍤 🍚 🍦 🍨 🍧 🥧 🧁 🍰 🎂 🍮 🍭 🍬 🍫 🍿 🍩 🍪 🍯 🥛 ☕ 🍵 🧃 🥤 🧋 🍺 🍻 🥂 🍷 🥃 🍸 🍹 🍾 🧊 🍽️ 🧂
+💰 💵 💸 💳 💎 📈 📉 💼 📱 💻 📸 🎥 🎬 🎙️ 🎧 🎵 🎶 📣 🔔 💡 🛒 🛍️ 🏷️ 📦 📝 📌 📍 📅 ⏰ ⏳ 🔑 🔒 🛠️ 🏠 🏪 🌍 ✈️ 🚗 🚀
+🎉 🎊 🎈 🎁 🪄 🎯 🎮 🏆 🥇 🏅 ⚽ 🏀 🏈
+✅ ✔️ ❌ ⛔ 🚫 ⚠️ ❗ ❓ ‼️ ⁉️ ➕ ➖ 🔝 🔜 🆕 🆓 🔴 🟢 🔵 ⚫ ⚪ 🔺 🔻 ▶️ ⏩ 🔁 ⬆️ ⬇️ ⬅️ ➡️ ↗️ 🚨 🏁 🚩 🏳️‍🌈 🏴‍☠️
 `;
 
 // Every country and region with a flag emoji (ISO 3166 codes); a device that can't draw one leaves it out.

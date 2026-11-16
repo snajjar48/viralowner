@@ -9,7 +9,7 @@ import {
   isKitEmoji,
   type EmojiKit,
 } from "@/lib/emoji-kit";
-import { finishKit, kitFolder, readKit, savePending } from "@/lib/emoji-kit-store";
+import { finishKit, kitFolder, readKit, readPending, savePending } from "@/lib/emoji-kit-store";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { createUploadUrl } from "@/lib/storage";
 
@@ -20,8 +20,11 @@ export async function GET() {
   try {
     const userId = await getUserId();
     if (!userId) return unauthorized();
-    const kit = await readKit(userId);
-    return Response.json(kit ? { style: kit.style, v: kit.v } : { style: null }, { headers: { "cache-control": "no-store" } });
+    const [kit, pending] = await Promise.all([readKit(userId), readPending(userId)]);
+    return Response.json(
+      { style: kit?.style ?? null, v: kit?.v ?? null, pending: pending?.v === EMOJI_KIT_VERSION ? pending.style : null },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch (error) {
     console.error("Reading emoji kit failed:", error);
     return serverError();

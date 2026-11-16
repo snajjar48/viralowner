@@ -1,6 +1,6 @@
 import "server-only";
 import { EMOJI_KIT_CELL, EMOJI_KIT_COLS, EMOJI_KIT_VERSION, type EmojiKit } from "./emoji-kit";
-import { deleteObject, headObject, putObject, readRange } from "./storage";
+import { deleteObject, headObject, listEmojiKitKeys, putObject, readRange } from "./storage";
 
 /** Where a user's emoji kit lives (one per user: the device they last made videos on). */
 export const kitFolder = (userId: string) => `u/${userId}/emoji/`;
@@ -26,32 +26,41 @@ const writeJson = (key: string, value: unknown) =>
 
 export const readKit = (userId: string) => readJsonObject<EmojiKit>(kitIndexKey(userId));
 export const readPending = (userId: string) => readJsonObject<EmojiKit>(pendingKey(userId));
-/** Starts a new upload; the files of an earlier one that never finished are removed. */
+/** Starts a new upload; files of earlier unfinished uploads are removed. */
 export async function savePending(userId: string, kit: EmojiKit) {
-  const earlier = await readPending(userId).catch(() => null);
-  const current = new Set(((await readKit(userId).catch(() => null))?.sheets ?? []).map((s) => s.key));
-  await Promise.all(
-    (earlier?.sheets ?? [])
-      .filter((s) => s.key.startsWith(kitFolder(userId)) && !current.has(s.key))
-      .map((s) => deleteObject(s.key).catch(() => {})),
-  );
+  await removeLeftovers(userId, await readKit(userId).catch(() => null));
   await writeJson(pendingKey(userId), kit);
 }
 
 /** Makes the uploaded kit the user's kit, once every sheet is really there; removes the old one's files. */
 export async function finishKit(userId: string): Promise<boolean> {
   const kit = await readPending(userId);
-  if (!kit || kit.v !== EMOJI_KIT_VERSION || kit.cell !== EMOJI_KIT_CELL || kit.cols !== EMOJI_KIT_COLS) return false;
+  if (!kit || kit.v !== EMOJI_KIT_VERSION || kit.cell !== EMOJI_KIT_CELL || kit.cols !== EMOJI_KIT_COLS) {
+    console.error("Emoji kit finish: no current pending kit", { v: kit?.v, cell: kit?.cell });
+    return false;
+  }
   for (const sheet of kit.sheets) {
     const head = await headObject(sheet.key);
-    if (!head || head.sizeBytes <= 0 || head.sizeBytes > SHEET_MAX_BYTES) return false;
+    if (!head || head.sizeBytes <= 0 || head.sizeBytes > SHEET_MAX_BYTES) {
+      console.error("Emoji kit finish: sheet missing or too big", { sheet: sheet.key.split("/").pop(), bytes: head?.sizeBytes ?? null });
+      return false;
+    }
   }
-  const old = await readKit(userId);
   await writeJson(kitIndexKey(userId), kit);
   await deleteObject(pendingKey(userId)).catch(() => {});
-  const keep = new Set(kit.sheets.map((s) => s.key));
-  await Promise.all((old?.sheets ?? []).filter((s) => !keep.has(s.key)).map((s) => deleteObject(s.key).catch(() => {})));
+  await removeLeftovers(userId, kit);
   return true;
+}
+
+/** Removes every file in the kit folder that isn't part of `kit` (earlier kits, unfinished uploads). */
+async function removeLeftovers(userId: string, kit: EmojiKit | null) {
+  try {
+    const keep = new Set([kitIndexKey(userId), pendingKey(userId), ...(kit?.sheets ?? []).map((s) => s.key)]);
+    const stale = (await listEmojiKitKeys(kitFolder(userId))).filter((k) => !keep.has(k));
+    await Promise.all(stale.map((k) => deleteObject(k).catch(() => {})));
+  } catch (error) {
+    console.error("Emoji kit cleanup failed:", error);
+  }
 }
 
 /** The user's kit for the video worker: its address, or null if they don't have a finished one. */

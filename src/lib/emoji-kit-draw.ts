@@ -19,7 +19,7 @@ function canvas(w: number, h: number) {
 }
 
 let scratch: { c: HTMLCanvasElement; ctx: CanvasRenderingContext2D } | null = null;
-const PAD = CELL; // room around the emoji on the scratch canvas, for glyphs that reach past their measured size
+const PAD = Math.round(CELL / 2); // room around the emoji on the scratch canvas, for glyphs that reach past their measured size
 
 /**
  * Draws `emoji` centered in the square at (x, y), as big as fits; false if this device can't draw
@@ -98,6 +98,15 @@ export function toBlob(c: HTMLCanvasElement, type: string): Promise<Blob | null>
 }
 
 /** The kit's sheets: emojis first (most used first), then flags; each only the ones this device drew. */
+/** Waits for a quiet moment (the page stays responsive while the kit is drawn). */
+export function idle(): Promise<void> {
+  return new Promise((resolve) => {
+    const w = window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number };
+    if (w.requestIdleCallback) w.requestIdleCallback(() => resolve(), { timeout: 300 });
+    else setTimeout(resolve, 16);
+  });
+}
+
 export async function drawSheets(): Promise<{ emojis: string[]; c: HTMLCanvasElement }[]> {
   const sheets: { emojis: string[]; c: HTMLCanvasElement }[] = [];
   const todo = [...KIT_EMOJIS.map((e) => [e, false] as const), ...KIT_FLAGS.map((e) => [e, true] as const)];
@@ -111,6 +120,8 @@ export async function drawSheets(): Promise<{ emojis: string[]; c: HTMLCanvasEle
       const [e, isFlag] = todo[i++];
       const n = emojis.length;
       if (draw(k.ctx, e, (n % COLS) * CELL, Math.floor(n / COLS) * CELL, isFlag)) emojis.push(e);
+      // A few at a time, then hand the phone back: taps and scrolling never wait on this.
+      if (i % 4 === 0) await idle();
     }
     if (!emojis.length) continue;
     // Only as tall as it needs to be.
