@@ -416,24 +416,52 @@ def same_take(path: Path, t: float) -> bool:
     mask = np.where(still, 0, 255).astype(np.uint8)
     if not (mask > 0).any():
         return False
-    # The exact frame the picture jumps at (the detector's time can be a few frames off).
-    m = mask > 0
-    diff = [float(np.mean(cv2.absdiff(g[k], g[k + 1])[m])) for k in range(len(g) - 1)]
+
+    # 1. The layout, frame to frame (blurred and tiny, so motion blur doesn't matter): a cut swaps the
+    # whole picture between two frames, so the likeness drops suddenly at one pair and is back right
+    # after. Even a talking-head jump cut, where it barely drops, stands out against the near-perfect
+    # pairs around it. In a fast camera move it sags gradually over several frames instead.
     mid = len(g) // 2
-    k = max(range(max(6, mid - 12), min(len(g) - 7, mid + 12)), key=lambda x: diff[x])
-    # How fast the camera moves away from the cut, on both sides.
-    steps = [_picture_match(g[x], g[x + 1], mask) for x in [*range(max(0, k - 9), k - 3), *range(k + 4, min(len(g) - 1, k + 10))]]
-    moving = [mv for n, mv in steps if n >= 30]
+    near = g[max(0, mid - 15):mid + 15]
+    sm = [cv2.resize(cv2.GaussianBlur(x, (0, 0), 3), (30, 53), interpolation=cv2.INTER_AREA).astype(np.float32) for x in near]
+    keep = cv2.resize((~still).astype(np.uint8), (30, 53), interpolation=cv2.INTER_NEAREST) > 0
+
+    def alike(a, b) -> float:
+        x, y = a[keep], b[keep]
+        return 1.0 if x.std() < 2 or y.std() < 2 else float(np.corrcoef(x, y)[0, 1])
+
+    cs = [alike(sm[k], sm[k + 1]) for k in range(len(sm) - 1)]
+    lo = int(np.argmin(cs))
+    around = [cs[x] for x in range(max(0, lo - 2), min(len(cs), lo + 3)) if x != lo]
+    usual = float(np.median(around)) if around else 1.0
+    sudden = (1 - cs[lo]) > 3 * (1 - usual) + 0.04
+    if sudden:
+        return False
+    if cs[lo] >= 0.45:
+        return True
+    # Each frame against the next, around the cut: a real cut is where this chain breaks. (The
+    # detector's time can be a few frames off; motion blur weakens a few links in a row.)
+    mid = len(g) // 2
+    span = range(max(0, mid - 12), min(len(g) - 1, mid + 12))
+    links = {x: _picture_match(g[x], g[x + 1], mask) for x in span}
+    k = min(links, key=lambda x: (links[x][0], abs(x - mid)))  # the weakest link: frames k and k+1
+    # How fast the camera moves away from that point, on both sides.
+    # 2. Too different in layout to tell that way: match the picture's details across the cut.
+    moving = [mv for x, (n, mv) in links.items() if abs(x - k) > 3 and n >= 30]
     if not moving:
         return False
     usual = float(np.median(moving))
-    # The best line-up across the jump (a few frames either side, to get past motion blur).
-    for i in range(k - 3, k + 1):
-        for j in range(k + 1, min(len(g), k + 5)):
-            if j - i > 5:
+    n, mv = links[k]
+    if n >= 20:
+        # The picture never breaks: one take, unless it suddenly jumps (a jump cut between two similar angles).
+        return mv <= 2.5 * usual + 3
+    # Bridge the weak spot with frames a little further apart (past the blur).
+    for i in range(max(0, k - 4), k + 1):
+        for j in range(k + 1, min(len(g), k + 6)):
+            if j - i > 7:
                 continue
             n, mv = _picture_match(g[i], g[j], mask)
-            if n >= 30 and mv / (j - i) <= 2.5 * usual + 3:
+            if n >= 20 and mv / (j - i) <= 2.5 * usual + 3:
                 return True
     return False
 
