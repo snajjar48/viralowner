@@ -329,6 +329,9 @@ def report(stage: str | None, progress: int) -> None:
     job_id = modal.current_function_call_id()
     if job_id:
         progress_store[job_id] = {"stage": stage, "progress": max(0, min(100, progress)), "updated_at": time.time()}
+    t0 = JOB.get("t0")
+    if t0:
+        print(f"[{time.time() - t0:6.1f}s] {stage} {progress}%")
 
 
 def r2_client():
@@ -592,15 +595,84 @@ def whisper_model():
         if _whisper is None:
             from faster_whisper import WhisperModel
 
-            _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR)
+            _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", download_root=MODELS_DIR,
+                                    cpu_threads=8)
     return _whisper
+
+
+def _whisper_one(model, pcm: bytes, opts: dict) -> dict:
+    """One Whisper pass over 16 kHz mono s16le samples, as plain data (so it can come back from the GPU)."""
+    import numpy as np
+
+    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    segments, info = model.transcribe(audio, **opts)
+    f = float  # plain numbers (Whisper's are numpy's)
+    out = [{"start": f(s.start), "end": f(s.end), "text": s.text, "no_speech_prob": f(s.no_speech_prob),
+            "words": [{"word": w.word, "start": f(w.start), "end": f(w.end), "probability": f(w.probability)}
+                      for w in (s.words or [])]}
+           for s in segments]  # a generator: the work happens here
+    return {"language": info.language, "segments": out}
+
+
+# Speech on a GPU: the same model (large-v3-turbo) in full precision instead of the CPU's int8, in well
+# under a second per clip instead of ~10s (Whisper always works on 30s windows, so even a 2s clip costs a
+# full pass on CPU). Booted as soon as a job starts (warm_speech) and kept warm a few minutes after.
+speech_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install("faster-whisper>=1.1", "numpy", "nvidia-cublas-cu12", "nvidia-cudnn-cu12==9.*")
+    .env({"LD_LIBRARY_PATH": "/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:"
+                             "/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib"})
+    .run_function(_download_whisper)
+)
+
+
+@app.cls(image=speech_image, gpu=["L4", "A10G", "T4"], timeout=600, scaledown_window=240)
+@modal.concurrent(max_inputs=4)
+class Speech:
+    @modal.enter()
+    def load(self) -> None:
+        from faster_whisper import WhisperModel
+
+        self.model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16", download_root=MODELS_DIR)
+
+    @modal.method()
+    def run(self, pcms: list[bytes], opts: dict) -> list[dict]:
+        return [_whisper_one(self.model, p, opts) for p in pcms]
+
+    @modal.method()
+    def warm(self) -> None:
+        """Nothing: calling it boots a container (and loads the model) ahead of the first real call."""
+
+
+def warm_speech() -> None:
+    try:
+        Speech().warm.spawn()
+    except Exception as e:  # noqa: BLE001
+        print(f"couldn't warm the speech GPU: {type(e).__name__}: {e}")
+
+
+SPEECH_GPU_WAIT_S = 45  # past this (no GPU free, or it's stuck) the job does it on its own CPU
+
+
+def whisper_many(pcms: list[bytes], opts: dict) -> list[dict]:
+    """Whisper over each of `pcms`: on the GPU service, or here on the CPU if that fails."""
+    if not pcms:
+        return []
+    if not modal.is_local():  # on Modal (any thread; not a helper tried on a laptop)
+        try:
+            t = time.time()
+            out = Speech().run.spawn(pcms, opts).get(timeout=SPEECH_GPU_WAIT_S)
+            print(f"speech: {len(pcms)} on the GPU in {time.time() - t:.1f}s")
+            return out
+        except Exception as e:  # noqa: BLE001
+            print(f"WARNING speech GPU failed ({type(e).__name__}: {e}); transcribing on the CPU instead")
+    model = whisper_model()
+    return [_whisper_one(model, p, opts) for p in pcms]
 
 
 def transcribe(path: Path, hint: str = "") -> dict:
     """What's said, with timings. Empty if there's no audio or no speech. `hint`: words likely to
     come up (the business, products, names), so they're spelled right."""
-    import numpy as np
-
     # Decode with ffmpeg to 16 kHz mono samples and hand Whisper the array
     # (its own decoder depends on a PyAV API that newer versions removed).
     pcm = subprocess.run(
@@ -609,21 +681,19 @@ def transcribe(path: Path, hint: str = "") -> dict:
     ).stdout
     if len(pcm) < 16000:  # under half a second of audio
         return {"language": None, "segments": []}
-    audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    model = whisper_model()
-    segments, info = model.transcribe(audio, vad_filter=True, word_timestamps=True, beam_size=5,
-                                      initial_prompt=hint.strip()[:400] or None)
+    heard = whisper_many([pcm], {"vad_filter": True, "word_timestamps": True, "beam_size": 5,
+                                 "initial_prompt": hint.strip()[:400] or None})[0]
     out = []
-    for s in segments:
-        text = s.text.strip()
-        if text and s.no_speech_prob < 0.7:
+    for s in heard["segments"]:
+        text = s["text"].strip()
+        if text and s["no_speech_prob"] < 0.7:
             out.append({
-                "startS": r2(s.start), "endS": r2(s.end), "text": text,
+                "startS": r2(s["start"]), "endS": r2(s["end"]), "text": text,
                 # p: how sure Whisper is of the word (a clarity signal when choosing between takes).
-                "words": [{"w": w.word.strip(), "s": r2(w.start), "e": r2(w.end), "p": r2(w.probability)}
-                          for w in (s.words or [])],
+                "words": [{"w": w["word"].strip(), "s": r2(w["start"]), "e": r2(w["end"]), "p": r2(w["probability"])}
+                          for w in s["words"]],
             })
-    return {"language": info.language if out else None, "segments": out}
+    return {"language": heard["language"] if out else None, "segments": out}
 
 
 CAPTION_FIX_SCHEMA = {
@@ -966,9 +1036,13 @@ def write_post(video: Path, workdir: Path, texts: list[str], words: list[dict], 
         "what's said: " + (json.dumps(" ".join(w["w"] for w in words), ensure_ascii=False) if words else "nothing (or no captions)")
         + (f"\n\nthe user's instructions:\n{instructions}" if instructions else "")
     )}]
-    for k in range(6):
-        t = duration * (k + 0.5) / 6
-        f = grab_frame(video, t, workdir / f"post{k}.jpg", MATCH_FRAME_WIDTH)
+    from concurrent.futures import ThreadPoolExecutor
+
+    times = [duration * (k + 0.5) / 6 for k in range(6)]
+    with ThreadPoolExecutor(6) as pool:
+        grabbed = list(pool.map(lambda k: grab_frame(video, times[k], workdir / f"post{k}.jpg", MATCH_FRAME_WIDTH),
+                                range(6)))
+    for t, f in zip(times, grabbed):
         if f:
             content.append({"type": "text", "text": f"at {t:.1f}s"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(f)}})
@@ -1041,7 +1115,6 @@ def transcribe_take(path: Path) -> dict:
     if len(pcm) < 16000:
         return {"language": None, "segments": []}
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    model = whisper_model()
 
     # Speech = 20ms frames louder than -45 dB; join stretches less than 0.5s apart.
     hop = 320
@@ -1055,22 +1128,24 @@ def transcribe_take(path: Path) -> dict:
         else:
             regions.append([t, t + hop / 16000])
     out, language = [], None
+    spans = []
     for a, b in regions:
         if b - a < 0.25:
             continue
-        a0, b0 = max(0.0, a - 0.2), min(len(audio) / 16000, b + 0.2)
-        chunk = audio[int(a0 * 16000): int(b0 * 16000)]
-        segments, info = model.transcribe(chunk, vad_filter=False, word_timestamps=True,
-                                             condition_on_previous_text=False)
-        for sg in segments:
-            text = sg.text.strip()
-            if not text or sg.no_speech_prob > 0.7:
+        spans.append((max(0.0, a - 0.2), min(len(audio) / 16000, b + 0.2)))
+    # Every stretch in one go (one trip to the GPU), each still transcribed on its own.
+    heard = whisper_many([pcm[int(a0 * 16000) * 2: int(b0 * 16000) * 2] for a0, b0 in spans],
+                         {"vad_filter": False, "word_timestamps": True, "condition_on_previous_text": False})
+    for (a0, _b0), h in zip(spans, heard):
+        for sg in h["segments"]:
+            text = sg["text"].strip()
+            if not text or sg["no_speech_prob"] > 0.7:
                 continue
-            language = language or info.language
+            language = language or h["language"]
             out.append({
-                "startS": r2(a0 + sg.start), "endS": r2(a0 + sg.end), "text": text,
-                "words": [{"w": w.word.strip(), "s": r2(a0 + w.start), "e": r2(a0 + w.end), "p": r2(w.probability)}
-                          for w in (sg.words or [])],
+                "startS": r2(a0 + sg["start"]), "endS": r2(a0 + sg["end"]), "text": text,
+                "words": [{"w": w["word"].strip(), "s": r2(a0 + w["start"]), "e": r2(a0 + w["end"]),
+                           "p": r2(w["probability"])} for w in sg["words"]],
             })
     return {"language": language, "segments": out}
 
@@ -1156,6 +1231,8 @@ def start_job(req: dict | None = None) -> None:
     JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
+    JOB["t0"] = time.time()
+    warm_speech()  # most jobs need speech; boot the GPU while the clips download
 
 
 def job_heads_up() -> list[str]:
@@ -1175,6 +1252,7 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         system += ("\n\nWhat users of the app keep asking for or correcting (lessons learned from everyone's change "
                    "requests and feedback; apply them by default so the first version is already right, unless this "
                    "user said otherwise):\n" + JOB["lessons"])
+    asked = time.time()
     # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
     with client.beta.messages.stream(
         model=CLAUDE_MODEL,
@@ -1200,6 +1278,8 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
     }
     cost = sum(usage[k] * PRICES[k] for k in usage) / 1_000_000
+    print(f"claude [{refusal_message[:40]}] effort={effort}: {time.time() - asked:.1f}s, "
+          f"in={usage['input']} out={usage['output']} cache_read={usage['cache_read']}")
     data = json.loads(text)
     if editing:
         h = data.get("heads_up") if isinstance(data, dict) else None
@@ -5114,9 +5194,15 @@ _STYLE_LOOK = {"outline": {"box": False, "outline": "thick", "shadow": False},
 
 
 def scratch_speech(clips: list[dict]) -> None:
-    """Adds clip["speech"]: what's said in each clip, with word timings."""
-    for c in clips:
-        c["speech"] = transcribe(c["path"])["segments"] if c["has_audio"] else []
+    """Adds clip["speech"]: what's said in each clip, with word timings (all clips at once)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def heard(c: dict) -> list:
+        return transcribe(c["path"])["segments"] if c["has_audio"] else []
+
+    with ThreadPoolExecutor(4) as pool:
+        for c, segs in zip(clips, list(pool.map(heard, clips))):
+            c["speech"] = segs
 
 
 def describe_speech(segments: list[dict], words_ok: bool) -> str:
@@ -6521,8 +6607,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         ]
         if sum(c["duration"] for c in clips if c["has_audio"]) <= MAX_CLIP_SPEECH_S:
             report("analyzing", 14)
-            for c in clips:
-                c["speech"] = transcribe(c["path"])["segments"] if c["has_audio"] else []
+            scratch_speech(clips)
 
         report("matching", 25)
         result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode if text_mode != "set" else "keep",
@@ -6654,6 +6739,24 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
+
+    # The post caption, written while the video is finished (a change request keeps the one it has,
+    # unless it was asked to change it). It reads the cut video and is told the on-screen text.
+    series_part = (options.get("series") or {}).get("part") if isinstance(options.get("series"), dict) else None
+    write_new_post = req["writePost"] if "writePost" in req else (not previous and not (keep or {}).get("postCopy"))
+    post_future = None
+    if write_new_post:
+        ins = breakdown.get("insights") or {}
+        why = ins.get("whyItWorks")
+        about = (req.get("captionInstructions") or "").strip()[:600] or "; ".join(
+            x for x in (ins.get("hook"), ins.get("structure"), *(why if isinstance(why, list) else [why]))
+            if isinstance(x, str) and x)
+        if isinstance(series_part, int) and series_part >= 1:
+            about = (about + f" this video is part {series_part} of a series: say so in the caption.").strip()
+        shown_texts = [x["text"] for x in text_items] if text_items is not None else plan_texts
+        post_pool = ThreadPoolExecutor(1)
+        post_future = post_pool.submit(write_post, joined, workdir, shown_texts, words, about, guide)
+        post_pool.shutdown(wait=False)
     # The editor's free-timed text when there is some, else each shot's text over its shot.
     # (An empty list is a choice too: the user removed all the text.)
     base_timeline = (items_timeline(text_items, style, layout, position) if text_items is not None
@@ -6678,7 +6781,6 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             print(f"emoji pop-ups skipped: {type(e).__name__}: {e}")
     proof_pics = proof_overlays(proofs, spoken, total, workdir, fetch) if proofs else []
     pictures += proof_pics
-    series_part = (options.get("series") or {}).get("part") if isinstance(options.get("series"), dict) else None
     if isinstance(series_part, int) and 1 <= series_part <= 999:
         try:
             pictures.append(series_label(series_part, workdir, total))
@@ -6757,22 +6859,6 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         raise JobError("making this video took too long. please try again.")
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
-    # The post caption, written from the finished video (a change request keeps the one it has,
-    # unless it was asked to change it).
-    write_new_post = req["writePost"] if "writePost" in req else (not previous and not (keep or {}).get("postCopy"))
-    if write_new_post:
-        report("finishing", 93)
-        ins = breakdown.get("insights") or {}
-        why = ins.get("whyItWorks")
-        about = (req.get("captionInstructions") or "").strip()[:600] or "; ".join(
-            x for x in (ins.get("hook"), ins.get("structure"), *(why if isinstance(why, list) else [why]))
-            if isinstance(x, str) and x)
-        if isinstance(series_part, int) and series_part >= 1:
-            about = (about + f" this video is part {series_part} of a series: say so in the caption.").strip()
-        new_post, post_cost = write_post(out, workdir, plan_texts, words, about, guide)
-        cost += post_cost
-        if new_post:
-            post = new_post
     # Watch for frozen picture (there should never be any): logged so it can be fixed at the source.
     frozen = subprocess.run(["ffmpeg", "-v", "info", "-i", out.name, "-map", "0:v", "-vf",
                              "freezedetect=n=0.0005:d=0.4", "-f", "null", "-"], cwd=workdir, capture_output=True, text=True)
@@ -6783,6 +6869,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # ---- finishing
     report("finishing", 92)
     store(out, req["outputKey"])
+    if post_future is not None:
+        report("finishing", 96)
+        new_post, post_cost = post_future.result()
+        cost += post_cost
+        if new_post:
+            post = new_post
     report("finishing", 99)
 
     seconds = round(time.time() - started, 1)
@@ -7102,9 +7194,11 @@ def hook_job(req: dict) -> dict:
         return hook_check(req, Path(tmp))
 
 
-@app.function(**job_resources, timeout=900)
+@app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=900)
 def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
-    """For testing from a laptop: renders files sent directly (keys map to bytes; skips storage)."""
+    """For testing from a laptop: renders files sent directly (keys map to bytes; skips storage).
+    Same machine as render_job, so its timings match the real thing."""
+    start_job(req)
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         result: dict = {}
@@ -7294,7 +7388,10 @@ def ping_job() -> dict:
 # ---------------------------------------------------------------- web API
 
 
-@app.function(image=image, secrets=secrets, timeout=60)
+# One container answers many requests at once (they're quick: start a job, read its progress), and one
+# is always up so the site never waits for a cold start; more start on their own under load.
+@app.function(image=image, secrets=secrets, timeout=60, min_containers=1, scaledown_window=600)
+@modal.concurrent(max_inputs=50)
 @modal.asgi_app(label=APP_NAME)
 def api():
     from fastapi import Body, Depends, FastAPI, Header, HTTPException
