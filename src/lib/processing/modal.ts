@@ -19,6 +19,7 @@ import {
   type ProcessingEngine,
   type RenderOutput,
   type RenderPlan,
+  type TextItem,
   type Shot,
   type ShotRole,
 } from "./types";
@@ -108,6 +109,28 @@ export function parseRenderOutput(raw: unknown): RenderOutput | null {
   };
 }
 
+/** On-screen text pieces from the worker (what the editor shows and edits). */
+function textItemsFrom(raw: unknown): TextItem[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const n = (v: unknown, lo: number, hi: number) => (isNum(v) ? Math.min(hi, Math.max(lo, v)) : null);
+  return raw
+    .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof (x as { text?: unknown }).text === "string")
+    .slice(0, 40)
+    .map((x) => ({
+      text: String(x.text).slice(0, 300),
+      start: n(x.start, 0, 600) ?? 0,
+      end: n(x.end, 0, 600) ?? 0,
+      y: n(x.y, 0, 1),
+      x: n(x.x, 0, 1),
+      align: x.align === "left" || x.align === "right" || x.align === "center" ? x.align : null,
+      size: n(x.size, 0.4, 2.5) ?? 1,
+      color: typeof x.color === "string" && /^#[0-9a-f]{6}$/i.test(x.color) ? x.color : null,
+      font: typeof x.font === "string" ? x.font : null,
+      look: x.look === "outline" || x.look === "box" || x.look === "plain" ? x.look : null,
+      animation: typeof x.animation === "string" ? x.animation : null,
+    }));
+}
+
 function parsePlan(raw: unknown): RenderPlan | undefined {
   const p = raw as Partial<RenderPlan> | null;
   if (!p || !Array.isArray(p.shots) || !Array.isArray(p.texts)) return undefined;
@@ -118,8 +141,8 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     trimEndS: isNum(s?.trimEndS) ? Math.round(s.trimEndS * 10) / 10 : null,
   }));
   const ys = (v: unknown) =>
-    Array.isArray(v) ? v.map((y) => (isNum(y) ? Math.min(0.95, Math.max(0.05, y)) : null)) : undefined;
-  const scale = (v: unknown) => (isNum(v) ? Math.min(1.6, Math.max(0.5, v)) : undefined);
+    Array.isArray(v) ? v.map((y) => (isNum(y) ? Math.min(1, Math.max(0, y)) : null)) : undefined;
+  const scale = (v: unknown) => (isNum(v) ? Math.min(2.5, Math.max(0.4, v)) : undefined);
   return {
     shots,
     texts: p.texts.map(str),
@@ -170,6 +193,8 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
       : undefined,
     captionStyle:
       p.captionStyle === "off" || CAPTION_STYLES.some((c) => c.id === p.captionStyle) ? p.captionStyle : undefined,
+    textItems: textItemsFrom(p.textItems),
+    textTimeline: textItemsFrom(p.textTimeline),
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,

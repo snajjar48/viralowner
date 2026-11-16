@@ -9,6 +9,7 @@ import { syncUnfinished } from "@/lib/renders";
 import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import type { Shot } from "@/lib/processing/types";
+import { textItemsFromShots } from "@/lib/text-items";
 import { PreviewEditor } from "./preview-editor";
 
 export const metadata: Metadata = {
@@ -91,7 +92,8 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           proofs: current.plan?.proofs ?? [],
           proofMoments: current.plan?.proofMoments ?? [],
           removedShots: current.plan?.removedShots ?? [],
-          textItems: current.plan?.textItems ?? current.plan?.textTimeline ?? null,
+          textItems:
+            current.plan?.textItems ?? current.plan?.textTimeline ?? textItemsFromShots(current.plan, scratch ? null : inspo!.breakdown!),
         }}
         inProgress={inProgress ? { id: inProgress.id, version: inProgress.version } : null}
         failedLatest={latest?.status === "failed" ? { id: latest.id, version: latest.version } : null}
