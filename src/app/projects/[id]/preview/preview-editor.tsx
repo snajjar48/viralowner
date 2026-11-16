@@ -9,7 +9,7 @@ import { ArrowRightIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem, Section } from "@/components/options-fields";
 import { ROLE_LABELS } from "@/components/shot-list";
 import { VideoPlayer } from "@/components/video-player";
-import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit, TextItem } from "@/lib/processing/types";
+import type { Proof, ProofMoment, RenderSettings, Shot, ShotEdit, TextDefaults, TextItem } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 import { ProofPanel } from "./proof-panel";
@@ -64,6 +64,8 @@ export function PreviewEditor({
     removedShots: number[];
     /** The on-screen text, as pieces with their own times (null: an older version, not editable here). */
     textItems: TextItem[] | null;
+    /** How this version draws text without a look of its own. */
+    textDefaults: TextDefaults | null;
   };
   inProgress: { id: string; version: number } | null;
   failedLatest: { id: string; version: number } | null;
@@ -183,7 +185,7 @@ export function PreviewEditor({
           size="fit"
           label={`your video, version ${current.version}`}
           videoRef={videoRef}
-          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} /> : undefined}
+          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} defaults={current.textDefaults} /> : undefined}
         />
 
         {versions.length > 1 && (
@@ -304,7 +306,15 @@ export function PreviewEditor({
 
         <Section title="on-screen text">
           {textItems ? (
-            <TextItemsEditor items={textItems} onChange={setTextItems} videoRef={videoRef} t={t} duration={duration} disabled={locked} />
+            <TextItemsEditor
+              items={textItems}
+              onChange={setTextItems}
+              videoRef={videoRef}
+              t={t}
+              duration={duration}
+              disabled={locked}
+              defaults={current.textDefaults}
+            />
           ) : (
             <p className="text-sm text-muted">
               text editing here works on versions made from now on. ask for any change below (or regenerate) and the next

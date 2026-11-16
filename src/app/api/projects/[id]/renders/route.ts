@@ -16,6 +16,7 @@ import {
   projectStoryboard,
   startNewRender,
   startScratchRender,
+  textSettingsChanged,
   textToReuse,
 } from "@/lib/renders";
 import { inspoOptions, parseVideoOptions, REQUEST_MAX, scratchOptions } from "@/lib/video-options";
@@ -132,7 +133,7 @@ async function makeVersion(userId: string, project: Project, body: Record<string
         if ("error" in shots) return shots;
         return {
           ...settingsFor(options, shots),
-          ...withTextItems(carryFrom(from), textItems),
+          ...withTextItems(carryFrom(from), textItems, !!from && textSettingsChanged(from, options)),
           ...(request ? { request, fromVersion: from!.version } : {}),
         };
       },
@@ -264,7 +265,7 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
         project,
         {
           ...settingsFor(options, shots),
-          ...withTextItems(carryFrom(from), textItems),
+          ...withTextItems(carryFrom(from), textItems, textSettingsChanged(from, options)),
           fromVersion: from.version,
           ...(request ? { request } : {}),
         },
@@ -284,7 +285,19 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
   return Response.json({ renderId: result.render.id, version: result.render.version });
 }
 
-/** The version's carried details, with the editor's text items when it sent some. */
-function withTextItems(carried: Pick<RenderSettings, "carry">, items: TextItem[] | undefined): Pick<RenderSettings, "carry"> {
-  return items === undefined ? carried : { carry: { ...(carried.carry ?? {}), textItems: items } };
+/**
+ * The version's carried details, with the editor's text items when it sent some. When the text
+ * settings changed (their own text, "write it for me"...) and the editor's text wasn't touched, the
+ * old pieces aren't carried: the new words are placed fresh.
+ */
+function withTextItems(
+  carried: Pick<RenderSettings, "carry">,
+  items: TextItem[] | undefined,
+  textSettingsChanged = false,
+): Pick<RenderSettings, "carry"> {
+  if (items !== undefined) return { carry: { ...(carried.carry ?? {}), textItems: items } };
+  if (!textSettingsChanged || !carried.carry?.textItems) return carried;
+  const rest = { ...carried.carry };
+  delete rest.textItems;
+  return Object.keys(rest).length ? { carry: rest } : {};
 }

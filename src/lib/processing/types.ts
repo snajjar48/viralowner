@@ -185,6 +185,15 @@ export interface TextItem {
   animation?: string | null;
 }
 
+/** How a version draws text that has no look of its own (so the editor shows it as it is). */
+export interface TextDefaults {
+  font: string;
+  color: string;
+  look: "outline" | "box" | "plain";
+  boxColor: string | null;
+  animation: string;
+}
+
 /** A screenshot shown on the words it proves ("2 million views"). */
 export interface Proof {
   key: string;
@@ -301,6 +310,7 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   /** The editor's free-timed text this version used, and what was on screen and when (any version). */
   textItems?: TextItem[];
   textTimeline?: TextItem[];
+  textDefaults?: TextDefaults;
   /** The caption style this version used, when a request changed it from the one in the options. */
   captionStyle?: CaptionStyleId | "off";
   /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */

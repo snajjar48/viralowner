@@ -19,6 +19,7 @@ import {
   type ProcessingEngine,
   type RenderOutput,
   type RenderPlan,
+  type TextDefaults,
   type TextItem,
   type Shot,
   type ShotRole,
@@ -109,6 +110,20 @@ export function parseRenderOutput(raw: unknown): RenderOutput | null {
   };
 }
 
+/** How the version draws text without a look of its own. */
+function textDefaultsFrom(raw: unknown): TextDefaults | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, unknown>;
+  const hex = (v: unknown) => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v) ? v.toUpperCase() : null);
+  return {
+    font: typeof d.font === "string" ? d.font : "clean_sans",
+    color: hex(d.color) ?? "#FFFFFF",
+    look: d.look === "box" || d.look === "plain" ? d.look : "outline",
+    boxColor: hex(d.boxColor),
+    animation: typeof d.animation === "string" ? d.animation : "none",
+  };
+}
+
 /** On-screen text pieces from the worker (what the editor shows and edits). */
 function textItemsFrom(raw: unknown): TextItem[] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -195,6 +210,7 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
       p.captionStyle === "off" || CAPTION_STYLES.some((c) => c.id === p.captionStyle) ? p.captionStyle : undefined,
     textItems: textItemsFrom(p.textItems),
     textTimeline: textItemsFrom(p.textTimeline),
+    textDefaults: textDefaultsFrom(p.textDefaults),
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,

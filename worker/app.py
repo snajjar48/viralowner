@@ -3752,6 +3752,71 @@ def clean_text_items(raw, total: float) -> list[dict] | None:
     return sorted(out, key=lambda t: t["start"])
 
 
+def merge_text_item_changes(old_raw: list, changed: list) -> list[dict]:
+    """A change request's new free-timed text (words, times, height), each item keeping the look the
+    user gave it in the editor (matched by its words first, then by its place in the list)."""
+    old = [x for x in old_raw if isinstance(x, dict)]
+    new = [x for x in changed if isinstance(x, dict)]
+    flat = lambda v: " ".join(str(v.get("text", "")).split()).lower()  # noqa: E731
+    # Unchanged words first, wherever they moved to.
+    pick: dict[int, int] = {}
+    for k, t in enumerate(new):
+        j = next((j for j, o in enumerate(old) if j not in pick.values() and flat(o) == flat(t)), None)
+        if j is not None:
+            pick[k] = j
+    # Reworded ones: the nearest item left (when nothing was added or taken away), else the same place.
+    for k in range(len(new)):
+        if k in pick:
+            continue
+        left = [j for j in range(len(old)) if j not in pick.values()]
+        if len(new) == len(old) and left:
+            pick[k] = min(left, key=lambda j: abs(j - k))
+        elif k in left:
+            pick[k] = k
+    out = []
+    for k, t in enumerate(new):
+        j = pick.get(k)
+        out.append({**(old[j] if j is not None else {}), "text": t.get("text", ""), "start": t.get("start_s", 0),
+                    "end": t.get("end_s", 0),
+                    **({"y": t["y"]} if isinstance(t.get("y"), (int, float)) and 0 <= t["y"] <= 1 else {})})
+    return out
+
+
+TEXT_ITEMS_SYSTEM = """You change the on-screen text of a short vertical video (TikTok, Reels, Shorts) for ViralOwner, exactly as the user asks. The text is a list of pieces, each shown from its start to its end (seconds of the video) at a height on screen (y, the vertical center: 0 is the top, 1 the bottom). The user set this text themselves in the editor: every word, time and height is what they want, unless their request says otherwise.""" + USER_FIRST
+
+TEXT_ITEMS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text_items_changed": {"type": "boolean", "description": "true only if the request asks to change the on-screen text."},
+        "text_items": {"type": "array", "description": "the whole new list when text_items_changed (same order; untouched items word for word with their times); else empty.",
+                       "items": {"type": "object", "properties": {
+                           "text": {"type": "string"}, "start_s": {"type": "number"}, "end_s": {"type": "number"},
+                           "y": {"type": "number", "description": "vertical center 0-1, or -1 to keep."}},
+                           "required": ["text", "start_s", "end_s", "y"], "additionalProperties": False}},
+        "heads_up": HEADS_UP_FIELD,
+    },
+    "required": ["text_items_changed", "text_items", "heads_up"],
+    "additionalProperties": False,
+}
+
+
+def revise_text_items(request: str, items: list[dict], total: float) -> tuple[list[dict] | None, float]:
+    """A change request applied to the editor's free-timed text ("start from scratch" versions, whose
+    director plans text per shot). None if the request isn't about the text."""
+    listing = "\n".join(f"{k + 1}. {t['start']:.1f}s-{t['end']:.1f}s at y={(t['y'] if t['y'] is not None else -1)}: "
+                        f"{json.dumps(t['text'], ensure_ascii=False)}" for k, t in enumerate(items))
+    content = [{"type": "text", "text": (
+        f"the user's request: {json.dumps(request, ensure_ascii=False)}\n\nthe video is {total:.1f}s long. its on-screen "
+        f"text now:\n{listing}\n\nif the request asks to change the on-screen text, make exactly that change. if it "
+        "doesn't (it's about the shots, sound, captions or anything else), set text_items_changed to false.")}]
+    result = ask_claude(TEXT_ITEMS_SYSTEM, content, TEXT_ITEMS_SCHEMA, "we couldn’t make that change. try wording it differently.",
+                        effort="high")
+    data = result["data"]
+    if data.get("text_items_changed") and isinstance(data.get("text_items"), list):
+        return merge_text_item_changes(items, data["text_items"]), result["cost_usd"]
+    return None, result["cost_usd"]
+
+
 def item_style(style: dict, item: dict) -> dict:
     st = {**style}
     if item.get("font"):
@@ -3764,7 +3829,13 @@ def item_style(style: dict, item: dict) -> dict:
         st["animation"] = item["animation"]
     lk = item.get("look")
     if lk == "box":
-        st.update(box=True, boxColor=st.get("boxColor") or "#000000", outline="none")
+        # The video's own box color when it has one that reads behind the text; else black behind
+        # light text and white behind dark text (as the editor's preview shows it).
+        dark_text = luminance(st.get("color", "#FFFFFF")) < 0.5
+        box_c = st.get("boxColor") if style.get("box") else None
+        if not box_c or (luminance(box_c) < 0.5) == dark_text:
+            box_c = "#FFFFFF" if dark_text else "#000000"
+        st.update(box=True, boxColor=box_c, outline="none")
     elif lk == "outline":
         st.update(box=False, outline=st.get("outline") if st.get("outline") not in (None, "none") else "thick")
     elif lk == "plain":
@@ -3792,6 +3863,15 @@ def items_timeline(items: list[dict], style: dict, layout: dict, position: str) 
         out.append((it["start"], it["end"], it["text"], {"x": x, "y": y, "lines": lines, "size": size, "align": align,
                                                           "h": h, "look": look, "animation": st.get("animation", "none")}))
     return out
+
+
+def text_defaults(style: dict) -> dict:
+    """The video's text look, in the editor's terms."""
+    return {"font": style.get("font") if style.get("font") in FONTS else "clean_sans",
+            "color": str(style.get("color") or "#FFFFFF").upper(),
+            "look": "box" if style.get("box") else ("plain" if style.get("outline") in (None, "none") and style.get("shadow") else "outline"),
+            "boxColor": str(style.get("boxColor") or "#FFFFFF").upper() if style.get("box") else None,
+            "animation": style.get("animation") if style.get("animation") in TEXT_ANIMATIONS else "none"}
 
 
 def timeline_items(timeline: list[tuple[float, float, str, dict]]) -> list[dict]:
@@ -3965,7 +4045,7 @@ def emoji_text_pictures(timeline: list[tuple[float, float, str, dict]], style: d
         w = Image.open(png).size[0]
         cx = lay["x"] + {"left": w / 2 / OUT_W, "right": -w / 2 / OUT_W}.get(lay["align"], 0.0)
         pictures.append({"path": png, "start": start, "end": end, "x": cx, "y": lay["y"], "w": w,
-                         "rise": style.get("animation") in ("pop", "slide_up")})
+                         "rise": (lay.get("animation") or style.get("animation")) in ("pop", "slide_up")})
     return keep, pictures
 
 
@@ -4518,10 +4598,12 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
         listing = "\n".join(f"{k + 1}. {t['start']:.1f}s-{t['end']:.1f}s at y={(t['y'] if t['y'] is not None else -1)}: "
                             f"{json.dumps(t['text'], ensure_ascii=False)}" for k, t in enumerate(text_items))
         ask.append("this video's on-screen text is free-timed (set by the user in the editor), not per shot. it is:\n"
-                   + listing + "\nleave each shot's text as an empty string. if the request is about the on-screen "
-                   "text, set text_items_changed to true and return the whole new list in text_items (times in "
-                   "seconds of the video; y the vertical center 0-1, or -1 to leave it where it is); otherwise set "
-                   "text_items_changed to false and return an empty list.")
+                   + listing + "\nthe user set this text themselves: every word, time and height is exactly what they "
+                   "want. leave each shot's text as an empty string. only if the request asks to change the on-screen "
+                   "text, set text_items_changed to true and return the whole new list in text_items, in the same order, "
+                   "changing only what the request asks and keeping every other item word for word with its times "
+                   "(times in seconds of the video; y the vertical center 0-1, or -1 to leave it where it is); "
+                   "otherwise set text_items_changed to false and return an empty list.")
     content.append({"type": "text", "text": "\n".join(ask)})
     return ask_claude(with_playbook(REVISE_SYSTEM, True), content, REVISE_SCHEMA, "we couldn’t make that change. try wording it differently.",
                       effort="xhigh")
@@ -5504,6 +5586,22 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             print(f"  {i + 1}. clip {s['clip'] + 1} {s['start']:.2f}-{s['end']:.2f} {s['speed']} {s['transition_in']} "
                   f"{s['motion']} {s['effects']} {s['role']} text={s['text']!r} ({s['description']})")
 
+    # On-screen text set in the editor (free-timed): kept over the director's per-shot text, and a
+    # change request about the text changes it.
+    text_items = clean_text_items(carry.get("textItems"), 3600.0) if isinstance(carry.get("textItems"), list) else None
+    if text_items and request and isinstance(request, str) and base:
+        try:
+            length = sum((s["end"] - s["start"]) / SPEED_RATES.get(s["speed"], 1.0) for s in cleaned["shots"])
+            changed, text_cost = revise_text_items(request, text_items, length)
+            cost += text_cost
+            if changed is not None:
+                text_items = clean_text_items(changed, 3600.0)
+                print(f"scratch: the request changed the on-screen text ({len(text_items or [])} pieces)")
+        except JobError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            print(f"scratch: text change skipped: {type(e).__name__}: {e}")
+
     built = scratch_inputs(cleaned, clips)
     req2 = {
         **req,
@@ -5519,6 +5617,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "request": None, "previous": None, "fresh": False, "cuts": None,
         "speechHint": prompt[:600],
         "carry": {"captionFixes": caption_fixes, "proofs": clean_proofs(carry.get("proofs")),
+                  **({"textItems": text_items} if text_items is not None else {}),
                   "captionGroups": clean_caption_groups(((base or {}).get("plan") or {}).get("captionGroups") if base else None,
                                                         carry.get("captionGroups"))},
         # The prompt (and any change request) can say how the captions should look and read.
@@ -6043,8 +6142,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     caption_groups = clean_caption_groups(((previous or {}).get("plan") or {}).get("captionGroups"), carry.get("captionGroups"))
     inspo_lengths = [s["durationS"] for s in shots]
     # On-screen text set in the editor (free-timed): from this edit, else kept from the version edited.
+    # (Not when the text settings changed: the new words are placed fresh.)
     text_items_raw = carry.get("textItems") if isinstance(carry.get("textItems"), list) else (
-        ((previous or {}).get("plan") or {}).get("textItems") or (keep or {}).get("textItems"))
+        None if (previous or {}).get("textChanged")
+        else ((previous or {}).get("plan") or {}).get("textItems") or (keep or {}).get("textItems"))
     lengths = carry.get("shotLengths") or ((previous or {}).get("plan") or {}).get("shotLengths")
     lengths_ok = isinstance(lengths, list) and all(isinstance(x, (int, float)) and x > 0 for x in lengths)
     if not jump and lengths_ok and len(lengths) == n:
@@ -6251,11 +6352,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         caption_groups = clean_caption_groups(caption_groups, data.get("caption_together"))
         if text_items_raw and data.get("text_items_changed") and isinstance(data.get("text_items"), list):
             # The request changed the free-timed text: new words and times, each keeping its look.
-            old = [x for x in text_items_raw if isinstance(x, dict)]
-            text_items_raw = [{**(old[k] if k < len(old) else {}), "text": t.get("text", ""), "start": t.get("start_s", 0),
-                               "end": t.get("end_s", 0),
-                               **({"y": t["y"]} if isinstance(t.get("y"), (int, float)) and 0 <= t["y"] <= 1 else {})}
-                              for k, t in enumerate(data["text_items"]) if isinstance(t, dict)]
+            text_items_raw = merge_text_item_changes(text_items_raw, data["text_items"])
         if data.get("caption_style") == "off":
             caption_style = None
         elif data.get("caption_style") in CAPTION_LOOKS:
@@ -6624,6 +6721,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             **({"textItems": text_items} if text_items is not None else {}),
             # What's on screen and when, for the editor's text list.
             "textTimeline": timeline_items(base_timeline),
+            # How text without a look of its own is drawn (the editor shows it that way).
+            "textDefaults": text_defaults(style),
             "textPosition": position,
             "textLook": look_name(style),
             "textStyle": style,
@@ -6989,7 +7088,7 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
 
 @app.local_entrypoint()
 def try_scratch(clips: str, dest: str, prompt: str, text: str = "adapt", custom: str = "", music: str = "original",
-                audio: str = "", captions: str = "bold-pop", request: str = ""):
+                audio: str = "", captions: str = "bold-pop", request: str = "", items: str = ""):
     """modal run worker/app.py::try_scratch --clips a.mp4,b.mp4 --dest out.mp4 --prompt "..."
     A "start from scratch" video. With --request, also makes a changed version (<dest>-changed.mp4)."""
     files: dict[str, bytes] = {}
@@ -7012,9 +7111,11 @@ def try_scratch(clips: str, dest: str, prompt: str, text: str = "adapt", custom:
     out, video = render_upload.remote(req, files)
     Path(dest).write_bytes(video)
     print(json.dumps(out, indent=2, ensure_ascii=False))
-    if request:
+    if request or items:
+        # --items '[{"text": "...", "start": 0, "end": 2, ...}]': text set in the editor for the next version.
         files[req["outputKey"]] = video
-        req2 = {**req, "request": request, "shots": out["plan"]["shots"],
+        req2 = {**req, "request": request or None, "shots": out["plan"]["shots"],
+                **({"carry": {"textItems": json.loads(items)}} if items else {}),
                 "previous": {"storageKey": req["outputKey"], "plan": out["plan"], "postCopy": out["postCopy"],
                              "textChanged": False}}
         out2, video2 = render_upload.remote(req2, files)

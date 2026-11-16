@@ -395,7 +395,7 @@ export async function getStillActiveRender(projectId: string): Promise<Render | 
  * words (on-screen text, caption, hashtags) instead of writing new ones.
  */
 export function textToReuse(from: Render | undefined, options: VideoOptions): Extras["reuseText"] {
-  if (!from?.plan || !from.postCopy || textChanged(from, options)) return undefined;
+  if (!from?.plan || !from.postCopy || textSettingsChanged(from, options)) return undefined;
   const { texts, textPosition, textLook, textXs, textYs, captionYs, textScale, captionScale, textStyle, keepLines, textPreset } =
     from.plan;
   return {
@@ -415,7 +415,7 @@ export function textToReuse(from: Render | undefined, options: VideoOptions): Ex
 }
 
 /** The words depend on the text mode, the user's own text and the additional requests (not alignment). */
-function textChanged(from: Render, options: VideoOptions) {
+export function textSettingsChanged(from: Render, options: VideoOptions) {
   const before = from.settings.options;
   return (
     before.text.mode !== options.text.mode ||
@@ -427,7 +427,7 @@ function textChanged(from: Render, options: VideoOptions) {
 /** What "request a change" needs to know about the version being changed. */
 export function previousFor(from: Render, options: VideoOptions): Extras["previous"] | null {
   if (!from.plan || !from.storageKey?.startsWith("u/")) return null;
-  return { storageKey: from.storageKey, plan: from.plan, postCopy: from.postCopy, textChanged: textChanged(from, options) };
+  return { storageKey: from.storageKey, plan: from.plan, postCopy: from.postCopy, textChanged: textSettingsChanged(from, options) };
 }
 
 export function settingsFor(options: VideoOptions, shots: ShotEdit[], seed = newSeed()): RenderSettings {

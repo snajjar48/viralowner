@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type RefObject } from "react";
-import type { TextItem } from "@/lib/processing/types";
+import type { TextDefaults, TextItem } from "@/lib/processing/types";
 
 /**
  * On-screen text, edited directly: each piece of text has its own time on screen (any moment, over
@@ -37,6 +37,22 @@ const LOOKS = [
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
+const luminance = (hex: string) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  return Number.isFinite(r + g + b) ? 0.2126 * r + 0.7152 * g + 0.0722 * b : 1;
+};
+
+/** How a piece of text is drawn: its own look, else the video's (as the finished video draws it). */
+function resolved(it: TextItem, d: TextDefaults | null | undefined) {
+  const color = it.color ?? d?.color ?? "#FFFFFF";
+  const look = it.look ?? d?.look ?? "outline";
+  const dark = luminance(color) < 0.5;
+  // The video's box color when it reads behind the text, else black behind light text, white behind dark.
+  const own = d?.look === "box" ? d.boxColor : null;
+  const box = own && luminance(own) < 0.5 !== dark ? own : dark ? "#FFFFFF" : "#000000";
+  return { color, look, dark, box, font: it.font ?? d?.font ?? FONTS[0].id, animation: it.animation ?? d?.animation ?? "none" };
+}
+
 /** The video's playhead, updated while it plays or seeks. */
 export function usePlayhead(videoRef: RefObject<HTMLVideoElement | null>) {
   const [t, setT] = useState(0);
@@ -62,16 +78,14 @@ export function usePlayhead(videoRef: RefObject<HTMLVideoElement | null>) {
 }
 
 /** A rough preview of the text on the video at time `t` (the finished video is drawn exactly). */
-export function TextPreview({ items, t }: { items: TextItem[]; t: number }) {
+export function TextPreview({ items, t, defaults }: { items: TextItem[]; t: number; defaults?: TextDefaults | null }) {
   return (
     <>
       {items
         .filter((it) => t >= it.start && t < it.end)
         .map((it, k) => {
           const align = it.align ?? "center";
-          const look = it.look ?? "outline";
-          const color = it.color ?? "#FFFFFF";
-          const dark = color === "#000000";
+          const { look, color, dark, box, font } = resolved(it, defaults);
           return (
             <div
               key={k}
@@ -81,7 +95,7 @@ export function TextPreview({ items, t }: { items: TextItem[]; t: number }) {
                 transform: "translateY(-50%)",
                 textAlign: align,
                 fontSize: `${4.6 * (it.size ?? 1)}cqh`,
-                fontFamily: FONTS.find((f) => f.id === it.font)?.css ?? FONTS[0].css,
+                fontFamily: FONTS.find((f) => f.id === font)?.css ?? FONTS[0].css,
                 color,
               }}
             >
@@ -89,7 +103,7 @@ export function TextPreview({ items, t }: { items: TextItem[]; t: number }) {
                 className={look === "box" ? "rounded-[0.15em] px-[0.25em] py-[0.05em] [box-decoration-break:clone]" : ""}
                 style={
                   look === "box"
-                    ? { background: dark ? "#FFFFFF" : "#000000" }
+                    ? { background: box }
                     : look === "outline"
                       ? { WebkitTextStroke: `0.12em ${dark ? "#FFFFFF" : "#000000"}`, paintOrder: "stroke fill" }
                       : { textShadow: "0 0.05em 0.2em rgba(0,0,0,0.7)" }
@@ -111,6 +125,7 @@ export function TextItemsEditor({
   t,
   duration,
   disabled,
+  defaults,
 }: {
   items: TextItem[];
   onChange: (items: TextItem[]) => void;
@@ -118,6 +133,7 @@ export function TextItemsEditor({
   t: number;
   duration: number;
   disabled?: boolean;
+  defaults?: TextDefaults | null;
 }) {
   const [open, setOpen] = useState<number | null>(null);
   const end = duration || Math.max(0, ...items.map((i) => i.end));
@@ -259,7 +275,7 @@ export function TextItemsEditor({
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="w-14 text-muted">look</span>
                     {LOOKS.map((l) => (
-                      <button key={l.id} type="button" disabled={disabled} className={chip((it.look ?? "outline") === l.id)} onClick={() => set(k, { look: l.id })}>
+                      <button key={l.id} type="button" disabled={disabled} className={chip(resolved(it, defaults).look === l.id)} onClick={() => set(k, { look: l.id })}>
                         {l.name}
                       </button>
                     ))}
@@ -272,10 +288,10 @@ export function TextItemsEditor({
                         type="button"
                         disabled={disabled}
                         aria-label={`color ${c}`}
-                        aria-pressed={(it.color ?? "#FFFFFF") === c}
+                        aria-pressed={resolved(it, defaults).color === c}
                         onClick={() => set(k, { color: c })}
                         className={`size-7 cursor-pointer rounded-full border-2 focus-visible:outline-2 focus-visible:outline-coral ${
-                          (it.color ?? "#FFFFFF") === c ? "border-coral" : "border-white/20"
+                          resolved(it, defaults).color === c ? "border-coral" : "border-white/20"
                         }`}
                         style={{ background: c }}
                       />
@@ -283,7 +299,7 @@ export function TextItemsEditor({
                     <input
                       type="color"
                       aria-label="any color"
-                      value={(it.color ?? "#FFFFFF").toLowerCase()}
+                      value={resolved(it, defaults).color.toLowerCase()}
                       disabled={disabled}
                       onChange={(e) => set(k, { color: e.target.value.toUpperCase() })}
                       className="size-7 cursor-pointer rounded-full border border-white/20 bg-transparent"
@@ -297,7 +313,7 @@ export function TextItemsEditor({
                       onChange={(e) => set(k, { font: e.target.value || null })}
                       className="h-9 rounded-lg border border-white/15 bg-[#15151b] px-2 text-sm outline-none focus-visible:border-coral"
                     >
-                      <option value="">same as the video</option>
+                      <option value="">same as the video ({FONTS.find((f) => f.id === (defaults?.font ?? "clean_sans"))?.name ?? "clean (bold)"})</option>
                       {FONTS.map((f) => (
                         <option key={f.id} value={f.id}>
                           {f.name}
@@ -313,7 +329,7 @@ export function TextItemsEditor({
                       onChange={(e) => set(k, { animation: e.target.value || null })}
                       className="h-9 rounded-lg border border-white/15 bg-[#15151b] px-2 text-sm outline-none focus-visible:border-coral"
                     >
-                      <option value="">same as the video</option>
+                      <option value="">same as the video ({ANIMATIONS.find((a) => a.id === (defaults?.animation ?? "none"))?.name ?? "none"})</option>
                       {ANIMATIONS.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.name}
