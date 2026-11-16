@@ -97,7 +97,10 @@ async function Overview() {
         </Card>
       </div>
 
-      <Card title="what the editor has learned from everyone">
+      <Card
+        title="what the editor has learned from everyone"
+        aside={<Link href="/admin/categories" className="text-sm text-muted underline underline-offset-4 hover:text-foreground">per category</Link>}
+      >
         {lessons[0] ? (
           <>
             <ol className="flex list-decimal flex-col gap-1 pl-5 text-sm">

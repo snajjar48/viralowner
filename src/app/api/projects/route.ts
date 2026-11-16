@@ -3,13 +3,15 @@ import { getUserId } from "@/lib/auth";
 import { startInspoUpload } from "@/lib/inspo";
 import { canCreateProject } from "@/lib/membership";
 import { createProject, createScratchProject } from "@/lib/projects";
+import { CATEGORY_REQUIRED, isCategory } from "@/lib/categories";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { DEFAULT_OPTIONS, PROMPT_MAX } from "@/lib/video-options";
 
 /**
  * Starts a new video.
- *   { kind: "scratch", prompt }  "start from scratch" (Pro): returns the new project's id.
- *   otherwise (an inspo's file details): creates the project and returns where to upload the inspo.
+ *   { kind: "scratch", prompt, category }  "start from scratch" (Pro): returns the new project's id.
+ *   otherwise (an inspo's file details and category): creates the project and returns where to upload the inspo.
+ * `category`: the kind of video (lib/categories.ts).
  */
 export async function POST(request: Request) {
   try {
@@ -22,6 +24,8 @@ export async function POST(request: Request) {
     }
 
     const kind = body.kind === "scratch" ? "scratch" : "inspo";
+    if (!isCategory(body.category)) return jsonError(CATEGORY_REQUIRED, 400);
+    const category = body.category;
     const blocked = await canCreateProject(userId, kind);
     if (blocked) return Response.json({ error: blocked.message, reason: blocked.reason }, { status: blocked.status });
 
@@ -29,14 +33,16 @@ export async function POST(request: Request) {
       const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
       if (!prompt) return jsonError("describe the video you want first.", 400);
       if (prompt.length > PROMPT_MAX) return jsonError(`your description can be up to ${PROMPT_MAX} characters.`, 400);
-      const project = await createScratchProject(userId, prompt, {
-        ...DEFAULT_OPTIONS,
-        text: { ...DEFAULT_OPTIONS.text, mode: "adapt" },
-      });
+      const project = await createScratchProject(
+        userId,
+        prompt,
+        { ...DEFAULT_OPTIONS, text: { ...DEFAULT_OPTIONS.text, mode: "adapt" } },
+        category,
+      );
       return Response.json({ projectId: project.id });
     }
 
-    const project = await createProject(userId);
+    const project = await createProject(userId, category);
     const result = await startInspoUpload(userId, project.id, body);
     if ("error" in result) return jsonError(result.error, result.status);
     return Response.json({ projectId: project.id, upload: result.upload, multipart: result.multipart });

@@ -110,6 +110,8 @@ export interface AnalyzeInput {
   inspirationId: string;
   storageKey: string;
   durationS: number;
+  /** The kind of video the user picked (lib/categories.ts): the vibe the analysis reads it with. */
+  category?: string | null;
 }
 
 export interface AnalysisStatus {
@@ -232,6 +234,8 @@ export interface RenderInput {
   projectId: string;
   renderId: string;
   version: number;
+  /** The kind of video (lib/categories.ts): its playbook and its lessons lead. */
+  category?: string | null;
   /** The inspo being remade; absent for "start from scratch" videos, which have `scratch` instead. */
   inspo?: { storageKey: string; breakdown: Breakdown };
   /** "Start from scratch": the user's prompt. Claude plans the whole edit from it and the clips. */

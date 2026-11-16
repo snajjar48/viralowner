@@ -233,13 +233,46 @@ VIRAL_PLAYBOOK = _read_playbook()
 FOOD_PLAYBOOK = _read_playbook("food-playbook.md")
 TALKING_PLAYBOOK = _read_playbook("talking-playbook.md")
 
+# The kind of video the user picked when they started it: (name, its playbook file, what it is).
+# A category without a playbook yet still sets the vibe; its playbook joins once it's written.
+CATEGORIES = {
+    "food_drink": ("food & drink", "food-playbook.md",
+                   "a food or drink video: a restaurant, café, bakery, bar or drink shop, or someone making, serving or eating something"),
+    "skits": ("skit", "viral-playbook.md", "a skit: characters, dialogue, a setup and a payoff"),
+    "talking_head": ("talking head / yapping", "talking-playbook.md",
+                     "one person talking to the camera: advice, a story, an opinion, an explainer, a rant"),
+    "influencer_vlog": ("influencer / vlog", "influencer-playbook.md",
+                        "an influencer or vlog video: a day in the life, a routine, get ready with me, someone sharing their life or favorite things"),
+    "event_recap": ("event recap", "event-playbook.md",
+                    "an event recap: the highlights of a party, launch, opening, wedding, concert, pop-up or other event"),
+    "travel": ("travel / destination / vacation", "travel-playbook.md",
+               "a travel video: a destination, a trip, a vacation, a place to visit or stay"),
+}
+CATEGORY_PLAYBOOKS = {k: _read_playbook(v[1]) for k, v in CATEGORIES.items()}
+
+
+def job_category() -> str | None:
+    c = JOB.get("category")
+    return c if c in CATEGORIES else None
+
+
+def category_line() -> str:
+    """For the analysis: what kind of video the user says this is (the vibe they're going for)."""
+    c = job_category()
+    if not c:
+        return ""
+    name, _f, what = CATEGORIES[c]
+    return (f"the user says this is a {name} video ({what}): read it with that in mind, but describe what's "
+            "really there.\n\n")
+
 
 def with_playbook(system: str, inspo: bool) -> str:
     """A system prompt, plus the viral playbooks. Remakes follow their inspo first; the playbooks
     fill in everything the inspo leaves open (and how the user's own footage is cut and timed).
-    The talking-head one applies when someone talks to the camera; the food & drink one when the
-    video shows food or drink."""
-    if not VIRAL_PLAYBOOK and not FOOD_PLAYBOOK and not TALKING_PLAYBOOK:
+    The category the user picked leads with its own playbook; the others still apply where they fit
+    (the talking-head one when someone talks to the camera, the food & drink one when food shows)."""
+    cat = job_category()
+    if not VIRAL_PLAYBOOK and not FOOD_PLAYBOOK and not TALKING_PLAYBOOK and not cat:
         return system
     how = ("The inspo's structure, timing and style come first. Use these playbooks for every choice the inspo "
            "leaves open: which moments of the user's footage to use, how their lines are timed and trimmed, the "
@@ -248,16 +281,26 @@ def with_playbook(system: str, inspo: bool) -> str:
     how += (" These are defaults, never limits: anything the user asks for (transitions, sound effects, a caption "
             "style, speed changes) is still done exactly as asked.")
     out = system + "\n\n## What makes short videos go viral\n" + how
-    if VIRAL_PLAYBOOK:
+    chosen_file = None
+    if cat:
+        name, chosen_file, what = CATEGORIES[cat]
+        book = CATEGORY_PLAYBOOKS[cat]
+        out += (f"\n\n### This video: {name}\nThe user picked this category when they started the video: it's "
+                f"{what}. Edit it with that vibe: pacing, music feel, the words you write, what you show first.")
+        if book:
+            out += (f" This is the {name} playbook, learned from studying real viral {name} videos. It's the main "
+                    "playbook for this video and wins wherever a section below disagrees; the sections below still "
+                    "apply where they fit.\n\n" + book)
+    if VIRAL_PLAYBOOK and chosen_file != "viral-playbook.md":
         out += "\n\n### Skits\nLearned from studying real viral skits.\n\n" + VIRAL_PLAYBOOK
-    if TALKING_PLAYBOOK:
+    if TALKING_PLAYBOOK and chosen_file != "talking-playbook.md":
         out += ("\n\n### Talking to the camera\nLearned from studying real viral talking-head videos. Follow this "
                 "whenever the video is mainly one person talking to the camera (advice, a story, an opinion, an "
                 "explainer, a one-take video), judging from the clips, the inspo and the user's description. For those "
                 "videos this section wins wherever it disagrees with the skits section; skits with characters and "
                 "dialogue follow the skits rules. Skip it for videos where nobody talks to the camera.\n\n"
                 + TALKING_PLAYBOOK)
-    if FOOD_PLAYBOOK:
+    if FOOD_PLAYBOOK and chosen_file != "food-playbook.md":
         out += ("\n\n### Food and drink\nLearned from studying real viral food and drink videos. Follow this whenever "
                 "the video shows food or drink (a restaurant, café, bakery, dessert or drink shop, or anyone making, "
                 "pouring, serving or eating something), judging from the clips, the inspo, the user's description and "
@@ -1090,7 +1133,7 @@ def understand(shots: list[tuple[float, float]], frames: list[list[Path]], trans
     content: list[dict] = [{
         "type": "text",
         "text": (
-            f"the video is {duration:.1f} seconds long and has {len(shots)} shots.\n\n"
+            category_line() + f"the video is {duration:.1f} seconds long and has {len(shots)} shots.\n\n"
             "transcript:\n" + ("\n".join(lines) if lines else "(no speech)") + "\n\nhere are the shots:"
         ),
     }]
@@ -1109,6 +1152,7 @@ JOB: dict = {"lessons": "", "heads_up": []}
 
 def start_job(req: dict | None = None) -> None:
     lessons = (req or {}).get("lessons")
+    JOB["category"] = (req or {}).get("category") if (req or {}).get("category") in CATEGORIES else None
     JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
@@ -1889,7 +1933,7 @@ def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict
 
     said = [f"[{x['startS']:.1f}s–{x['endS']:.1f}s] {x['text']}" for x in (transcript or {}).get("segments", [])]
     content: list[dict] = [{"type": "text", "text": (
-        f"the video has {len(shots)} shots.\nwhat's said:\n" + ("\n".join(said) if said else "(no speech)")
+        category_line() + f"the video has {len(shots)} shots.\nwhat's said:\n" + ("\n".join(said) if said else "(no speech)")
     )}]
     for i, s in enumerate(shots):
         a, d = s["startS"], s["durationS"]
@@ -6879,8 +6923,9 @@ job_resources = dict(image=image, secrets=secrets, cpu=4, memory=4096)
 
 
 @app.function(**job_resources, timeout=900)
-def analyze_job(storage_key: str) -> dict:
-    """Analyzes an uploaded inspo (read from storage by key)."""
+def analyze_job(storage_key: str, category: str | None = None) -> dict:
+    """Analyzes an uploaded inspo (read from storage by key). `category`: the kind of video the user picked."""
+    start_job({"category": category})
     try:
         report("getting your video", 5)
         with tempfile.TemporaryDirectory() as tmp:
@@ -6996,7 +7041,14 @@ def lessons_job(req: dict) -> dict:
     if len(items) < 5:
         return {"lessons": []}
     text = "\n".join(f"- {x}" for x in items)
-    result = ask_claude(LESSONS_SYSTEM, [{"type": "text", "text": f"{len(items)} requests, notes and feedback:\n{text}"}],
+    cat = req.get("category") if req.get("category") in CATEGORIES else None
+    about = ""
+    if cat:
+        name, _f, what = CATEGORIES[cat]
+        about = (f"all of these are from {name} videos ({what}). find the lessons for this kind of video: what "
+                 f"{name} videos need that the editor keeps missing (lessons that apply to every kind of video are "
+                 "learned separately, so focus on what's particular to these).\n\n")
+    result = ask_claude(LESSONS_SYSTEM, [{"type": "text", "text": f"{about}{len(items)} requests, notes and feedback:\n{text}"}],
                         LESSONS_SCHEMA, "couldn't learn from these.", effort="high")
     lessons = [x.strip() for x in result["data"]["lessons"] if isinstance(x, str) and x.strip()][:20]
     print(f"lessons: {len(lessons)} from {len(items)} items, ${result['cost_usd']}")
@@ -7258,14 +7310,16 @@ def api():
         except Exception as e:  # noqa: BLE001
             checks["claude"] = {"ok": False, "detail": type(e).__name__}
 
-        return {"ok": all(c["ok"] for c in checks.values()), "checks": checks}
+        # Each category's playbook (its size; 0 = not written yet).
+        playbooks = {k: len(v) for k, v in CATEGORY_PLAYBOOKS.items()}
+        return {"ok": all(c["ok"] for c in checks.values()), "checks": checks, "playbooks": playbooks}
 
     @web.post("/jobs/analyze", dependencies=[Depends(require_token)])
-    def start_analyze(storage_key: str = Body(embed=True, alias="storageKey")) -> dict:
+    def start_analyze(storage_key: str = Body(alias="storageKey"), category: str | None = Body(default=None)) -> dict:
         # Only user uploads (u/<user>/p/<project>/...); never arbitrary keys.
         if not storage_key.startswith("u/") or ".." in storage_key:
             raise HTTPException(status_code=400, detail="invalid storage key")
-        return started(analyze_job.spawn(storage_key))
+        return started(analyze_job.spawn(storage_key, category if category in CATEGORIES else None))
 
     @web.post("/jobs/render", dependencies=[Depends(require_token)])
     def start_render(req: dict = Body()) -> dict:
@@ -7299,7 +7353,8 @@ def api():
     @web.post("/jobs/lessons", dependencies=[Depends(require_token)])
     def start_lessons(req: dict = Body(...)) -> dict:
         items = req.get("items") if isinstance(req.get("items"), list) else []
-        return started(lessons_job.spawn({"items": [str(x)[:500] for x in items[:1500]]}))
+        cat = req.get("category") if req.get("category") in CATEGORIES else None
+        return started(lessons_job.spawn({"items": [str(x)[:500] for x in items[:1500]], "category": cat}))
 
     @web.post("/jobs/ping", dependencies=[Depends(require_token)])
     def start_ping() -> dict:

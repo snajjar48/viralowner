@@ -30,7 +30,7 @@ async function ReplaceInspo({ id }: { id: string }) {
         title="choose a different inspo"
         subtitle="a new inspo means a new shot list. your uploaded clips stay, but you’ll match them to the new shots."
       />
-      <InspoUploader projectId={id} />
+      <InspoUploader projectId={id} category={project.category} />
     </FlowShell>
   );
 }

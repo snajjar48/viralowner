@@ -1,4 +1,5 @@
 import "server-only";
+import { isCategory, type VideoCategory } from "./categories";
 import { getSql } from "./db";
 import type { Breakdown, InspoStyle, RenderSettings, PostCopy, JobStage, RenderPlan } from "./processing/types";
 import { optionsFromJson, type VideoOptions } from "./video-options";
@@ -24,6 +25,8 @@ export interface Project {
   audio: ProjectAudio | null;
   /** How this video counted against the account (null until its first version starts). */
   billing: "trial" | "plan" | null;
+  /** The kind of video picked when it was started (lib/categories.ts); null for earlier videos. */
+  category: VideoCategory | null;
   createdAt: string;
 }
 
@@ -100,6 +103,7 @@ function toProject(r: Row): Project {
     clipsRightsConfirmedAt: iso(r.clips_rights_confirmed_at),
     audio: (r.audio as ProjectAudio | null) ?? null,
     billing: r.billing === "trial" || r.billing === "plan" ? r.billing : null,
+    category: isCategory(r.category) ? r.category : null,
     createdAt: iso(r.created_at)!,
   };
 }
@@ -165,17 +169,45 @@ function toRender(r: Row): Render {
   };
 }
 
-export async function createProject(userId: string): Promise<Project> {
+export async function createProject(userId: string, category: VideoCategory | null = null): Promise<Project> {
   const rows = await getSql()`INSERT INTO projects (user_id) VALUES (${userId}) RETURNING *`;
-  return toProject(rows[0]);
+  const project = toProject(rows[0]);
+  return category ? { ...project, category: (await setProjectCategory(project.id, category)) ? category : null } : project;
 }
 
 /** A "start from scratch" project: no inspo, the user's prompt. Starts with Claude writing any text. */
-export async function createScratchProject(userId: string, prompt: string, options: VideoOptions): Promise<Project> {
+export async function createScratchProject(
+  userId: string,
+  prompt: string,
+  options: VideoOptions,
+  category: VideoCategory | null = null,
+): Promise<Project> {
   const rows = await getSql()`
     INSERT INTO projects (user_id, kind, prompt, settings)
     VALUES (${userId}, 'scratch', ${prompt}, ${JSON.stringify(options)}::jsonb) RETURNING *`;
-  return toProject(rows[0]);
+  const project = toProject(rows[0]);
+  return category ? { ...project, category: (await setProjectCategory(project.id, category)) ? category : null } : project;
+}
+
+/** Sets the video's category. False if it couldn't be saved (before the categories migration runs). */
+export async function setProjectCategory(projectId: string, category: VideoCategory | null): Promise<boolean> {
+  try {
+    await getSql()`UPDATE projects SET category = ${category}, updated_at = now() WHERE id = ${projectId}`;
+    return true;
+  } catch (error) {
+    console.error("Saving the video's category failed:", error);
+    return false;
+  }
+}
+
+/** A project's category, by id (for jobs that only have the id). */
+export async function projectCategory(projectId: string): Promise<VideoCategory | null> {
+  try {
+    const rows = await getSql()`SELECT to_jsonb(p) ->> 'category' AS category FROM projects p WHERE id = ${projectId}`;
+    return isCategory(rows[0]?.category) ? rows[0].category : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveProjectPrompt(projectId: string, prompt: string) {

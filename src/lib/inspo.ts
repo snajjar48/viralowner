@@ -9,6 +9,7 @@ import {
   saveBreakdown,
   setInspirationJob,
   type Inspiration,
+  projectCategory,
 } from "./projects";
 import {
   completeMultipartUpload,
@@ -130,7 +131,8 @@ async function startInspoAnalysis(projectId: string, inspo: Inspiration): Promis
   if (durationS > INSPO_MAX_SECONDS + 0.5) return reject(MESSAGES.inspoTooLong(durationS), durationS);
 
   try {
-    const { jobId } = await startAnalysis({ inspirationId: inspo.id, storageKey: inspo.storageKey, durationS });
+    const category = await projectCategory(projectId);
+    const { jobId } = await startAnalysis({ inspirationId: inspo.id, storageKey: inspo.storageKey, durationS, category });
     await setInspirationJob(projectId, jobId, Math.round(durationS * 100) / 100);
     return { status: 200, body: { status: "analyzing", step: null, progress: 0 } };
   } catch (error) {

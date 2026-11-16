@@ -9,6 +9,7 @@ import {
   getInspiration,
   listClips,
   listRenders,
+  projectCategory,
   requestHistory,
   saveInspoStyle,
   setRenderJob,
@@ -187,6 +188,7 @@ export async function startScratchStoryboard(
       settings,
       history,
       business: businessText(business),
+      category: project.category,
       ...audioFor(project, settings),
     },
     id,
@@ -233,6 +235,7 @@ export async function startStoryboard(
       settings,
       history,
       business: businessText(business),
+      category: project.category,
       ...audioFor(project, settings),
     },
     id,
@@ -251,9 +254,10 @@ export async function submit(
 ) {
   try {
     // Earlier requests teach the editor this user's taste; a video can still be made without them.
-    const [history, business] = await Promise.all([
+    const [history, business, category] = await Promise.all([
       requestHistory(projectId).catch(() => []),
       getBusinessForProject(projectId),
+      projectCategory(projectId),
     ]);
     const { jobId } = await startRender({
       projectId,
@@ -272,6 +276,7 @@ export async function submit(
       ...extras,
       history,
       business: businessText(business),
+      category,
     });
     await setRenderJob(projectId, render.id, jobId);
   } catch (error) {

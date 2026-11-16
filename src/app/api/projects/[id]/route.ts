@@ -1,11 +1,22 @@
 import { jsonError, readJson, withProject } from "@/lib/api";
-import { deleteProjectRecords, PROJECT_NAME_MAX, renameProject } from "@/lib/projects";
+import { isCategory } from "@/lib/categories";
+import { deleteProjectRecords, PROJECT_NAME_MAX, renameProject, setProjectCategory } from "@/lib/projects";
 import { deletePrefix } from "@/lib/storage";
 
-/** { name }: renames a video project ("" goes back to the name we make for it). */
+/**
+ * { name }: renames a video project ("" goes back to the name we make for it).
+ * { category }: changes what kind of video it is (the next versions follow it).
+ */
 export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[id]">) {
   return withProject(ctx.params, "Renaming project", async (_userId, project) => {
     const body = await readJson(request);
+    if (body && "category" in body) {
+      if (!isCategory(body.category)) return jsonError("pick one of the kinds of video.", 400);
+      if (!(await setProjectCategory(project.id, body.category))) {
+        return jsonError("couldn’t save that right now. please try again later.", 503);
+      }
+      return Response.json({ category: body.category });
+    }
     if (typeof body?.name !== "string") return jsonError("invalid request.", 400);
     const name = body.name.replace(/\s+/g, " ").trim();
     if (name.length > PROJECT_NAME_MAX) return jsonError(`keep the name under ${PROJECT_NAME_MAX} characters.`, 400);

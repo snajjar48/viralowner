@@ -2,8 +2,10 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { CategoryPicker } from "@/components/category-picker";
 import { buttonClass, inputClass } from "@/components/form";
 import { ArrowRightIcon } from "@/components/icons";
+import type { VideoCategory } from "@/lib/categories";
 import { postJson, UploadError } from "@/lib/upload-client";
 import { PROMPT_MAX } from "@/lib/video-options";
 
@@ -18,6 +20,7 @@ const IDEAS = [
 export function PromptStart() {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
+  const [category, setCategory] = useState<VideoCategory | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -25,7 +28,7 @@ export function PromptStart() {
     setBusy(true);
     setError("");
     try {
-      const { projectId } = await postJson<{ projectId: string }>("/api/projects", { kind: "scratch", prompt });
+      const { projectId } = await postJson<{ projectId: string }>("/api/projects", { kind: "scratch", prompt, category });
       router.push(`/projects/${projectId}/create`);
     } catch (e) {
       setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
@@ -66,6 +69,7 @@ export function PromptStart() {
           {prompt.length}/{PROMPT_MAX}
         </span>
       </div>
+      <CategoryPicker value={category} onChange={setCategory} disabled={busy} />
       {error && (
         <p role="alert" className="text-center text-sm text-coral">
           {error}
@@ -74,7 +78,7 @@ export function PromptStart() {
       <button
         type="button"
         onClick={start}
-        disabled={!prompt.trim() || busy}
+        disabled={!prompt.trim() || !category || busy}
         className={`${buttonClass} flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
       >
         {busy ? "starting…" : "next: add your clips"} <ArrowRightIcon className="size-4" />

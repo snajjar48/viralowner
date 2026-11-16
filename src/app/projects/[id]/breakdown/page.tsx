@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
+import { CategorySetting } from "@/components/category-setting";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
 import { loadProject } from "@/lib/project-page";
 import { getInspiration, listRenders } from "@/lib/projects";
@@ -43,6 +44,9 @@ async function Breakdown({ id }: { id: string }) {
   ]);
   return (
     <FlowShell step={1} projectId={id}>
+      <div className="mb-6">
+        <CategorySetting projectId={id} category={project.category} />
+      </div>
       <BreakdownView projectId={id} breakdown={inspo.breakdown} videoUrl={videoUrl} hasVersions={versions.length > 0} />
     </FlowShell>
   );

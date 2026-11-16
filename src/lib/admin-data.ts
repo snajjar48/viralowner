@@ -503,3 +503,26 @@ export async function listFeedback(userId?: string): Promise<FeedbackPerson[]> {
   }
   return [...people.values()];
 }
+
+/** Per video category (lib/categories.ts): how many videos, versions and change requests it has. */
+export async function categoryStats() {
+  try {
+    const rows = await getSql()`
+      SELECT coalesce(p.category, 'none') AS category,
+             count(DISTINCT p.id) AS projects,
+             count(DISTINCT p.id) FILTER (WHERE p.created_at > now() - interval '30 days') AS projects30,
+             count(r.id) FILTER (WHERE r.status = 'done') AS versions,
+             count(r.id) FILTER (WHERE coalesce(r.settings ->> 'request', '') <> '') AS requests
+      FROM projects p LEFT JOIN renders r ON r.project_id = p.id
+      WHERE to_jsonb(p) ->> 'deleted_at' IS NULL
+      GROUP BY 1`;
+    return Object.fromEntries(
+      rows.map((r) => [
+        String(r.category),
+        { projects: Number(r.projects), projects30: Number(r.projects30), versions: Number(r.versions), requests: Number(r.requests) },
+      ]),
+    ) as Record<string, { projects: number; projects30: number; versions: number; requests: number }>;
+  } catch {
+    return null; // before the categories migration runs
+  }
+}

@@ -1,7 +1,8 @@
 import { jsonError, notFound, readJson, serverError, unauthorized } from "@/lib/api";
 import { getUserId } from "@/lib/auth";
 import { startInspoUpload } from "@/lib/inspo";
-import { getProject } from "@/lib/projects";
+import { isCategory } from "@/lib/categories";
+import { getProject, setProjectCategory } from "@/lib/projects";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 /** Replaces a project's inspo: returns where to upload the new file. */
@@ -17,6 +18,8 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
       return jsonError("too many uploads in the last few minutes. please wait a bit and try again.", 429);
     }
 
+    // A different inspo can be a different kind of video.
+    if (isCategory(body.category)) await setProjectCategory(id, body.category);
     const result = await startInspoUpload(userId, id, body);
     if ("error" in result) return jsonError(result.error, result.status);
     return Response.json({ upload: result.upload, multipart: result.multipart });

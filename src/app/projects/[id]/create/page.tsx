@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
+import { CategorySetting } from "@/components/category-setting";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
 import { audioView } from "@/lib/audio";
 import { canUseScratch, getMembership } from "@/lib/membership";
@@ -66,6 +67,9 @@ async function Create({ id }: { id: string }) {
         title="start from scratch"
         subtitle="add your clips and tell us what you want. we watch everything and edit the whole video for you."
       />
+      <div className="mx-auto mb-6 w-full max-w-2xl">
+        <CategorySetting projectId={id} category={project.category} />
+      </div>
       <ScratchCreate
         projectId={id}
         initialPrompt={project.prompt}

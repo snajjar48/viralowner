@@ -38,3 +38,22 @@ gave (it isn't sent to the editor). Make them again with:
 ```
 modal run scripts/study-talking.py --folder "<folder of videos>" --out <dir>
 ```
+
+## Categories
+
+People pick a category when they start a video (`src/lib/categories.ts`, `CATEGORIES` in `worker/app.py`). The
+category's playbook leads (it's the main one for that video and wins where another disagrees); the others still apply
+where they fit. A category whose file isn't here yet still sets the vibe, and its playbook joins as soon as the file
+is added and the worker is deployed. The admin dashboard's categories page shows which ones are ready.
+
+| category | playbook |
+| --- | --- |
+| food & drink | `food-playbook.md` |
+| skits | `viral-playbook.md` |
+| talking head / yapping | `talking-playbook.md` |
+| influencer / vlog | `influencer-playbook.md` (not written yet) |
+| event recap | `event-playbook.md` (not written yet) |
+| travel / destination / vacation | `travel-playbook.md` (not written yet) |
+
+Each category also learns every day from the change requests, notes and feedback on its own videos (`src/lib/lessons.ts`);
+those lessons go with that category's videos, after the lessons for every video.

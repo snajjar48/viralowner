@@ -2,12 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { CategoryPicker } from "@/components/category-picker";
 import { ConsentCheckbox } from "@/components/consent-checkbox";
 import { DropZone } from "@/components/drop-zone";
 import { buttonClass } from "@/components/form";
 import { AlertIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
 import { ProgressBar } from "@/components/progress-bar";
 import { postJson, readVideoDuration, uploadInParts, uploadToSignedUrl, UploadError } from "@/lib/upload-client";
+import type { VideoCategory } from "@/lib/categories";
 import { checkInspo, formatBytes, VIDEO_ACCEPT } from "@/lib/video-files";
 import { formatDuration } from "@/lib/video-options";
 
@@ -26,11 +28,19 @@ type Phase =
  * storage, then have it analyzed. Used for a new project (/new) and to
  * replace the inspo of an existing one.
  */
-export function InspoUploader({ projectId: existingProjectId }: { projectId?: string }) {
+export function InspoUploader({
+  projectId: existingProjectId,
+  category: initialCategory = null,
+}: {
+  projectId?: string;
+  /** The video's kind, when replacing the inspo of a video that has one. */
+  category?: VideoCategory | null;
+}) {
   const router = useRouter();
   const [picked, setPicked] = useState<Picked | null>(null);
   const [pickError, setPickError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [category, setCategory] = useState<VideoCategory | null>(initialCategory);
   const [phase, setPhase] = useState<Phase>({ name: "pick" });
   const projectId = useRef(existingProjectId ?? null);
   const abort = useRef<AbortController | null>(null);
@@ -100,7 +110,7 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
   }
 
   async function upload() {
-    if (!picked || !confirmed) return;
+    if (!picked || !confirmed || !category) return;
     const { file, durationS } = picked;
     const details = {
       fileName: file.name,
@@ -108,6 +118,7 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
       sizeBytes: file.size,
       durationS,
       styleReferenceConfirmed: true,
+      category,
     };
     setPhase({ name: "uploading", percent: 0 });
     abort.current = new AbortController();
@@ -234,6 +245,8 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
         <span className="font-medium text-foreground">tip:</span> save the video or screen-record it, then upload it here.
       </p>
 
+      <CategoryPicker value={category} onChange={setCategory} disabled={busy} />
+
       <ConsentCheckbox checked={confirmed} onChange={setConfirmed} disabled={busy}>
         i’m using this video only as a style reference.
       </ConsentCheckbox>
@@ -282,7 +295,7 @@ export function InspoUploader({ projectId: existingProjectId }: { projectId?: st
         <button
           type="button"
           onClick={upload}
-          disabled={!picked || !confirmed || busy}
+          disabled={!picked || !confirmed || !category || busy}
           className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
         >
           upload & analyze

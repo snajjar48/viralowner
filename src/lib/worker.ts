@@ -48,6 +48,8 @@ export async function workerFetch<T>(
 export interface WorkerHealth {
   ok: boolean;
   checks: Record<"ffmpeg" | "storage" | "claude", { ok: boolean; detail: string }>;
+  /** Each video category's playbook size in characters (0 = not written yet). */
+  playbooks?: Record<string, number>;
 }
 
 export const workerHealth = () => workerFetch<WorkerHealth>("/health", { timeoutMs: 60_000 });

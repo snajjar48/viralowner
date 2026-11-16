@@ -236,6 +236,7 @@ function renderFields(input: RenderInput) {
     carry: input.settings.carry ?? null,
     history: input.history ?? [],
     business: input.business ?? "",
+    category: input.category ?? null,
     ...(input.writePost ? { writePost: true } : {}),
   };
 }
@@ -256,7 +257,7 @@ export async function startStoryboardJob(input: RenderInput, storyboardId: strin
       storyboard: true,
       // The maker's own device's emoji, when it has sent them (components/emoji-kit-sync.tsx).
       emojiKit: await emojiKitKeyFor(folder),
-      lessons: await latestLessons(),
+      lessons: await latestLessons(input.category),
     },
   });
 }
@@ -312,8 +313,12 @@ const LOST = "we lost track of this analysis. please try again.";
 const LOST_RENDER = "we lost track of this video. please try again.";
 
 export const modalEngine: ProcessingEngine = {
-  async startAnalysis({ storageKey }) {
-    return workerFetch<{ jobId: string }>("/jobs/analyze", { method: "POST", body: { storageKey }, timeoutMs: 30_000 });
+  async startAnalysis({ storageKey, category }) {
+    return workerFetch<{ jobId: string }>("/jobs/analyze", {
+      method: "POST",
+      body: { storageKey, category: category ?? null },
+      timeoutMs: 30_000,
+    });
   },
 
   async getAnalysisStatus(jobId): Promise<AnalysisStatus> {
@@ -346,7 +351,7 @@ export const modalEngine: ProcessingEngine = {
         ...renderFields(input),
         emojiKit: await emojiKitKeyFor(input.inspo?.storageKey ?? input.clips[0].storageKey),
         // What the editor learned from everyone's requests and feedback (lib/lessons.ts).
-        lessons: await latestLessons(),
+        lessons: await latestLessons(input.category),
         notify: { url: `${siteUrl()}/api/worker/render-done`, projectId: input.projectId, renderId: input.renderId },
       },
     });
