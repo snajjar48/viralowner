@@ -157,13 +157,15 @@ export function TextPreview({ items, t, context }: { items: TextItem[]; t: numbe
               <span
                 key={j}
                 style={
-                  p.look.box
+                  !line
+                    ? undefined // a blank line: space only, nothing drawn
+                    : p.look.box
                     ? // libass's box: the line's height and width, grown by the box size on every side.
                       { background: p.look.edge, boxShadow: `0 0 0 ${fu(p.look.outline)} ${p.look.edge}` }
                     : { textShadow: outlineShadow(p.look.outline, p.look.edge, p.look.shadow) }
                 }
               >
-                {line}
+                {line || "\u00a0"}
               </span>
             ))}
           </div>

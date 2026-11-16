@@ -131,6 +131,10 @@ function fitLines(text: string, look: Look, avail: number, keepLines: boolean, m
   const wrap = (sz: number, src: string) => {
     const out: string[] = [];
     for (const para of src.split("\n")) {
+      if (!para.trim()) {
+        out.push(""); // a blank line left between lines: kept as space
+        continue;
+      }
       let cur = "";
       for (const word of para.split(/\s+/).filter(Boolean)) {
         const trial = `${cur} ${word}`.trim();
@@ -145,8 +149,8 @@ function fitLines(text: string, look: Look, avail: number, keepLines: boolean, m
   };
   let lines: string[];
   if (keepLines) {
-    lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) lines = [text.trim()];
+    // Exactly as typed, blank lines too (space between lines).
+    lines = text.trim().split("\n").map((l) => l.trim());
   } else {
     const most = Math.max(3, text.split("\n").filter((p) => p.trim()).length);
     lines = wrap(size, text);

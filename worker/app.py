@@ -3318,7 +3318,16 @@ def ass_part(text: str) -> str:
 
 
 def ass_text(text: str) -> str:
-    return ass_part(text).strip()
+    return hide_blank_lines(ass_part(text).strip())
+
+
+def hide_blank_lines(escaped: str) -> str:
+    """A blank line (a no-break space between line breaks) keeps its height but draws nothing: no box
+    behind it, no outline or shadow (the text, box and shadow alphas come back after it)."""
+    import re
+
+    return re.sub("\\\\N\u00a0(?=\\\\N)", lambda _m: "\\N{\\1a&HFF&\\3a&HFF&\\4a&HFF&}\u00a0{\\1a&H00&\\3a&H00&\\4a&H90&}",
+                  escaped)
 
 
 def ass_color(hex_color: str, alpha: int = 0) -> str:
@@ -3514,6 +3523,9 @@ def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[li
     def wrap(sz: int, src: str) -> list[str]:
         out = []
         for para in src.split("\n"):
+            if not para.strip():
+                out.append("")  # a blank line the user left between lines: kept as space
+                continue
             cur = ""
             for word in para.split():
                 trial = f"{cur} {word}".strip()
@@ -3527,7 +3539,8 @@ def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[li
         return out or [src.strip()]
 
     if keep_lines:
-        lines = [ln.strip() for ln in text.split("\n") if ln.strip()] or [text.strip()]
+        # Exactly as typed, blank lines too (space between lines).
+        lines = [ln.strip() for ln in text.strip().split("\n")] or [text.strip()]
     else:
         # A hook wrapped into a tall tower covers the video: shrink a little (to ~60%) to keep it to
         # the lines it was written with, or 3 at most.
@@ -3958,7 +3971,8 @@ def text_events(start: float, end: float, lay: dict, look: dict, animation: str,
     an = {"left": 4, "right": 6}.get(lay["align"], 5)
     px, py = round(lay["x"] * OUT_W), round(lay["y"] * OUT_H)
     size = f"\\fs{lay['size']}" if lay["size"] != look["size"] else ""
-    raw = "\n".join(lay["lines"])
+    # A blank line is drawn as a no-break space, so it keeps a full line's height.
+    raw = "\n".join(ln or "\u00a0" for ln in lay["lines"])
     dur = end - start
 
     def event(a: float, b: float, tags: str, body: str) -> str:
@@ -3976,7 +3990,7 @@ def text_events(start: float, end: float, lay: dict, look: dict, animation: str,
         for n, k in enumerate(cuts):
             a = start + n * step
             b = end if n == len(cuts) - 1 else start + (n + 1) * step
-            out.append(event(a, b, f"\\pos({px},{py})", ass_part(raw[:k]) + "{\\alpha&HFF&}" + ass_part(raw[k:])))
+            out.append(event(a, b, f"\\pos({px},{py})", hide_blank_lines(ass_part(raw[:k])) + "{\\alpha&HFF&}" + ass_part(raw[k:])))
         return out
     tags = f"\\pos({px},{py})"
     if animation == "pop":
