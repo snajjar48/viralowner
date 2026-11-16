@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { requireAdmin } from "@/lib/admin-auth";
+import { inviteUrl } from "@/lib/tester-invite";
 import { listTesters } from "@/lib/testers";
 import { AdminShell, Card } from "../ui";
 import { TestersManager } from "./testers-manager";
@@ -26,10 +27,10 @@ async function Testers() {
         <ol className="flex list-decimal flex-col gap-1.5 pl-5 text-sm">
           <li>add the tester’s email below.</li>
           <li>
-            send them <span className="font-medium">www.viralowner.com/signup</span> and the site password (the site isn’t public yet).
+            tap <span className="font-medium">copy invite link</span> and send it to them. it’s all they need: no site password, no card.
           </li>
           <li>
-            they sign up with that exact email and get full access for free: every video, change and “start from scratch”, no card.
+            they pick a name and password and get full access for free: every video, change and “start from scratch”, no limits.
           </li>
           <li>remove them any time and the free access stops right away.</li>
         </ol>
@@ -40,7 +41,7 @@ async function Testers() {
       {testers === null ? (
         <p className="text-sm text-coral">run the database migration (npm run db:migrate) to start adding testers.</p>
       ) : (
-        <TestersManager initial={testers} />
+        <TestersManager initial={testers.map((t) => ({ ...t, invite: inviteUrl(t.email) }))} />
       )}
     </>
   );

@@ -7,12 +7,26 @@ import type { TesterRow } from "@/lib/testers";
 const when = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—";
 
-export function TestersManager({ initial }: { initial: TesterRow[] }) {
+type Row = TesterRow & { invite: string | null };
+
+export function TestersManager({ initial }: { initial: Row[] }) {
   const [rows, setRows] = useState(initial);
   const [email, setEmail] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState("");
+
+  async function copy(r: Row) {
+    if (!r.invite) return;
+    try {
+      await navigator.clipboard.writeText(r.invite);
+      setCopied(r.email);
+      setTimeout(() => setCopied((c) => (c === r.email ? "" : c)), 2000);
+    } catch {
+      prompt("copy this invite link:", r.invite);
+    }
+  }
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -23,19 +37,19 @@ export function TestersManager({ initial }: { initial: TesterRow[] }) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, note }),
     }).catch(() => null);
-    const data = (await res?.json().catch(() => null)) as { email?: string; error?: string } | null;
+    const data = (await res?.json().catch(() => null)) as { email?: string; invite?: string | null; error?: string } | null;
     setBusy(false);
     if (!res?.ok || !data?.email) return setError(data?.error ?? "couldn’t add that. try again.");
     const added = data.email;
     setRows((list) => [
-      { email: added, note, addedAt: new Date().toISOString(), userId: null, projects: 0, versions: 0, lastActive: null },
+      { email: added, note, addedAt: new Date().toISOString(), userId: null, projects: 0, versions: 0, lastActive: null, invite: data.invite ?? null },
       ...list.filter((r) => r.email !== added),
     ]);
     setEmail("");
     setNote("");
   }
 
-  async function remove(r: TesterRow) {
+  async function remove(r: Row) {
     if (!confirm(`take free access away from ${r.email}?`)) return;
     setError("");
     const res = await fetch("/api/admin/testers", {
@@ -106,7 +120,12 @@ export function TestersManager({ initial }: { initial: TesterRow[] }) {
                 <td className="px-4 py-3 tabular-nums">{r.versions}</td>
                 <td className="px-4 py-3 text-muted">{when(r.lastActive)}</td>
                 <td className="px-4 py-3 text-muted">{when(r.addedAt)}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  {r.invite && !r.userId && (
+                    <button type="button" onClick={() => copy(r)} className="mr-4 cursor-pointer text-xs text-violet-300 hover:text-white">
+                      {copied === r.email ? "copied ✓" : "copy invite link"}
+                    </button>
+                  )}
                   <button type="button" onClick={() => remove(r)} className="cursor-pointer text-xs text-muted hover:text-coral">
                     remove
                   </button>

@@ -16,6 +16,8 @@ const PUBLIC_PATHS = new Set([
   "/apple-icon", // the site's phone icon
   "/logo.png", // the company logo search engines show
   "/api/waitlist", // waitlist signup
+  "/join", // a tester's invite link (checks its own signed token)
+  "/api/auth/tester-signup", // sign-up from that link; same check
   "/unlock", // password page
   "/api/unlock", // password check
   "/api/stripe/webhook", // Stripe can't know the password; verified by signature
