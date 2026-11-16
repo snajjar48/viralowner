@@ -85,11 +85,12 @@
 - Exact names: resort, room category, ship, venue, dish.
 - One concrete number about every 10s: "13-minute wait = no wait", "transfers every 15 min", "258 sq ft", "sleeps 6", "Penguins 2–5", "May–Oct", "7 nights", "$7.99".
 - Who it's for, what's free versus "*ADDITIONAL COST*", one insider comparison, one honest caveat ("not for five adults").
-- **Agent/resort CTA (only when the user's business is a travel agency, resort, hotel or cruise line, from their business details or what they asked for; never on a traveler's or creator's own trip video, which ends on the view or a comment question instead):**
+- **"Contact your travel agent" / booking endings: never add one on your own, even for a travel agency, resort or cruise line.** Only when the user asks for it (in their request, notes or text), and then build it like this:
   - A pun as the final item ("You've got a friend in travel agents!").
   - Or a question (~1.6s) followed by "CONTACT YOUR TRAVEL AGENT!" (~2.1s), held to the last frame over the most atmospheric shot.
   - Or "Contact your travel agent to book a [X]" in a different-coloured box over a 5–6s departure shot.
-  - State credentials in the first 2s ("travel agent, 40 cruises").
+  - Credentials in the first 2s ("travel agent, 40 cruises") also only when the user asks for them.
+- Without that ask, the video ends on the biggest view or a comment question.
 - Put a comment question at ~30% ("Would you stay here?") or over the final view.
 
 ## 7. Pacing
