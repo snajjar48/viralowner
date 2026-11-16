@@ -3407,6 +3407,26 @@ def caption_height(cap: dict) -> float:
 _font_cache: dict = {}
 
 
+def _win_metrics(path: str) -> tuple[float, float] | None:
+    """(em per font size unit, baseline from the top as a fraction of the size), as libass sizes the
+    font: from its OS/2 usWinAscent + usWinDescent. None if the file can't be read."""
+    import struct
+
+    try:
+        data = Path(path).read_bytes()
+        tables = {}
+        for i in range(struct.unpack(">H", data[4:6])[0]):
+            tag, _sum, off, _len = struct.unpack(">4sIII", data[12 + 16 * i: 28 + 16 * i])
+            tables[tag] = off
+        upm = struct.unpack(">H", data[tables[b"head"] + 18: tables[b"head"] + 20])[0]
+        wasc, wdesc = struct.unpack(">HH", data[tables[b"OS/2"] + 74: tables[b"OS/2"] + 78])
+        if upm <= 0 or wasc + wdesc <= 0:
+            return None
+        return upm / (wasc + wdesc), wasc / (wasc + wdesc)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def font_metrics(key: str) -> dict:
     """The real font file, measured: how libass sizes it, and its capital height."""
     if key in _font_cache:
@@ -3418,10 +3438,16 @@ def font_metrics(key: str) -> dict:
     font = ImageFont.truetype(path, 100)
     ascent, descent = font.getmetrics()
     box = font.getbbox("H")
+    # libass sizes a font so its OS/2 win ascent + descent = the font size (not the hhea ascent and
+    # descent PIL reports, which are smaller for many fonts: text came out up to ~20% smaller than
+    # meant). PIL uses the em.
+    win = _win_metrics(path)
+    em_per_size, baseline = (win if win else (100 / (ascent + descent), ascent / (ascent + descent)))
     m = {
         "font": font,
-        # libass sizes a font so ascent + descent = the font size; PIL uses the em.
-        "em_per_size": 100 / (ascent + descent),
+        "em_per_size": em_per_size,
+        # Where the baseline sits in a line, as a fraction of the font size from the top (libass).
+        "baseline": baseline,
         "cap": (box[3] - box[1]) / 100,
     }
     _font_cache[key] = m
@@ -4019,8 +4045,8 @@ def text_picture(lines: list[str], look: dict, size: int, align: str, workdir: P
     m = font_metrics(look["key"])
     path = m["font"].path
     font = ImageFont.truetype(path, max(8, round(size * m["em_per_size"])))
-    ascent, descent = font.getmetrics()
-    line_h = ascent + descent  # libass: the font size is ascent + descent
+    line_h = size  # libass: lines are the font size apart
+    base = round(size * m["baseline"])  # and the baseline sits this far into each line
     esz = round(line_h * 0.86)
     outline = int(look["outline"]) if look["border"] == 1 else 0
     pad = int(look["outline"]) if look["border"] == 3 else 0  # the box reaches this far past the words
@@ -4062,9 +4088,9 @@ def text_picture(lines: list[str], look: dict, size: int, align: str, workdir: P
                 x += esz + round(esz * 0.08)
                 continue
             if shadow:
-                draw.text((x + shadow, y0 + shadow), piece, font=font, fill=(0, 0, 0, 110),
-                          stroke_width=outline, stroke_fill=(0, 0, 0, 110))
-            draw.text((x, y0), piece, font=font, fill=fill, stroke_width=outline, stroke_fill=edge)
+                draw.text((x + shadow, y0 + base + shadow), piece, font=font, fill=(0, 0, 0, 110),
+                          stroke_width=outline, stroke_fill=(0, 0, 0, 110), anchor="ls")
+            draw.text((x, y0 + base), piece, font=font, fill=fill, stroke_width=outline, stroke_fill=edge, anchor="ls")
             x += font.getlength(piece)
     dest = workdir / f"{name}.png"
     img.save(dest)

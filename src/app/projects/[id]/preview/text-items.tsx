@@ -135,7 +135,7 @@ export function TextPreview({ items, t, context }: { items: TextItem[]; t: numbe
       {showing.map((it, k) => {
         const p = placeItem(it, context ?? {}, measure);
         const font = videoFont(p.look.font);
-        const em = FONT_METRICS[p.look.font].draw;
+        const em = FONT_METRICS[p.look.font].em;
         const shift = p.align === "left" ? "0" : p.align === "right" ? "-100%" : "-50%";
         return (
           <div

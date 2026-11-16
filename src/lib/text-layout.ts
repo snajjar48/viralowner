@@ -15,24 +15,21 @@ const TOP_TEXT_Y = 0.2;
 const TEXT_SIZES: Record<string, number> = { small: 0.028, medium: 0.038, large: 0.052, xl: 0.075 };
 
 /**
- * Each font as the worker has it, measured from its font files:
- * em = CSS font size per size unit as the worker reckons it (font_metrics: from the hhea ascent and
- *   descent), which decides the size and where lines wrap;
- * draw = CSS font size per size unit as libass really draws it (it sizes fonts by their OS/2 win
- *   ascent + descent, so some fonts come out smaller than the worker reckons);
- * cap = capital height per em.
+ * Each font as the worker has it, measured from its font files (font_metrics): em = CSS font size
+ * per size unit (libass sizes a font so its OS/2 win ascent + descent = the size), cap = capital
+ * height per em.
  */
-export const FONT_METRICS: Record<string, { em: number; draw: number; cap: number }> = {
-  clean_sans: { em: 0.81301, draw: 0.72516, cap: 0.7 },
-  semibold_sans: { em: 0.81301, draw: 0.72516, cap: 0.7 },
-  heavy_sans: { em: 0.91743, draw: 0.74239, cap: 0.69 },
-  condensed: { em: 0.66225, draw: 0.5769, cap: 0.86 },
-  tall_caps: { em: 0.83333, draw: 0.76923, cap: 0.7 },
-  serif: { em: 0.72464, draw: 0.72939, cap: 0.67 },
-  typewriter: { em: 0.87719, draw: 0.75852, cap: 0.58 },
-  marker: { em: 0.6993, draw: 0.70089, cap: 0.77 },
-  script: { em: 0.56497, draw: 0.5168, cap: 0.89 },
-  rounded: { em: 0.86957, draw: 0.87489, cap: 0.7 },
+export const FONT_METRICS: Record<string, { em: number; cap: number }> = {
+  clean_sans: { em: 0.72516, cap: 0.7 },
+  semibold_sans: { em: 0.72516, cap: 0.7 },
+  heavy_sans: { em: 0.74239, cap: 0.69 },
+  condensed: { em: 0.5769, cap: 0.86 },
+  tall_caps: { em: 0.76923, cap: 0.7 },
+  serif: { em: 0.72939, cap: 0.67 },
+  typewriter: { em: 0.75852, cap: 0.58 },
+  marker: { em: 0.70089, cap: 0.77 },
+  script: { em: 0.5168, cap: 0.89 },
+  rounded: { em: 0.87489, cap: 0.7 },
 };
 
 export const DEFAULT_STYLE: TextStyle = {
@@ -177,7 +174,7 @@ const r2 = (x: number) => Math.round(x * 100) / 100;
 
 export type Placed = {
   lines: string[];
-  /** libass size (px of the frame, also the line spacing); the CSS font size is size × FONT_METRICS[font].draw. */
+  /** libass size (px of the frame, also the line spacing); the CSS font size is size × FONT_METRICS[font].em. */
   size: number;
   x: number;
   y: number;
