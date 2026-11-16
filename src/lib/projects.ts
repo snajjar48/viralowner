@@ -672,12 +672,13 @@ export async function updateRender(projectId: string, renderId: string, u: Rende
   ]);
 }
 
-/** Adds the inspo's editing style to a breakdown made before style analysis existed. */
+/** Saves the inspo's editing style: for a breakdown without one, or when it was worked out again (newer). */
 export async function saveInspoStyle(projectId: string, style: InspoStyle) {
   await getSql()`
     UPDATE inspirations
     SET breakdown_json = jsonb_set(breakdown_json, '{style}', ${JSON.stringify(style)}::jsonb), updated_at = now()
-    WHERE project_id = ${projectId} AND breakdown_json IS NOT NULL AND NOT (breakdown_json ? 'style')`;
+    WHERE project_id = ${projectId} AND breakdown_json IS NOT NULL
+      AND (NOT (breakdown_json ? 'style') OR coalesce((breakdown_json -> 'style' ->> 'version')::int, 1) < ${style.version ?? 0})`;
 }
 
 /**

@@ -72,6 +72,8 @@ export interface InspoStyle {
   sfx?: { anchor: "cut" | "shot"; index: number; name: string }[];
   /** The inspo's own speech captions: where they sit (vertical center) and our closest caption style. */
   captions?: { y: number | null; look: CaptionStyleId | null } | null;
+  /** When each piece of overlaid text pops up and goes (seconds of the inspo), e.g. lines stacking up. */
+  textTimeline?: { text: string; start: number; end: number; y: number; align?: string }[];
   /** Analysis version (older ones are redone on their next render). */
   version?: number;
 }

@@ -117,6 +117,9 @@ function styleStats(st: InspoStyle) {
       label: "text look",
       value: `${FONT_NAMES[t.font] ?? "sans"}, ${t.align}${t.animation !== "none" ? `, ${t.animation.replaceAll("_", " ")} in` : ""}`,
     },
+    ...((st.textTimeline?.length ?? 0) > 1
+      ? [{ label: "text timing", value: `pops up at ${st.textTimeline!.length} moments, we’ll match it` }]
+      : []),
   ];
 }
 

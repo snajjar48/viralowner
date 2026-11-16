@@ -1407,7 +1407,7 @@ SFX_INFO = {
 SFX = list(SFX_INFO)
 EDIT_TYPES = ["shots", "jump_cut"]
 COLOR_FILTERS = ["none", "warm", "cool", "vintage", "black_and_white", "high_contrast", "faded", "vivid"]
-STYLE_VERSION = 4  # analyses older than this get their style worked out again on their next render
+STYLE_VERSION = 5  # analyses older than this get their style worked out again on their next render
 
 
 def catalog(info: dict[str, str]) -> str:
@@ -1912,9 +1912,105 @@ def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict
     result = ask_claude(STYLE_SYSTEM, content, STYLE_SCHEMA, "we couldn’t read that video’s style.")
     print(f"style: ${result['cost_usd']}, usage={result['usage']}")
     style = clean_style(result["data"], len(shots), heard)
+    duration = shots[-1]["startS"] + shots[-1]["durationS"] if shots else 0.0
+    timed = _safe(text_timeline, path, duration, shots, workdir)
+    if timed:
+        style["textTimeline"], cost = timed[0], timed[1]
+        result["cost_usd"] = round(result["cost_usd"] + cost, 4)
     print(f"style: transitions={style['transitions']} motions={style['motions']} speeds={style['speeds']} "
           f"effects={style['shotEffects']} looks={style['looks']} sfx={[(e['name'], e['anchor'], e['index']) for e in style['sfx']]}")
     return style, result["cost_usd"]
+
+
+TEXT_TIMELINE_SYSTEM = """You map exactly when on-screen text appears in a short-form video, so the same text rhythm can be rebuilt with someone else's footage.
+
+You get frames from the whole video, 4 a second, each labeled with its time, plus the text known to be on each shot. List every piece of overlaid text: each time new text pops up on screen, that's a new piece. If lines appear one after another and stay stacked (line 1, then line 2 appears under it while line 1 stays), each line or group that pops in together is its own piece, with its own start and its own end (when it leaves the screen). A piece that stays up across several shots is one piece. For each piece: the words exactly as shown, with its line breaks (\n); when it first appears and when it disappears (seconds, from the labels); the vertical center of the piece (0 top, 1 bottom); its alignment.
+
+Leave out: captions that just transcribe what's being said, the app's own buttons, usernames, watermarks, logos, a comment bubble someone replied to, and end screens. If the video has no overlaid text, return no pieces."""
+
+TEXT_TIMELINE_SCHEMA = {
+    "type": "object",
+    "properties": {"pieces": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "text": {"type": "string"},
+            "appears_s": {"type": "number"},
+            "disappears_s": {"type": "number"},
+            "y": {"type": "number", "description": "vertical center, 0 (top) to 1 (bottom)."},
+            "align": {"type": "string", "enum": TEXT_ALIGNS},
+        },
+        "required": ["text", "appears_s", "disappears_s", "y", "align"],
+        "additionalProperties": False,
+    }}},
+    "required": ["pieces"],
+    "additionalProperties": False,
+}
+
+
+def text_timeline(path: Path, duration: float, shots: list[dict], workdir: Path) -> tuple[list[dict], float]:
+    """When each piece of the inspo's on-screen text pops up and goes away (text that appears at several
+    moments, lines stacking up one after another...). Returns (pieces, cost); [] if it has no text."""
+    import cv2
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    if not any((s.get("onScreenText") or "").strip() for s in shots):
+        return [], 0.0
+    fps = 4 if duration <= 40 else 2
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale=216:384", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    n = len(raw) // (216 * 384 * 3)
+    frames = np.frombuffer(raw[: n * 216 * 384 * 3], np.uint8).reshape(n, 384, 216, 3)
+    content: list[dict] = [{"type": "text", "text": "the text known to be on each shot:\n" + "\n".join(
+        f"shot {i + 1} ({s['startS']:.2f}s-{s['startS'] + s['durationS']:.2f}s): "
+        f"{json.dumps(s.get('onScreenText') or '', ensure_ascii=False)}" for i, s in enumerate(shots))}]
+    per = 16  # frames per sheet, 4 x 4
+    for k in range(0, n, per):
+        sheet = Image.new("RGB", (4 * 216, 4 * 384), "black")
+        draw = ImageDraw.Draw(sheet)
+        for j, f in enumerate(frames[k:k + per]):
+            x, y = (j % 4) * 216, (j // 4) * 384
+            sheet.paste(Image.fromarray(f), (x, y))
+            draw.rectangle((x, y, x + 54, y + 16), fill="black")
+            draw.text((x + 3, y + 2), f"{(k + j) / fps:.2f}s", fill="yellow")
+        dest = workdir / f"text_sheet{k // per:02d}.jpg"
+        sheet.save(dest, quality=82)
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(dest)}})
+    content.append({"type": "text", "text": f"the video is {duration:.2f}s long. list every piece of overlaid text."})
+    result = ask_claude(TEXT_TIMELINE_SYSTEM, content, TEXT_TIMELINE_SCHEMA, "couldn't read the text timing.", effort="high")
+
+    pieces = []
+    for p in result["data"]["pieces"]:
+        text = (p.get("text") or "").strip()
+        a, b = max(0.0, float(p["appears_s"])), min(duration, float(p["disappears_s"]))
+        if not text or b - a < 0.15:
+            continue
+        y = min(0.97, max(0.03, float(p["y"])))
+        # The exact frame it pops in: the biggest change in its strip of the screen near that time.
+        try:
+            near = read_frames(path, max(0.0, a - 0.35), 0.7)
+            if len(near) > 4:
+                y0, y1 = int(max(0, y - 0.05) * SIG_H), int(min(1, y + 0.05) * SIG_H)
+                g = [cv2.cvtColor(f, cv2.COLOR_RGB2GRAY)[y0:y1].astype(np.float32) for f in near]
+                d = [float(np.mean(np.abs(g[i + 1] - g[i]))) for i in range(len(g) - 1)]
+                k = int(np.argmax(d))
+                if d[k] > 4:
+                    a = round(max(0.0, a - 0.35) + (k + 1) / SIG_FPS, 2)
+        except Exception as e:  # noqa: BLE001
+            print(f"text timing refine failed: {e}")
+        pieces.append({"text": text, "start": round(a, 2), "end": round(max(b, a + 0.2), 2), "y": round(y, 3),
+                       "align": p.get("align") if p.get("align") in TEXT_ALIGNS else "center"})
+    pieces.sort(key=lambda x: (x["start"], x["y"]))
+    print(f"text timeline: {len(pieces)} pieces " + "; ".join(f"{x['start']}-{x['end']} {x['text'][:30]!r}" for x in pieces)
+          + f", ${result['cost_usd']}")
+    return pieces, result["cost_usd"]
+
+
+def has_text_reveals(pieces: list[dict], shots: list[dict]) -> bool:
+    """Whether the text pops up mid-shot (not just changing with each cut)."""
+    edges = [s["startS"] for s in shots] + [shots[-1]["startS"] + shots[-1]["durationS"]] if shots else []
+    near_edge = lambda t: any(abs(t - e) < 0.2 for e in edges)  # noqa: E731
+    return any(not near_edge(p["start"]) or not near_edge(p["end"]) for p in pieces)
 
 
 def _safe(fn, *args):
@@ -3580,6 +3676,48 @@ def overlay_timeline(plan: list[dict], texts: list[str], lays: list) -> list[tup
 
 
 TEXT_ITEM_LOOKS = ("outline", "box", "plain")
+
+
+def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: list[float], texts: list[str]) -> list[dict]:
+    """The inspo's text rhythm with this video's words: each piece pops up at the same moment of the
+    same shot (stretched with the shot if its length changed) and leaves when it did, and gets the
+    next lines of that shot's text, in order (a piece of 2 lines takes the next 2). Pieces that stay
+    up across shots keep their words; lines left over join the shot's last piece."""
+    starts = [sum(durations[:i]) for i in range(len(durations))]
+
+    def to_video(t: float, end: bool) -> float:
+        for j, s in enumerate(inspo_shots):
+            a, d = s["startS"], s["durationS"]
+            if a - 1e-6 <= t <= a + d + 1e-6 and (not end or t > a + 1e-6) and d > 0:
+                return starts[j] + min(1.0, max(0.0, (t - a) / d)) * durations[j]
+        # In a deleted shot: the nearest kept moment.
+        later = [j for j, s in enumerate(inspo_shots) if s["startS"] >= t]
+        return starts[later[0]] if later else sum(durations)
+
+    words: dict[int, str] = {}
+    for j, s in enumerate(inspo_shots):
+        a, b = s["startS"], s["startS"] + s["durationS"]
+        lines = [x.strip() for x in (texts[j] if j < len(texts) else "").split("\n") if x.strip()]
+        new = [k for k, p in enumerate(pieces) if a - 0.05 <= p["start"] < b - 0.05]
+        if not new or not lines:
+            continue
+        if len(lines) < len(new):
+            # Fewer lines than moments: the first pieces get one each.
+            new = new[: len(lines)]
+        for n_k, k in enumerate(new):
+            # One line each; any extra lines go with the last piece.
+            words[k] = lines[n_k] if n_k < len(new) - 1 else "\n".join(lines[n_k:])
+            flat = " ".join(pieces[k]["text"].split())
+            if " ".join(words[k].split()).lower() == flat.lower():
+                words[k] = pieces[k]["text"]  # the inspo's own words: its own line breaks too
+    out = []
+    for k, p in enumerate(pieces):
+        if k not in words:
+            continue
+        a, b = round(to_video(p["start"], False), 2), round(to_video(p["end"], True), 2)
+        if b - a >= 0.15:
+            out.append({"text": words[k], "start": a, "end": b, "y": p["y"], "align": p.get("align")})
+    return out
 
 
 def clean_text_items(raw, total: float) -> list[dict] | None:
@@ -5878,6 +6016,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     inspo_style = {**base, **{k: v for k, v in inspo_style.items() if v is not None}}
     spots = (list(inspo_style.get("textSpots") or []) + [None] * n)[:n]
     inspo_lines = [edit_text(t) for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
+    text_pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
+    reveals = bool(text_pieces) and has_text_reveals(text_pieces, shots)
+    if reveals:
+        # Text that pops up at several moments: each shot's text is one line per piece that pops up in
+        # it, in order, so the words written for it (or copied) go back onto the same moments.
+        inspo_lines = [edit_text("\n".join(p["text"].replace("\n", " ") for p in text_pieces
+                                           if s["startS"] - 0.05 <= p["start"] < s["startS"] + s["durationS"] - 0.05)) or None
+                       for s in shots]
     inspo_text = clean_text_style(inspo_style.get("text"))
 
     def clean_post(caption: str, hashtags: list[str]) -> dict:
@@ -6315,6 +6461,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     report("editing", 85)
     # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
+    pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
+    kept_inspo = [breakdown["shots"][k] for k in shot_indexes if k < len(breakdown["shots"])]
+    if (text_items_raw is None and pieces and not jump and len(kept_inspo) == len(durations)
+            and has_text_reveals(pieces, breakdown["shots"])):
+        # The inspo's text pops up at several moments: the user's video does the same.
+        text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts)
+        print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
+              + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
     # The editor's free-timed text when there is some, else each shot's text over its shot.
     # (An empty list is a choice too: the user removed all the text.)
