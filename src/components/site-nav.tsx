@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmojiKitSync } from "./emoji-kit-sync";
 import { FilmIcon, TrendIcon, WandIcon } from "./icons";
@@ -54,7 +54,7 @@ const ITEMS: Item[] = [
   },
 ];
 
-/** The menu on every signed-in page: my videos, the two ways to start a video, and the profile. */
+/** The menu on every signed-in page: my videos, the two ways to start a video, the profile, and log out. */
 export function SiteNav() {
   return (
     <>
@@ -75,6 +75,15 @@ function Nav({ path }: { path: string | null }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const active = (item: Item) => !!path && item.match(path);
+  const router = useRouter();
+  const [leaving, setLeaving] = useState(false);
+
+  async function logOut() {
+    setLeaving(true);
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
+    router.replace("/");
+    router.refresh(); // drop any cached private pages from the client router
+  }
 
   // The phone menu closes on a tap outside or Escape.
   useEffect(() => {
@@ -106,6 +115,16 @@ function Nav({ path }: { path: string | null }) {
             </Link>
           </li>
         ))}
+        <li>
+          <button
+            type="button"
+            onClick={logOut}
+            disabled={leaving}
+            className="flex h-8 cursor-pointer items-center rounded-full px-3 text-sm text-muted transition hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral disabled:opacity-60"
+          >
+            {leaving ? "logging out…" : "log out"}
+          </button>
+        </li>
       </ul>
 
       {/* Phone: a menu button and a panel. */}
@@ -150,6 +169,19 @@ function Nav({ path }: { path: string | null }) {
                 </Link>
               </li>
             ))}
+            <li className="mt-1 border-t border-white/10 pt-1">
+              <button
+                type="button"
+                onClick={logOut}
+                disabled={leaving}
+                className="flex w-full cursor-pointer items-center gap-3 rounded-2xl p-3 text-left text-sm font-medium transition hover:bg-white/[0.06] focus-visible:outline-2 focus-visible:outline-coral disabled:opacity-60"
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-white/10 text-foreground">
+                  <ExitIcon className="size-4" />
+                </span>
+                {leaving ? "logging out…" : "log out"}
+              </button>
+            </li>
           </ul>
         </div>
       )}
@@ -185,6 +217,15 @@ function PersonIcon(props: React.SVGProps<SVGSVGElement>) {
     >
       <circle cx="12" cy="8" r="3.5" />
       <path d="M5 20c1.2-3.5 3.8-5 7-5s5.8 1.5 7 5" />
+    </svg>
+  );
+}
+
+function ExitIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+      <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+      <path d="M10 16l-4-4 4-4M6 12h10" />
     </svg>
   );
 }
