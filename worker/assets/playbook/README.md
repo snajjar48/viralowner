@@ -41,7 +41,7 @@ modal run scripts/study-talking.py --folder "<folder of videos>" --out <dir>
 
 ## Travel playbook
 
-`travel-playbook.md` comes from studies of 51 real viral travel videos (resorts, cruises, theme parks, destinations,
+`travel-playbook.md` comes from studies of 143 real viral travel videos (resorts, cruises, theme parks, destinations,
 pick-one / choose-your-vibe videos, tips and tours) and leads every video in the travel category. Its study looks
 closely at action shots, view reveals, the multiple choice formats and the info that gets videos saved and booked.
 Make it again with (the videos go up to a Modal volume first, `modal volume put viralowner-study-travel ...`):

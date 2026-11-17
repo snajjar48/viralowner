@@ -1,145 +1,120 @@
-# Travel Short-Form Playbook
+# Travel Video Playbook
 
-**Baseline (51 viral videos):** length 31s median (22–46); 9 shots (6–15); 3.3 cuts/10s (1.8–4.5); median shot 2.5s (1.9–4.4); longest shot 4.7s (3.6–7.1); shortest 1.3s (0.9–2.1); first word at 0.0s (75% by 0.14s); 59 words (0–105); 30fps; camera motion 21 (17–31).
+**Benchmarks (143 viral videos):** length 27.6s median (18.7–53.1s); 12 shots (6–21); 3.4 cuts/10s (1.9–4.9); median shot 2.4s (1.6–4.0); longest shot 4.5s (3.1–9.3); first word at 0.0s.
 
 ## 1. Hook (0–2s)
-- Sound and title start at 0.0s. Never open on an empty frame or silence.
-- Use a two-tier title: a small setup line over a place name 2–3x bigger, in a mood or flag colour with a thick outline or glow (pink = romance, red/yellow = Spain). Add a 📍 location line if room. Proven setups: "Let's stay at", "Why we LOVE", "Our favorite parts of", "Everything you need to see on X in 50 seconds", "What you need to know about", "Choose your…", "Tips for first-time X Part N:", "POV: …", "Where NOT to…", paradox ("A balcony room WITHOUT ocean views").
-- Put the audience qualifier in line 1: "adults-only all-inclusive", "family of 5", "four couples".
-- Choose the opening clip in this priority order:
-  1. The most saturated water shot.
-  2. A moving arrival: window seat over the bay, car into the terminal, walk to the landmark sign, door opening within 3s.
-  3. A kinetic POV: slide drop, or a waterline shot that plunges underwater by 1.5s.
-- If the opener is still, cut to the busiest wide by 2.5–3s.
-- Hold the title 2–5s, then drop it at the first cut or first interior reveal.
+- Frame 1 is the payoff, not the setup. Use the most saturated water or view, a door or gate swinging open onto light, or the result itself (three economy seats turned into a bed). Never open on a lobby, a grey sky or an airport queue.
+- Get text on screen by 0.3s. Start the voice at 0.0–0.2s.
+- Name the place by 3s. Title format: a small setup line over a big name ("Tour the" / "Governor General Suite"), 10 words or fewer, in the top third.
+- Pick one mechanic:
+  - contradiction ("This is not Bali… This is… Phuket", answer by 3.7s)
+  - price shock ("$80 a night" said by 1s)
+  - plan callout ("If you're going to Punta Cana…")
+  - POV ("POV: you found the most aesthetic all-inclusive")
+  - "This is your sign to…"
+  - superlative plus a time limit ("biggest ship in the world in 60 seconds")
+- A calm hook clip can hold 1.5–4s. Land the first cut on the first strong music hit.
 
 ## 2. Formats
-**Pick-one, short (11–12s):**
-- Intro: a muted 3.9–4s "journey begins" shot (plane window) under the question.
-- Options: 7, one shot each, one beat each (0.87–1.0s). Cut 0–0.12s after each hit.
-- Last option: held about 2x (1.7–2.0s), brightest beach.
-- Labels: place name only, 1–2 words, white bold with black stroke, same spot every time (37–50% height).
-- Variety: alternate mood and time of day (sunset, aerial, night lights, desert) so neighbours never match. Saturate the options, not the intro.
-- Tag "part N". End on the last option with no wrap-up slate so it loops.
+**Pick-one / "choose your vibe"**
+- **Rapid poll (6–8 destinations):** show the question over a muted "trip starting" shot (plane window) for about 4s. Then one clip per option, one beat each (about 0.9s). Hold the last option about 1.7x longer and make it the most saturated. Keep the whole video to 12s or less.
+- **Mini-tour poll (3–4 resorts, zones or ports):** show the question over the hero shot for about 2.5s. Give each option 6–11s and 3–5 shots, opening on its own sign or landmark held 2–3s as a chapter card. Keep the slots near-equal, with the last option getting the most time.
+- **Labels:** the name only (1–3 words) plus a flag or emoji pair, in the same position for every option. You can add a 2–6 word benefit subtitle aimed at a traveler type ("take some time away from the kids"), changing on each cut.
+- **Separating options:** a hard cut on the beat, or an in-camera colour wipe (the camera dipping into water).
+- **Order:** neighbouring options should never share a mood or colour. Build quiet → thrill → calm → most colourful and busy, or free → paid tier, with the best last.
+- **How viewers answer:** add "part 1" to the title and overlay "Which one? Comment 1–4" on the last option for about 2s. Never pick a winner yourself.
 
-**Pick-one / choose your vibe, long (24–48s):**
-- Options: 3–4, each 6.6–11s with 3–5 shots of 1.5–3.5s.
-- Open each option on its real sign, held 2–3.5s nearly still, as a free chapter card.
-- Text: a fixed big option name at ~23–27% height, plus a 2–6 word benefit subtitle that changes on every cut ("take some time away from the kids"). Colour-code each option (flag colours, emoji pair ⭐/🌊/🐚).
-- Order: calm, then thrill, then premium or most colourful and people-filled last, with the most time. A free-to-paid ladder works; tag paid tiers "*ADDITIONAL COST*".
-- Separate options with a hard cut on a hit, or an in-camera colour field (camera dips into water, full green frame, next option).
-- How viewers answer: the "choose" title is the ask. On long versions add a ~2s "which are you? 1–4" line at the end.
+**Ranked or numbered lists**
+- Label each item "#N Name" in the top third and cut on the spoken word "Number".
+- 5-item countdowns: 6–8s per item, 2–6 clips each. #1 gets the longest shot (3s or more) and a framed reveal. An opening teaser of all items at about 1s per clip works well.
+- Fast lists (food ratings, hacks): one shot of about 2s per item, labelled "📍City / name / score". Put one outlier ("12/10") in the middle.
+- Text-heavy items need 4–7s for every 12–20 words.
 
-**Numbered tips:**
-- One clip per tip, 4–7s for 12–20 words, with a "#N" badge plus text box in the lower third (55–93% height).
-- Open each tip on a clean frame for 0.3–1s, then slide the text in.
-- The clip must prove the tip (menu board with prices, an empty street for "quiet time").
+**Room, resort or ship tours:** one voiceover sentence per area, in this order: door → details and bathroom → bed → view last. Tease the glow of the window earlier. For "ship in 60 seconds" videos, show a new venue every 1.5–2.5s and let its own sign act as the label.
 
-**Rated lists:**
-- 2.2–2.9s per item. Label in three lines, "📍City / name / X/10", at 20–33% height. Cut 0.1–0.3s before the voiceover names the item.
-- Put a scale-breaking score (12/10) at ~50% with two quick shots, and include one debatable low score.
+**POV montage:** one caption that stays on the whole time, 8–15 clips at 0.7–1s each, 7–13s total.
 
-**Favorites and food:**
-- Favorites: one 1–3 word label held for the whole chapter. Exaggerate the funniest item (caps, tilt, "ZOLTAR!").
-- Food: lead with the most satisfying motion (pour, melt), ~3.6s, landing on a beat. Other dishes 1.6–2.4s. Start tight on texture, then pull back to the plate.
+**Single-take reveal:** start on feet, a hallway or a closed door. The view arrives at about 4–10s, and the camera slows to near-still for the last 1–3s. Total 10–20s.
 
-**Building list:** add one line per beat (~0.5s) until the full list is up within 4s, then hold 4–5s so it can be screenshotted.
-
-**Tours:**
-- Write one claim per voiceover sentence. Cut within ±0.3s of each sentence start, onto the noun being spoken.
-- Shots 2.3–3.5s. Voiceover ~3.5 words/s with gaps under 0.5s.
-- Room: door or room number first, then the exact category name, a "wait for it" tease, closets and bathrooms at 1.2–2s, and the view last.
-- Resort: outside, inside, outside, with the best view at 75–80% and an ending back on the hero amenity.
-- Ship or park: order day, golden hour, night. For each venue: sign (1–2s), space (~2s), a person using it.
-
-**POV:**
-- Skit: a 12–18 word problem card for 3–4s, then one story step per 2–2.6s shot, with the reward as the longest shot (~4.5s).
-- Walk-out: a single take from carpet or door to the view. The view peeks in at ~4–5s, is fully open by ~10s, and motion settles from 40–55 to under 5.
+**Tips and deals:** put proof on screen for every claim (a screenshot, a menu board, a receipt). For deal breakdowns, show a running total in the top-right that updates as each cost is spoken.
 
 ## 3. Action shots
-- **Pick:** slide or coaster POV, jumps into water, bucket dumps, foam party, flame burst, crowd dancing, countdowns, a drink handed into the lens.
-- **Place:** the first one in the first 1.5–3s or the first chapter, cut over the busiest stretch of music. Family proof (kid jumping) by 4–6s. Calm-to-party contrast by ~6s.
-- **Length:** 2.5–3.2s (~1.5x the montage shots). Jumps run as one uncut 5–6s take with 0.5–1s at the edge. Real countdowns get 6–8s with the camera steady.
-- **Timing:** keep ~1s of the calm wait before the release (motion 9 to 45). Cut right after the peak, never before. Land the cut within ±0.1s of a music hit.
+- Pick POV slides, ziplines, jumps into water, bucket dumps, boat-bow runs, animals and toasts. Anything moving toward or into water wins.
+- Place the most energetic clip in the first 3s, or as the climax just before the end.
+- Run it 1.5–3.2s, about 1.5x a normal shot. Keep about 1s of the pause before the release and cut right after the peak. An uncut POV jump (edge, fall, underwater) can run 5–6s.
+- Play it at real speed. Cut into it within 0.1s of a music hit. Follow each burst of action with a calmer shot.
 
 ## 4. Views
-- **Pick:** turquoise water, golden hour, sunset, rainbow, ocean from the balcony, symmetric pier or walkway.
-- **Reveal physically:**
-  - Curtain pull or door slide.
-  - Walking past slats or a railing until the view is edge to edge.
-  - Rising from a foreground tray to the pool (~4s).
-  - Panning off a sign.
-  - Cutting from a dark interior to bright water.
-- **Placement:** tease through a window first, then a mid reveal of ~3–4s. Land the biggest view at the end, or at ~50% in a 60s list (fireworks held 6.9s).
-- **Hold:** 3–4s, nearly still (motion under 8), and 1–2s past the last word. Never go more than ~25s without water or sky.
+- Pick turquoise shallows, infinity edges, ocean seen from a balcony, sunsets, blue-hour skylines and aerials of the whole property.
+- Reveal views physically:
+  - a hand opens a door, curtain or window
+  - walk past foliage or a door frame
+  - tilt up from the feet
+  - hard cut from a dark interior to a bright exterior
+- Put the biggest view either in frame 1 (montages, polls) or in the last 15–20% (tours, reveals), never in the middle.
+- Hold the biggest view the longest: 2.5–4.5s, nearly still. If there is a voiceover, go silent for 3–7s on it.
+- Prefer view clips framed through railings, arches or palms, with one small person seen from behind for scale.
 
-## 5. Showing the place
-- Mostly wides and mediums. Use details only as proof: bottle brands, the towel heart, a price tag.
-- Let real signs do the labelling (up to 7 of 19 shots).
-- Show rooms empty or with people from behind so viewers project themselves in. Lively venues need crowds. Use a person for scale on huge decks.
-- Use POV hands and feet: taking the drink, pushing the door, feet up framing the view.
-- Don't feature strangers' kids.
-- Light: midday for water, golden hour for room views, night neon for shows.
+## 5. How the place is shown
+- Make about 60% of shots wides. Fill the rest with mediums and proof details: prices on boards, branded toiletries, a stocked bar.
+- Put people in a third to half of the shots: small, from behind, or hands only (a POV hand taking a drink). Show faces only for a reaction or the final toast.
+- Follow the light from midday water to golden hour to night lights. Prefer the user's midday clips for water, and add a 1–3s night block into edits that are mostly blue when their clips have one.
+- From the user's clips, prefer moments where something moves in frame: running water, a wake, fireworks, someone walking in.
 
-## 6. Info that gets saved and booked
-- Exact names: resort, room category, ship, venue, dish.
-- One concrete number about every 10s: "13-minute wait = no wait", "transfers every 15 min", "258 sq ft", "sleeps 6", "Penguins 2–5", "May–Oct", "7 nights", "$7.99".
-- Who it's for, what's free versus "*ADDITIONAL COST*", one insider comparison, one honest caveat ("not for five adults").
-- **"Contact your travel agent" / booking endings: never add one on your own, even for a travel agency, resort or cruise line.** Only when the user asks for it (in their request, notes or text), and then build it like this:
-  - A pun as the final item ("You've got a friend in travel agents!").
-  - Or a question (~1.6s) followed by "CONTACT YOUR TRAVEL AGENT!" (~2.1s), held to the last frame over the most atmospheric shot.
-  - Or "Contact your travel agent to book a [X]" in a different-coloured box over a 5–6s departure shot.
-  - Credentials in the first 2s ("travel agent, 40 cruises") also only when the user asks for them.
-- Without that ask, the video ends on the biggest view or a comment question.
-- Put a comment question at ~30% ("Would you stay here?") or over the final view.
+## 6. Information that drives saves and bookings
+- Name and city by 3s, plus the exact room category name.
+- One concrete number every 10s or so: price per night, % off, minutes saved, "sleeps 6", "free meal".
+- Say what's included and what costs extra ("*ADDITIONAL COST*"). Add one insider tip and one honest caveat ("bathroom is small").
+- Say who it's for ("perfect for four couples", "honeymoon · girls' trip · wedding"). This makes people tag friends.
+- **Calls to action:**
+  - "save this for your next trip" by about 10s
+  - "send this to who you're traveling with"
+  - a yes/no question over the final view
+- **Selling calls to action** ("contact your travel agent", "comment [keyword] for a free quote", "book through me", "tap the location tag to book"): never add one on your own, even for a travel agency, resort or cruise line. Only when the user asks for it (in their request, notes or text), and then:
+  - **Travel agents:** "comment [keyword] for a free quote", perks that only come from booking through them, or a punny last list item over a bright wide.
+  - **Resorts:** "tap the location tag to book" over the hero shot mid-video, repeated over a calm last shot (2–3s).
+- Without that ask, the video ends on the biggest view, a comment question or "save this".
 
-## 7. Pacing
-- Beat-locked choice: ~0.9s per shot.
-- Montage and ship highlights: 1.4–1.9s (5–6 cuts/10s).
-- Voiceover tours: 2.3–3.5s (~3 cuts/10s).
-- Text-heavy: 3.5–7s, sized to reading time.
-- Curve: hook and first reveal 3.5–4s, middle compressed to 0.7–2s, last 2–3 shots slowed to 3–5s.
-- Music-only edits: snap cuts to hits (±0.1s), strictest in the first half. Voiceover edits: sentences set the cuts, but land the first payoff on a hit.
-- One sub-1s whip or flash mid-video. Drop the voiceover for ~3s on the song's hook and caption the lyric.
+## 7. Pacing and music
+- Montages and polls: 0.7–1.0s shots, 8–12 cuts per 10s, cutting on every beat or every second beat, within 0.1s of hits.
+- Voiceover tours: 2–3.5s shots. Cut 0–0.3s before each place is named. Aim for 3.5–4 words per second with no gaps over 0.5s.
+- Speed up the cutting toward the end, then release on one long hero shot.
 
 ## 8. Speed
-- All 51 videos play at real speed: no slow motion, ramps or timelapses. A calm feel comes from a still camera or a slow push.
-- Remove dead walking with jump cuts, or with cuts hidden inside a whip blur.
-- Speed up only an untrimmable take, 1.5–2x, where motion stays under 10.
+- Use real speed. The viral videos barely use slow-mo, speed ramps or timelapses.
+- Use gentle slow-mo only on pours, splashes or a final hug.
+- Cut out dead time (fumbles, loading screens, handling doors) with jump cuts, not speed-ups.
 
 ## 9. Text and captions
-- White sans with a thin black stroke or soft shadow, no box. Use a box only over busy screens or as a branded tip system.
-- Captions: 1–2 lines of 4–9 words at ~75–80% height, or in the upper third (25–35%). Move them up when the subject fills the bottom. Correct misspoken words.
-- Labels and text swap exactly on the cut.
-- Write captions as one running sentence across shots ("…such as…", "then…").
-- 📍 for places, flags as option bullets, and 😍/🤩 only on emotional lines.
+- Hook title in white with a shadow or outline. Use serif for luxury and bold sans for energy. Put one word in capitals for emphasis ("NOT", "WAY").
+- Text that stays on screen (a POV line, a place header, a running total) is fine. Show at most two text blocks at once.
+- Speech captions: 1–3 words at a time, bold white capitals with an outline, the spoken word highlighted, placed at about 70–78% of the height. Keep all text out of the bottom 20%.
 
 ## 10. Audio
-- Choose either a voiceover from 0.0s at 3–3.8 words/s with no dead air, or music only with labels.
-- Use live natural sound only for a real moment (countdown, crowd).
-- A calm or ironic song under an adrenaline jump sells an easygoing persona.
+- Music only for montages, polls and POV videos. A continuous voiceover for tours, tips and deals.
+- Match lyrics to the picture: "I wish I could stay here" over the room, "beautiful" landing on the first view.
+- Let the song's recognisable hook play alone for about 3s on the peak moment.
+- Keep natural sound only when it's the point: a crowd counting down, a "thank you" to staff.
 
 ## 11. Transitions and effects
-- Hard cuts. In-camera transitions: doors, curtains, a pool dip that surfaces into the party, a foreground net that clears, a same-room day-to-night cut on a hit.
-- Grade: boost blues and turquoise, warm the golden hour, keep natural flare. Keep intros muted so destinations pop. Prefer ultra-wide, low-angle clips for scale.
-- What looks cheap: flat overcast water, blown-out windows, blurry whips onto blank walls, dark noisy corridor openers, upscaled oversharpened clips.
+- Use hard cuts by default. In-camera transitions beat added effects: a door or curtain, a whip pan, clothes thrown at the lens, a hand over the lens, the camera dipping underwater.
+- Use 0.2–0.5s crossfades only between calm luxury interiors. Never use them between food close-ups.
+- Grade: push blue, turquoise and green; keep interiors and sunsets warm. Skip clips with blown-out skies or windows when a better-exposed take of the same thing exists. Add slow 5–10% push-ins on still shots unless the user asked for no zooms.
+- What looks cheap: oversharpened or upscaled clips, digital zoom on signs, sideways clips, grey skies, fluorescent interiors, blown-out windows, blurry fast pans.
 
 ## 12. Quality
-- Put the steadiest, sharpest clips first and last; shaky handheld clips (2–5s) go in the middle.
-- Skip clips with blown-out windows or skies when a better-exposed take of the same thing exists.
+- The dream look comes from stabilised slow moves, clean exposure, one consistent grade and symmetric framing: pick the user's steadiest, best-exposed takes.
+- Handheld snapshots feel honest in tips and room reviews, but never use one as the first or last shot.
 
 ## 13. Ending
-- End on the biggest view or payoff as the longest shot. Cut 0.3–1s after the last word.
-- Bookend: return to the opening location, with closing text in the title's position, so it loops.
-- Events and skits: cut within ~2s of the climax, mid-motion.
-- Process videos: stop just before the reveal to set up a part 2.
+- End on the biggest view or the emotional payoff (a toast, a family moment, a countdown hitting 0). Cut 0.3–1s after the last word or on the final hit, with no fade.
+- Make the last frame echo the first so the video loops.
 
 ## Common flops
-- Long single takes with pauses over 1s (90–178s raw tours).
-- The water withheld until ~10s.
-- Arrival fumbling that runs 50s.
-- Text shown too briefly to read.
-- Cutting before the action peaks.
-- Typos and conflicting numbers ("SUESS", "2–11" versus "9–12").
-- Shaky or blurry first or last shot.
-- Option chapters off the beat with no closing question.
+- A grey or ordinary opening shot, or water that first appears at 10s.
+- 50s of arrival before the room appears, or single shots over about 15s with no new reveal.
+- Footage that doesn't match the words (the voiceover says "soaking tub" while the minibar is on screen), or wrong place or photo labels.
+- Thin white text on white walls or clouds, 4–5 text blocks at once, typos.
+- Views held under 1.5s, or seen through blown-out windows.
+- Ending on a mirror, a shampoo bottle or a desk, or cutting 0.1s after the call to action.
+- Choice videos with no "comment your pick" prompt.
