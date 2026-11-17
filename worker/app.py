@@ -3067,7 +3067,10 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
     cw, ch = motion_canvas(motion)
     vf = [
         *([tonemap_filter()] if clip["hdr"] else []),
-        f"scale={cw}:{ch}:force_original_aspect_ratio=increase:flags=lanczos",
+        # Every shot in the same (TV) color range: phone clips come tagged full or TV range, and a
+        # range that changes partway through the joined video makes ffmpeg rebuild its filters there,
+        # dropping text and emoji for a few frames (and frames of picture).
+        f"scale={cw}:{ch}:force_original_aspect_ratio=increase:flags=lanczos:out_range=tv",
         crop_to(cw, ch, x), "setsar=1",
         *([f"setpts={stretch:.4f}*PTS"] if stretch != 1 else []),
         to_output_rate(clip.get("fps") or OUT_FPS, stretch),
@@ -3092,7 +3095,7 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
         audio = ["-map", "1:a:0"]
     cmd += [
         "-filter_complex", graph, "-map", "[v]", *audio, "-t", f"{total:.3f}",
-        *LOSSLESS, "-r", str(OUT_FPS),
+        *LOSSLESS, "-r", str(OUT_FPS), "-color_range", "tv",
         # PCM audio, so joining the shots doesn't add clicks or drift at the cuts.
         "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2", str(dest),
     ]
@@ -3920,18 +3923,19 @@ def apply_asked_look(data: dict, by_index: dict, style: dict, layout: dict, n: i
         style["animation"] = data["text_animation"]
 
 
-def overlay_timeline(plan: list[dict], texts: list[str], lays: list) -> list[tuple[float, float, str, dict]]:
+def overlay_timeline(plan: list[dict], texts: list[str], lays: list, join_same: bool = False) -> list[tuple[float, float, str, dict]]:
     """Each shot's text over that shot; the same text in the same place on neighboring shots stays
-    up as one (no flicker, and its animation plays once)."""
+    up as one (no flicker, and its animation plays once). `join_same` (text kept on the whole video):
+    the same words stay up as one wherever the next shot would have put them, in the first one's spot."""
     out: list[tuple[float, float, str, dict]] = []
     t = 0.0
     for p, text, lay in zip(plan, texts, lays):
         end = t + p["duration"]
         text = (text or "").strip()
         # Small differences in where the inspo's text was read in each shot shouldn't make it jump.
-        same = out and out[-1][2] == text and abs(out[-1][1] - t) < 0.01 and lay and (
+        same = out and out[-1][2] == text and abs(out[-1][1] - t) < 0.01 and lay and (join_same or (
             abs(out[-1][3]["x"] - lay["x"]) < 0.04 and abs(out[-1][3]["y"] - lay["y"]) < 0.04
-            and out[-1][3]["lines"] == lay["lines"])
+            and out[-1][3]["lines"] == lay["lines"]))
         if text and lay and same:
             out[-1] = (out[-1][0], end, text, out[-1][3])
         elif text and lay:
@@ -5983,25 +5987,31 @@ FLAG_PNG_URL = "https://raw.githubusercontent.com/googlefonts/noto-emoji/99701e0
 PROOF_KEY_RE = r"^u/[A-Za-z0-9-]+/p/[A-Za-z0-9-]+/proofs/[A-Za-z0-9-]+\.(png|jpg|jpeg|webp)$"
 
 
-def picture_clip(o: dict, dest: Path) -> Path:
+def picture_clip(o: dict, dest: Path, fade_in: bool = True, fade_out: bool = True) -> Path:
     """A picture as a short clip of its own (with transparency) that fades in and out: the final
-    encode takes these instead of looping still images, which once left it stuck at the end."""
+    encode takes these instead of looping still images, which once left it stuck at the end. No fade
+    where it starts with the video, ends with it, or hands over to another picture (text that stays
+    up never blinks)."""
     dur = max(0.2, o["end"] - o["start"])
-    fade_out = max(0.0, dur - 0.12)
+    fades = (["fade=t=in:st=0:d=0.12:alpha=1"] if fade_in else []) + (
+        [f"fade=t=out:st={max(0.0, dur - 0.12):.3f}:d=0.12:alpha=1"] if fade_out else [])
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-loop", "1", "-framerate", str(OUT_FPS), "-t", f"{dur:.3f}",
-                    "-i", str(o["path"]), "-vf", f"scale={int(o['w'])}:-1,format=rgba,fade=t=in:st=0:d=0.12:alpha=1,"
-                    f"fade=t=out:st={fade_out:.3f}:d=0.12:alpha=1", "-c:v", "qtrle", "-an", str(dest)],
+                    "-i", str(o["path"]), "-vf", ",".join([f"scale={int(o['w'])}:-1,format=rgba", *fades]),
+                    "-c:v", "qtrle", "-an", str(dest)],
                    check=True, capture_output=True, timeout=120)
     return dest
 
 
-def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str) -> list[str]:
+def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str, total: float | None = None) -> list[str]:
     """Filters putting each picture on the video from `start` to `end`, centered at (x, y) as
     fractions of the frame, `w` pixels wide: it fades in with a little rise, and fades out.
     Adds the pictures (as short clips, see picture_clip) to `inputs`."""
     graph, cur = [], base
     for k, o in enumerate(overlays):
-        clip = o.get("clip") or picture_clip(o, Path(o["path"]).with_name(f"pic{k:02d}.mov"))
+        others = [p for p in overlays if p is not o]
+        fade_in = o["start"] > 0.05 and not any(abs(p["end"] - o["start"]) < 0.05 for p in others)
+        fade_out = (total is None or o["end"] < total - 0.05) and not any(abs(p["start"] - o["end"]) < 0.05 for p in others)
+        clip = o.get("clip") or picture_clip(o, Path(o["path"]).with_name(f"pic{k:02d}.mov"), fade_in, fade_out)
         idx = inputs.count("-i")
         inputs += ["-i", str(clip)]
         # Padded with clear frames from the start of the video (like the fire clips), not shifted
@@ -6988,7 +6998,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # The editor's free-timed text when there is some, else each shot's text over its shot.
     # (An empty list is a choice too: the user removed all the text.)
     base_timeline = (items_timeline(text_items, style, layout, position) if text_items is not None
-                     else overlay_timeline(plan, plan_texts, lays))
+                     else overlay_timeline(plan, plan_texts, lays, join_same=whole_video_text))
     if whole_video_text and text_items is None and base_timeline:
         # Each shot's own text: no shot without text, from the first frame to the last.
         base_timeline = [list(t) for t in base_timeline]
@@ -7033,7 +7043,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     def final_encode(pictures: list[dict], ass: str | None, limit: float, draw: bool = True) -> subprocess.CompletedProcess:
         """`draw=False`: everything but the pictures (their sounds stay); add_pictures puts them on after."""
-        inputs = ["-i", joined.name]
+        # Never rebuild the filters partway through (a change in how frames are tagged would, and text
+        # and pictures drop out for a few frames while it does).
+        inputs = ["-reinit_filter", "0", "-i", joined.name]
         if music == "none":
             inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
             main = "[1:a]anull[m]"
@@ -7064,7 +7076,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                      + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
         graph += fire_overlays(cuts, starts, inputs)
         graph += look_graph(effects["looks"], "fired", "looked")
-        graph += overlay_graph(pictures if draw else [], inputs, "looked", "pictured")
+        graph += overlay_graph(pictures if draw else [], inputs, "looked", "pictured", total)
         if ass:
             (workdir / "text.ass").write_text(ass, encoding="utf-8")
         graph.append("[pictured]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
@@ -7086,8 +7098,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             base = workdir / "final_base.mp4"
             out.replace(base)
             for _ in range(2):
-                inputs = ["-i", base.name]
-                graph = overlay_graph(pictures, inputs, "0:v", "pictured") + ["[pictured]format=yuv420p[vout]"]
+                inputs = ["-reinit_filter", "0", "-i", base.name]
+                graph = overlay_graph(pictures, inputs, "0:v", "pictured", total) + ["[pictured]format=yuv420p[vout]"]
                 done = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph),
                                        "-map", "[vout]", "-map", "0:a", *FINAL_X264, "-pix_fmt", "yuv420p", "-profile:v", "high",
                                        "-c:a", "copy", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name],
