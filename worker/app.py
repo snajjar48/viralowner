@@ -5844,7 +5844,10 @@ def overlay_graph(overlays: list[dict], inputs: list[str], base: str, out: str) 
         clip = o.get("clip") or picture_clip(o, Path(o["path"]).with_name(f"pic{k:02d}.mov"))
         idx = inputs.count("-i")
         inputs += ["-i", str(clip)]
-        graph.append(f"[{idx}:v]setpts=PTS+{o['start']:.3f}/TB[ov{k}]")
+        # Padded with clear frames from the start of the video (like the fire clips), not shifted
+        # in time: a picture starting late was seen showing up over a second after its moment.
+        pad = f",tpad=start_duration={o['start']:.3f}:color=black@0" if o["start"] > 0 else ""
+        graph.append(f"[{idx}:v]format=rgba,fps={OUT_FPS}{pad}[ov{k}]")
         nxt = out if k == len(overlays) - 1 else f"ovb{k}"
         rise = 28 if o.get("rise", True) else 0
         graph.append(f"[{cur}][ov{k}]overlay=x=W*{o['x']:.4f}-w/2:"

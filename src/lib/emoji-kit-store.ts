@@ -1,5 +1,5 @@
 import "server-only";
-import { EMOJI_KIT_CELL, EMOJI_KIT_COLS, EMOJI_KIT_VERSION, type EmojiKit } from "./emoji-kit";
+import type { EmojiKit } from "./emoji-kit";
 import { deleteObject, headObject, listEmojiKitKeys, putObject, readRange } from "./storage";
 
 /** Where a user's emoji kit lives (one per user: the device they last made videos on). */
@@ -32,11 +32,23 @@ export async function savePending(userId: string, kit: EmojiKit) {
   await writeJson(pendingKey(userId), kit);
 }
 
+/** A kit the video worker can read: any version (an older one is still the device's own emoji), as
+ * long as its grid is one the worker accepts (worker/app.py install_emoji_kit). */
+function usableKit(kit: EmojiKit | null): kit is EmojiKit {
+  return (
+    !!kit &&
+    Number.isInteger(kit.cell) && kit.cell >= 32 && kit.cell <= 512 &&
+    Number.isInteger(kit.cols) && kit.cols >= 1 && kit.cols <= 64 &&
+    Array.isArray(kit.sheets) && kit.sheets.length > 0
+  );
+}
+
 /** Makes the uploaded kit the user's kit, once every sheet is really there; removes the old one's files. */
 export async function finishKit(userId: string): Promise<boolean> {
   const kit = await readPending(userId);
-  if (!kit || kit.v !== EMOJI_KIT_VERSION || kit.cell !== EMOJI_KIT_CELL || kit.cols !== EMOJI_KIT_COLS) {
-    console.error("Emoji kit finish: no current pending kit", { v: kit?.v, cell: kit?.cell });
+  if (!usableKit(kit)) {
+    const k = kit as Partial<EmojiKit> | null;
+    if (k) console.error("Emoji kit finish: pending kit unusable", { v: k.v, cell: k.cell, cols: k.cols });
     return false;
   }
   for (const sheet of kit.sheets) {
@@ -63,11 +75,18 @@ async function removeLeftovers(userId: string, kit: EmojiKit | null) {
   }
 }
 
-/** The user's kit for the video worker: its address, or null if they don't have a finished one. */
+/** The user's kit for the video worker: its address, or null if they don't have one. A kit whose
+ * sheets all arrived but whose phone never sent "finish" (the page was closed, the app was switched
+ * away from, an update landed in between) is finished here, so their videos still get their emoji. */
 export async function emojiKitKeyFor(fileKey: string): Promise<string | null> {
   const user = /^u\/([A-Za-z0-9-]+)\//.exec(fileKey)?.[1];
   if (!user) return null;
   try {
+    // A newer upload whose sheets are all there wins over the kit in use.
+    if ((await headObject(pendingKey(user))) && (await finishKit(user))) {
+      console.log("Emoji kit: finished an uploaded kit at render time");
+      return kitIndexKey(user);
+    }
     return (await headObject(kitIndexKey(user))) ? kitIndexKey(user) : null;
   } catch {
     return null;
