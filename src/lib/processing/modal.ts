@@ -172,6 +172,9 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     textScale: scale(p.textScale),
     captionScale: scale(p.captionScale),
     note: str(p.note) || null,
+    reviewMisses: Array.isArray(p.reviewMisses)
+      ? p.reviewMisses.filter((m): m is string => typeof m === "string" && m.trim() !== "").slice(0, 10).map((m) => m.slice(0, 400))
+      : undefined,
     effects: p.effects && typeof p.effects === "object" && !Array.isArray(p.effects) ? p.effects : undefined,
     scratch:
       p.scratch && Array.isArray(p.scratch.roles)

@@ -7505,6 +7505,7 @@ def made_with_review(req: dict, make) -> dict:
     m2 = out2.setdefault("meta", {})
     m2["costUsd"] = round(float(m2.get("costUsd") or 0) + float(meta.get("costUsd") or 0), 4)
     m2["reviewFixed"] = verdict.get("misses")
+    out2["plan"]["reviewMisses"] = [str(x)[:400] for x in verdict.get("misses") or []][:10]  # learned from (lib/lessons.ts)
     print(f"review: made again with the fix ({len(verdict.get('misses') or [])} misses)")
     return out2
 
@@ -7530,7 +7531,7 @@ def render_job(req: dict) -> dict:
                 print(f"couldn't schedule notify: {e}")
 
 
-LESSONS_SYSTEM = """You help the editor behind ViralOwner (an app that turns people's own clips into short-form videos, remaking a viral video or from scratch) get each video right the first time. You get what users asked to change after seeing a version, the notes they wrote before it was made, and feedback they left on finished videos, from everyone recently.
+LESSONS_SYSTEM = """You help the editor behind ViralOwner (an app that turns people's own clips into short-form videos, remaking a viral video or from scratch) get each video right the first time. You get, from everyone recently: what users asked to change after seeing a version, the notes they wrote before it was made, what they described for videos made from scratch, what they changed by hand in the editor without asking (moving, resizing or rewriting text, changing caption styles, re-trimming shots: the clearest sign of what the editor got wrong), what the editor's own check caught on its first try before the user saw it, and feedback they left on finished videos.
 
 Find the patterns: what the editor keeps getting wrong or missing, so users have to ask for it again (text covering faces, captions too small, wrong music timing, cuts too fast, not following an instruction...), and what they keep asking for. Turn them into short, concrete lessons the editor applies by default, each one a rule it can act on ("put on-screen text above the captions, never on top of a face", "when a user writes the exact on-screen words, use them word for word"). Most common and most fixable first; only patterns that several requests share (not one person's taste); about the editing, never about a specific user, business, product or clip. Never include names, businesses, places, prices or anything personal. Up to 20 lessons, one line each. If there isn't enough to go on, return fewer."""
 

@@ -296,6 +296,8 @@ export interface RenderOutput {
 
 export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   shots: ShotEdit[];
+  /** What the editor's own check caught on its first try and fixed before the user saw it (for learning). */
+  reviewMisses?: string[];
   /** For a "request a change" version: what was changed, for the user. */
   note?: string | null;
   /** One-take videos: where the take was cut. */

@@ -84,6 +84,9 @@ async function recentWords(category: VideoCategory | null): Promise<string[]> {
         UNION ALL
         SELECT 'notes before the first version: ' || (settings -> 'options' ->> 'notes') txt, created_at FROM renders
         WHERE coalesce(settings -> 'options' ->> 'notes', '') <> '' AND created_at > now() - interval '60 days'
+        UNION ALL
+        SELECT 'what they described for a video from scratch: ' || prompt txt, created_at FROM projects
+        WHERE kind = 'scratch' AND coalesce(prompt, '') <> '' AND created_at > now() - interval '60 days'
       ) x ORDER BY txt LIMIT 1200`;
   const feedback = category
     ? await sql`
@@ -95,7 +98,92 @@ async function recentWords(category: VideoCategory | null): Promise<string[]> {
       SELECT 'feedback on a finished video (' || coalesce(rating, 'no rating') || '): ' || message txt FROM feedback
       WHERE created_at > now() - interval '60 days' AND (message <> '' OR rating = 'not_quite')
       ORDER BY created_at DESC LIMIT 300`.catch(() => []);
-  return [...asks, ...feedback].map((r) => String(r.txt));
+  // What the editor's own check caught before the user saw it (fixed then, but the first try should be right).
+  const misses = category
+    ? await sql`
+      SELECT 'the editor got this wrong on its first try (caught and fixed before the user saw it): ' || m txt
+      FROM renders r JOIN projects p ON p.id = r.project_id,
+           jsonb_array_elements_text(coalesce(r.result_json -> 'plan' -> 'reviewMisses', '[]'::jsonb)) m
+      WHERE p.category = ${category} AND r.created_at > now() - interval '60 days'
+      ORDER BY r.created_at DESC LIMIT 300`.catch(() => [])
+    : await sql`
+      SELECT 'the editor got this wrong on its first try (caught and fixed before the user saw it): ' || m txt
+      FROM renders r, jsonb_array_elements_text(coalesce(r.result_json -> 'plan' -> 'reviewMisses', '[]'::jsonb)) m
+      WHERE r.created_at > now() - interval '60 days'
+      ORDER BY r.created_at DESC LIMIT 300`.catch(() => []);
+  const edits = await handEdits(category).catch(() => []);
+  return [...[...asks, ...feedback, ...misses].map((r) => String(r.txt)), ...edits];
+}
+
+type Item = { text?: string; start?: number; end?: number; y?: number | null; size?: number; font?: string | null; color?: string | null; look?: string | null };
+type Settings = {
+  options?: { captions?: { enabled?: boolean; style?: string }; text?: { style?: string; align?: string; mode?: string }; music?: { mode?: string } };
+  carry?: { textItems?: Item[]; captionFixes?: { wrong: string; right: string }[] };
+  shots?: { trimStartS?: number | null; trimEndS?: number | null }[];
+  request?: string | null;
+};
+
+/** What people changed by hand in the editor (versions made without a written request), in plain words:
+ * each version compared with the one before it. These show what the editor keeps getting wrong. */
+async function handEdits(category: VideoCategory | null): Promise<string[]> {
+  const sql = getSql();
+  const rows = category
+    ? await sql`
+      SELECT r.settings, prev.settings prev_settings, prev.result_json -> 'plan' prev_plan
+      FROM renders r JOIN projects p ON p.id = r.project_id
+      JOIN renders prev ON prev.project_id = r.project_id AND prev.version = r.version - 1
+      WHERE p.category = ${category} AND r.created_at > now() - interval '60 days' AND coalesce(r.settings ->> 'request', '') = ''
+      ORDER BY r.created_at DESC LIMIT 400`
+    : await sql`
+      SELECT r.settings, prev.settings prev_settings, prev.result_json -> 'plan' prev_plan
+      FROM renders r JOIN renders prev ON prev.project_id = r.project_id AND prev.version = r.version - 1
+      WHERE r.created_at > now() - interval '60 days' AND coalesce(r.settings ->> 'request', '') = ''
+      ORDER BY r.created_at DESC LIMIT 400`;
+  const out: string[] = [];
+  for (const row of rows) {
+    const now = (row.settings ?? {}) as Settings;
+    const before = (row.prev_settings ?? {}) as Settings;
+    const plan = (row.prev_plan ?? {}) as { textItems?: Item[]; shots?: { trimStartS?: number | null; trimEndS?: number | null }[] };
+    const did: string[] = [];
+    const o = now.options ?? {}, b = before.options ?? {};
+    if (o.captions?.enabled !== b.captions?.enabled && b.captions) did.push(o.captions?.enabled ? "turned captions on" : "turned captions off");
+    else if (o.captions?.style && b.captions?.style && o.captions.style !== b.captions.style)
+      did.push(`changed the caption style from ${b.captions.style} to ${o.captions.style}`);
+    if (o.text?.style && b.text?.style && o.text.style !== b.text.style) did.push(`changed the text look from ${b.text.style} to ${o.text.style}`);
+    if (o.text?.align && b.text?.align && o.text.align !== b.text.align) did.push(`aligned the text ${o.text.align}`);
+    if (o.music?.mode && b.music?.mode && o.music.mode !== b.music.mode) did.push(`changed the sound from ${b.music.mode} to ${o.music.mode}`);
+    const fixes = (now.carry?.captionFixes ?? []).filter(
+      (f) => !(before.carry?.captionFixes ?? []).some((g) => g.wrong === f.wrong && g.right === f.right),
+    );
+    for (const f of fixes.slice(0, 4)) did.push(`corrected a caption word: "${f.wrong}" → "${f.right}"`);
+    const items = now.carry?.textItems;
+    const was = before.carry?.textItems ?? plan.textItems;
+    if (Array.isArray(items) && Array.isArray(was)) {
+      if (!items.length && was.length) did.push("removed all the on-screen text");
+      const end = Math.max(0, ...was.map((x) => x.end ?? 0));
+      items.slice(0, 6).forEach((it, k) => {
+        const w = was.find((x) => x.text === it.text) ?? was[k];
+        if (!w) return void did.push(`added on-screen text "${(it.text ?? "").slice(0, 60)}"`);
+        if (w.text !== it.text) did.push(`rewrote on-screen text "${(w.text ?? "").slice(0, 50)}" as "${(it.text ?? "").slice(0, 50)}"`);
+        if (typeof it.y === "number" && typeof w.y === "number" && Math.abs(it.y - w.y) > 0.08)
+          did.push(it.y < w.y ? "moved the on-screen text up" : "moved the on-screen text down");
+        if ((it.size ?? 1) > (w.size ?? 1) * 1.1) did.push("made the on-screen text bigger");
+        if ((it.size ?? 1) < (w.size ?? 1) * 0.9) did.push("made the on-screen text smaller");
+        if (it.font && it.font !== w.font) did.push(`changed the text font to ${it.font}`);
+        if (it.look && it.look !== w.look) did.push(`changed the text look to ${it.look}`);
+        if ((it.end ?? 0) - (it.start ?? 0) > (w.end ?? 0) - (w.start ?? 0) + 1 && (it.start ?? 1) < 0.2 && (it.end ?? 0) >= end - 0.3)
+          did.push("kept the text on screen for the whole video");
+      });
+    }
+    const shots = now.shots ?? [], old = plan.shots ?? [];
+    if (old.length && shots.length && shots.length < old.length) did.push(`deleted ${old.length - shots.length} shot(s)`);
+    const retimed = shots.filter((s, i) => old[i] && (Math.abs((s.trimStartS ?? 0) - (old[i].trimStartS ?? 0)) > 0.2
+      || Math.abs((s.trimEndS ?? 0) - (old[i].trimEndS ?? 0)) > 0.2)).length;
+    if (retimed) did.push(`re-trimmed ${retimed} shot(s) by hand`);
+    const unique = [...new Set(did)];
+    if (unique.length) out.push("edited by hand in the editor (without asking): " + unique.join("; "));
+  }
+  return out;
 }
 
 /** One set of lessons (general, or one category's). */
