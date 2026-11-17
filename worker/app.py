@@ -7031,7 +7031,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 
     out = workdir / "final.mp4"
 
-    def final_encode(pictures: list[dict], ass: str | None, limit: float) -> subprocess.CompletedProcess:
+    def final_encode(pictures: list[dict], ass: str | None, limit: float, draw: bool = True) -> subprocess.CompletedProcess:
+        """`draw=False`: everything but the pictures (their sounds stay); add_pictures puts them on after."""
         inputs = ["-i", joined.name]
         if music == "none":
             inputs += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
@@ -7063,7 +7064,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                      + (f"amix=inputs={len(sounds) + 1}:normalize=0:duration=first[aout]" if sounds else "anull[aout]"))
         graph += fire_overlays(cuts, starts, inputs)
         graph += look_graph(effects["looks"], "fired", "looked")
-        graph += overlay_graph(pictures, inputs, "looked", "pictured")
+        graph += overlay_graph(pictures if draw else [], inputs, "looked", "pictured")
         if ass:
             (workdir / "text.ass").write_text(ass, encoding="utf-8")
         graph.append("[pictured]" + ("ass=text.ass," if ass else "") + "format=yuv420p[vout]")
@@ -7072,15 +7073,45 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name]
         return subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=limit)
 
+    def add_pictures(limit: float) -> bool:
+        """The pictures put on in a second, simple step: the video made without them first, then only
+        the pictures laid over it (the sound copied as is). Emoji in text stay the maker's own instead
+        of dropping out when the one-step encode comes out short or stalls. True if it came out whole."""
+        if not pictures:
+            return False
+        try:
+            first = final_encode(pictures, ass, limit, draw=False)
+            if first.returncode != 0 or picture_seconds(out) < total - 0.15:
+                return False
+            base = workdir / "final_base.mp4"
+            out.replace(base)
+            for _ in range(2):
+                inputs = ["-i", base.name]
+                graph = overlay_graph(pictures, inputs, "0:v", "pictured") + ["[pictured]format=yuv420p[vout]"]
+                done = subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(graph),
+                                       "-map", "[vout]", "-map", "0:a", *FINAL_X264, "-pix_fmt", "yuv420p", "-profile:v", "high",
+                                       "-c:a", "copy", "-t", f"{total:.3f}", "-movflags", "+faststart", out.name],
+                                      cwd=workdir, capture_output=True, text=True, timeout=limit)
+                if done.returncode == 0 and picture_seconds(out) >= total - 0.15:
+                    print("pictures added in a second step: video whole, emoji kept")
+                    return True
+                print(f"WARNING pictures step came out short ({picture_seconds(out):.2f}s of {total:.2f}s)")
+            base.replace(out)  # whole, without the pictures: the plain fallback takes over
+        except subprocess.TimeoutExpired:
+            print("WARNING pictures step stalled")
+        return False
+
     # Normally well under a minute; ffmpeg once stalled at the very end, so it's watched: a stuck
-    # encode is stopped and tried again, and then made without the pictures (emoji in text drop
-    # out, the text stays) rather than the video failing.
+    # encode is stopped and tried again, then made in two steps (add_pictures), and only then without
+    # the pictures (emoji in text drop out, the text stays) rather than the video failing.
     limit = min(480.0, max(240.0, total * 4))
     result = None
     for attempt in range(3):
         try:
             if attempt < 2:
                 result = final_encode(pictures, ass, limit)
+            elif add_pictures(limit):
+                result = subprocess.CompletedProcess([], 0, "", "")
             else:
                 plain = build_ass(base_timeline, style, layout, words, shown_captions,
                                   caption_y_at)
@@ -7102,6 +7133,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"WARNING finished video has {have:.2f}s of picture for {total:.2f}s (attempt {attempt + 1})")
         if attempt == 0:
             result = final_encode(pictures, ass, limit)
+        elif add_pictures(limit):
+            result = subprocess.CompletedProcess([], 0, "", "")
         else:
             result = final_encode([], build_ass(base_timeline, style, layout, words, shown_captions, caption_y_at), limit)
         if result.returncode != 0:
