@@ -10,13 +10,15 @@ const pendingKey = (userId: string) => `${kitFolder(userId)}pending.json`;
 /** Each sheet's file can be at most this big. */
 export const SHEET_MAX_BYTES = 12 * 1024 * 1024;
 
+/** The JSON file, or null if it's missing, empty, too big or unreadable (never throws). */
 async function readJsonObject<T>(key: string): Promise<T | null> {
-  const head = await headObject(key);
-  if (!head || head.sizeBytes > 400_000) return null;
-  const bytes = await readRange(key, 0, head.sizeBytes - 1);
   try {
+    const head = await headObject(key);
+    if (!head || head.sizeBytes <= 0 || head.sizeBytes > 400_000) return null;
+    const bytes = await readRange(key, 0, head.sizeBytes - 1);
     return JSON.parse(new TextDecoder().decode(bytes)) as T;
-  } catch {
+  } catch (error) {
+    console.error("Emoji kit file unreadable:", key.split("/").pop(), error instanceof Error ? error.message : error);
     return null;
   }
 }

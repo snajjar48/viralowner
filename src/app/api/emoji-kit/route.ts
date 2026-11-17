@@ -22,7 +22,7 @@ export async function GET() {
     if (!userId) return unauthorized();
     let [kit, pending] = await Promise.all([readKit(userId), readPending(userId)]);
     // Sheets uploaded but never finished (the phone left the page): finish them now.
-    if (pending && (await finishKit(userId))) [kit, pending] = [await readKit(userId), null];
+    if (pending && (await finishKit(userId).catch(() => false))) [kit, pending] = [await readKit(userId), null];
     return Response.json(
       { style: kit?.style ?? null, v: kit?.v ?? null, pending: pending?.v === EMOJI_KIT_VERSION ? pending.style : null },
       { headers: { "cache-control": "no-store" } },
