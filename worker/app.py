@@ -213,7 +213,7 @@ image = (
           for name, src in FONT_FILES.items()],
         "fc-cache -f",
     )
-    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper>=1.1", "pillow")
+    .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper>=1.1", "pillow", "librosa==0.11.0")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
     # The sound-effect recognizer (CLAP), CPU-only.
     .uv_pip_install("torch==2.7.1", index_url="https://download.pytorch.org/whl/cpu")
@@ -1893,6 +1893,68 @@ def onsets(audio, sr: int = 48000, limit: int = 30) -> list[tuple[float, float]]
         if flux[i] == flux[lo:hi].max() and flux[i] > med + 6 * mad:
             peaks.append(((i + 1) * hop / sr + nfft / 2 / sr, float((flux[i] - med) / mad)))
     return sorted(peaks, key=lambda p: -p[1])[:limit]
+
+
+def beat_grid(path: Path) -> dict:
+    """The song's beats (librosa's beat tracker): its tempo, every beat, and the strongest hits (drops,
+    accents) that a cut should land on first. Empty if it can't be read."""
+    try:
+        import librosa
+        import numpy as np
+
+        sr = 22050
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-ac", "1", "-ar", str(sr), "-f", "f32le", "-"],
+                             capture_output=True).stdout
+        y = np.frombuffer(raw, np.float32).copy()
+        if len(y) < sr * 2:
+            return {"tempo": None, "beats": [], "strong": []}
+        env = librosa.onset.onset_strength(y=y, sr=sr)
+        tempo, frames = librosa.beat.beat_track(onset_envelope=env, sr=sr)
+        times = librosa.frames_to_time(frames, sr=sr)
+        strength = env[frames] if len(frames) else np.array([])
+        cut = np.percentile(strength, 75) if len(strength) else 0
+        return {"tempo": round(float(np.atleast_1d(tempo)[0]), 1),
+                "beats": [round(float(t), 3) for t in times],
+                "strong": [round(float(t), 3) for t, st in zip(times, strength) if st >= cut]}
+    except Exception as e:  # noqa: BLE001
+        print(f"beat tracking failed: {type(e).__name__}: {e}")
+        return {"tempo": None, "beats": [], "strong": []}
+
+
+def snap_cuts_to_beats(plan: list[dict], clips: list[dict], beats: list[float], pinned: list[bool],
+                       reach: float = 0.25, strong: list[float] | None = None) -> tuple[list[dict], int]:
+    """Moves each cut onto the nearest beat (within `reach` seconds): the shot before it runs a little
+    longer or shorter and the one after starts with it, so the video's length stays the same. Never
+    moves a cut where a shot is pinned (timed by the user), would get shorter than 0.4s, or would need
+    footage its clip doesn't have. Returns (plan, how many cuts moved)."""
+    if not beats or len(plan) < 2:
+        return plan, 0
+    plan = [dict(p) for p in plan]
+    moved, t = 0, 0.0
+    for k in range(len(plan) - 1):
+        a, b = plan[k], plan[k + 1]
+        t += a["duration"]
+        if pinned[k] or pinned[k + 1]:
+            continue
+        # The nearest beat, a strong one (a drop, an accent) if it's nearly as close.
+        near = min(beats, key=lambda x: abs(x - t) - (0.08 if strong and x in strong else 0.0))
+        delta = near - t
+        if abs(delta) < 0.02 or abs(delta) > reach:
+            continue
+        if a["duration"] + delta < 0.4 or b["duration"] - delta < 0.4:
+            continue
+        ra = a["take"] / a["duration"] if a["duration"] else 1.0
+        rb = b["take"] / b["duration"] if b["duration"] else 1.0
+        new_take = (a["duration"] + delta) * ra
+        if a["start"] + new_take > clips[a["clip"]]["duration"] - 0.02:
+            continue  # no footage to run longer
+        a["duration"] = round(a["duration"] + delta, 3)
+        a["take"] = round(new_take, 3)
+        b["duration"] = round(b["duration"] - delta, 3)
+        b["take"] = round(b["duration"] * rb, 3)
+        t = near
+        moved += 1
+    return plan, moved
 
 
 def listen(path: Path, cuts: list[float], shots: list[dict]) -> dict:
@@ -5379,7 +5441,9 @@ def audio_file_info(path: Path) -> dict:
     a = load_audio(path)
     dur = len(a) / 48000
     hits = sorted(t for t, _ in onsets(a, limit=80))
-    return {"duration": dur, "hits": [r2(t) for t in hits], "speech": transcribe(path)["segments"]}
+    grid = beat_grid(path)
+    return {"duration": dur, "hits": [r2(t) for t in hits], "speech": transcribe(path)["segments"],
+            "tempo": grid["tempo"], "beats": grid["beats"], "strongBeats": grid["strong"]}
 
 
 def plan_from_render(plan: dict, clip_index: dict[str, int]) -> dict | None:
@@ -5450,8 +5514,12 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     if sound == "upload" and audio_info:
         said = describe_speech(audio_info["speech"], words_ok)
         about = (f"the sound: the user's audio file ({audio_info['duration']:.1f}s long). it plays from the start of the "
-                 f"video; the clips' own sound isn't heard. strong hits/beats at: "
-                 f"{', '.join(f'{t:.2f}' for t in audio_info['hits']) or 'none found'} (seconds).\n"
+                 f"video; the clips' own sound isn't heard. "
+                 + (f"tempo {audio_info['tempo']} BPM; beats at: {', '.join(f'{t:.2f}' for t in audio_info['beats'][:160])}; "
+                    f"strongest beats (land the important cuts on these): {', '.join(f'{t:.2f}' for t in audio_info['strongBeats'][:60])} (seconds). "
+                    "Every cut should land on a beat (each shot's length a whole number of beats); the editor moves "
+                    "each cut onto the nearest beat afterwards.\n" if audio_info.get("beats") else
+                    f"strong hits at: {', '.join(f'{t:.2f}' for t in audio_info['hits']) or 'none found'} (seconds).\n")
                  + (f"words in it:\n{said}" if said else "it has no words (music)."))
     elif sound == "none":
         about = "the sound: no sound, only the sound effects you add."
@@ -6833,6 +6901,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                     print(f"lip sync: {synced} shot(s) lined up with the soundtrack")
         except Exception as e:  # noqa: BLE001
             print(f"lip sync skipped: {type(e).__name__}: {e}")
+    song_beats: list[float] = []
+    if music == "upload" and not jump and own_audio.exists() and own_audio.stat().st_size > 0:
+        # The user's song: every cut lands on its beat (a strong one where one is close).
+        grid = beat_grid(own_audio)
+        song_beats = [r2(b) for b in grid["beats"]]
+        if grid["beats"]:
+            plan, snapped = snap_cuts_to_beats(plan, clips, grid["beats"], pinned, strong=grid["strong"])
+            print(f"beats: {grid['tempo']} BPM, {len(grid['beats'])} beats; {snapped} of {len(plan) - 1} cuts moved onto a beat")
     durations = [p["duration"] for p in plan]
     cuts = transition_plan(durations, effects["transitions"])
     motions = effects["motions"]
@@ -7199,6 +7275,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         "height": OUT_H,
         "durationS": r2(total),
         "postCopy": post,
+        # For the check after the video's made (review_video), not kept by the site.
+        "editFacts": {"durations": [r2(d) for d in durations], "beats": song_beats[:120]},
         "plan": {
             "shots": [
                 {"shotIndex": shot_number(req, i, len(plan)), "clipId": clips[p["clip"]]["id"],
@@ -7445,7 +7523,7 @@ def notify_job(url: str, payload: dict) -> None:
 REVIEW_SYSTEM = """You check a short-form video that ViralOwner (an app that edits people's own clips into TikToks and Reels) just made, before the user sees it, the way a careful editor watches their cut before sending it. You get everything the user asked for (their description of the video or their change request, their notes, and their standing preferences), the on-screen text the editor planned, and frames from the finished video every half second.
 
 Find only clear misses:
-- something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed, an effect they asked for or asked to remove, the length;
+- something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed (slow motion or none), an effect or transition they asked for or asked to remove, the sound they asked for, captions on or off, cutting on the beat, the length. Use "how it's edited" for what frames can't show;
 - obvious defects: on-screen text cut off by the edge of the frame, text covering a face or the product, text that can't be read, a black or blank frame, the same footage twice in a row, text or captions with typos or words the user didn't write.
 Don't flag taste, small timing differences, or things the clips can't do (if they asked for a pour and no clip shows one, that isn't a miss). If the video does what was asked, say so and list nothing.
 
@@ -7486,12 +7564,37 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
     texts = ([f"{x.get('start')}-{x.get('end')}s: {x.get('text')!r}" for x in items] if items is not None
              else [repr(t) for t in plan.get("texts") or [] if t])
     duration = probe(video)["duration"]
-    times = [round(k * 0.5 + 0.25, 2) for k in range(min(40, int(duration / 0.5)))]
+    # Through the whole video (every half second up to 48 frames, spread out on longer ones), first and
+    # last frame included.
+    n = max(2, min(48, int(duration / 0.5)))
+    times = sorted({round(min(duration - 0.05, 0.05 + k * (duration - 0.1) / (n - 1)), 2) for k in range(n)})
+    # How it's edited, for asks frames can't show (sound, speed, cutting on the beat, length).
+    shots_out = plan.get("shots") or []
+    eff = plan.get("effects") or {}
+    lengths = [round(float(x.get("trimEndS") or 0) - float(x.get("trimStartS") or 0), 2) for x in shots_out]
+    starts_out, t = [], 0.0
+    facts_in = out.get("editFacts") or {}
+    for d in (facts_in.get("durations") or []):
+        t += float(d)
+        starts_out.append(round(t, 2))
+    music = ((options.get("music") or {}).get("mode")) or "original"
+    sound = {"original": "the clips' own sound", "inspo": "the original (inspo) video's sound",
+             "upload": "the user's own audio file", "none": "no sound"}.get(music, music)
+    facts = [f"sound: {sound}", f"captions: {'on' if (options.get('captions') or {}).get('enabled') else 'off'}",
+             f"shots: {len(shots_out)}", f"speeds: {eff.get('speeds') or 'all normal'}",
+             f"transitions: {eff.get('transitions') or 'hard cuts'}", f"motions: {eff.get('motions') or 'none'}"]
+    if starts_out:
+        facts.append("cuts at: " + ", ".join(map(str, starts_out[:-1])) + "s")
+    elif lengths:
+        facts.append("footage used per shot (seconds): " + ", ".join(map(str, lengths)))
+    if facts_in.get("beats"):
+        facts.append(f"the song's beats: {facts_in['beats']}")
     with ThreadPoolExecutor(8) as pool:
         frames = list(pool.map(lambda t: grab_frame(video, t, workdir / f"review{int(t * 100):05d}.jpg", 360), times))
     content: list[dict] = [{"type": "text", "text": (
         "what the user asked for:\n" + ("\n".join(f"- {k}: {v}" for k, v in asks) or "- nothing specific")
-        + f"\n\nthe video is {duration:.1f}s. on-screen text the editor planned:\n" + ("\n".join(texts) or "none")
+        + f"\n\nthe video is {duration:.1f}s. how it's edited: " + "; ".join(facts)
+        + "\non-screen text the editor planned:\n" + ("\n".join(texts) or "none")
         + "\n\nframes from the finished video:")}]
     for t, f in zip(times, frames):
         if f:
