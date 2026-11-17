@@ -191,7 +191,7 @@ export function InspoUploader({
 
   /** The button: finishes the upload (usually already done) and starts the analysis. */
   async function upload() {
-    if (!picked || !confirmed || !category) return;
+    if (!picked || !confirmed) return;
     // Not started yet (replacing an inspo), or it stopped: (re)start it now.
     const pending =
       uploading.current && (bg.state === "uploading" || bg.state === "done") ? uploading.current : startUpload(picked.file, picked.durationS);
@@ -232,7 +232,7 @@ export function InspoUploader({
           </span>
         </span>
         <div className="flex flex-col gap-1">
-          <p className="text-lg font-medium">analyzing your inspo...</p>
+          <p className="text-lg font-medium">studying your video...</p>
           <p className="text-sm text-muted">finding every cut, the pacing, and the text style. this takes a few seconds.</p>
         </div>
       </div>
@@ -249,7 +249,7 @@ export function InspoUploader({
             accept={VIDEO_ACCEPT}
             onFiles={onFiles}
             disabled={busy}
-            title={phase.name === "reading" ? "checking your video..." : "upload your inspo video"}
+            title={phase.name === "reading" ? "checking your video..." : "upload the video you want to remake"}
             hint={
               <>
                 <span className="sm:hidden">tap to choose from your camera roll.</span>
@@ -272,7 +272,7 @@ export function InspoUploader({
             muted
             playsInline
             preload="metadata"
-            aria-label="your inspo video"
+            aria-label="the video you picked"
             className="aspect-[9/16] w-20 shrink-0 rounded-xl bg-black object-cover"
           />
           <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -304,9 +304,23 @@ export function InspoUploader({
         </div>
       )}
 
-      <p className="text-sm text-muted">
-        <span className="font-medium text-foreground">tip:</span> save the video or screen-record it, then upload it here.
-      </p>
+      <details className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm">
+        <summary className="cursor-pointer font-medium">how do i get a video from TikTok or Instagram?</summary>
+        <div className="flex flex-col gap-3 pt-3 text-muted">
+          <p>
+            <span className="font-medium text-foreground">TikTok:</span> open the video, tap the share arrow, then tap{" "}
+            <span className="text-foreground">save video</span>. it goes to your camera roll.
+          </p>
+          <p>
+            <span className="font-medium text-foreground">Instagram, or if there’s no save button:</span> screen-record it.
+            on iPhone, swipe down from the top-right corner and tap the record button (a circle; if it’s not there, add
+            “screen recording” in settings › control center). on Android, swipe down
+            from the top and tap <span className="text-foreground">screen record</span>. play the video, stop the
+            recording, and it’s in your camera roll.
+          </p>
+          <p>then come back here and tap the box above to pick it.</p>
+        </div>
+      </details>
 
       <CategoryPicker value={category} onChange={setCategory} disabled={busy} />
 
@@ -316,7 +330,7 @@ export function InspoUploader({
 
       {(phase.name === "uploading" || phase.name === "waiting") && (
         <div className="flex flex-col gap-3" aria-live="polite">
-          <ProgressBar value={phase.name === "uploading" ? phase.percent : bg.percent} label="uploading your inspo" />
+          <ProgressBar value={phase.name === "uploading" ? phase.percent : bg.percent} label="uploading your video" />
           <button
             type="button"
             onClick={() => abort.current?.abort()}
@@ -358,10 +372,10 @@ export function InspoUploader({
         <button
           type="button"
           onClick={upload}
-          disabled={!picked || !confirmed || !category || busy}
+          disabled={!picked || !confirmed || busy}
           className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
         >
-          {bg.state === "done" ? "analyze my inspo" : "upload & analyze"}
+          {bg.state === "done" ? "next: break it down" : "upload & break it down"}
         </button>
       )}
     </div>

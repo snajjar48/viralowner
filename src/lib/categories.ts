@@ -18,5 +18,3 @@ export type VideoCategory = (typeof VIDEO_CATEGORIES)[number]["id"];
 export const isCategory = (v: unknown): v is VideoCategory => VIDEO_CATEGORIES.some((c) => c.id === v);
 
 export const categoryLabel = (id: string | null | undefined) => VIDEO_CATEGORIES.find((c) => c.id === id)?.label ?? null;
-
-export const CATEGORY_REQUIRED = "pick what kind of video this is first.";

@@ -418,7 +418,7 @@ export function PreviewEditor({
                       aria-label={`delete shot ${shot.index + 1}`}
                       title={
                         timedToInspo
-                          ? "the inspo’s sound is timed to every shot. pick another music option to delete shots."
+                          ? "the original video’s sound is timed to every shot. pick another music option to delete shots."
                           : lastShot
                             ? "a video needs at least one shot."
                             : "delete this shot"

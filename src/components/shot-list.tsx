@@ -9,7 +9,7 @@ export const ROLE_LABELS: Record<Shot["role"], string> = {
   build: "build-up",
   reveal: "reveal",
   payoff: "payoff",
-  "b-roll": "b-roll",
+  "b-roll": "extra footage",
   cta: "call to action",
 };
 

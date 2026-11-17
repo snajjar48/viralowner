@@ -42,7 +42,7 @@ export const DEFAULT_OPTIONS: VideoOptions = {
 export const NO_AUDIO_FILE_ERROR = "add your audio file on the clips step, or choose another music option.";
 
 export const INSPO_AUDIO_CONFIRM_ERROR =
-  "please confirm the note about the inspo’s audio, or choose another music option.";
+  "please confirm the note about the original video’s sound, or choose another music option.";
 
 export const CAPTION_STYLES: { id: CaptionStyleId; name: string; description: string }[] = [
   { id: "bold-pop", name: "bold pop", description: "big, bold, one or two words at a time" },

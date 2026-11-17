@@ -5,17 +5,18 @@ import { deletePrefix } from "@/lib/storage";
 
 /**
  * { name }: renames a video project ("" goes back to the name we make for it).
- * { category }: changes what kind of video it is (the next versions follow it).
+ * { category }: changes what kind of video it is (the next versions follow it); null clears it.
  */
 export async function PATCH(request: Request, ctx: RouteContext<"/api/projects/[id]">) {
   return withProject(ctx.params, "Renaming project", async (_userId, project) => {
     const body = await readJson(request);
     if (body && "category" in body) {
-      if (!isCategory(body.category)) return jsonError("pick one of the kinds of video.", 400);
-      if (!(await setProjectCategory(project.id, body.category))) {
+      if (body.category !== null && !isCategory(body.category)) return jsonError("pick one of the kinds of video.", 400);
+      const category = body.category === null ? null : body.category;
+      if (!(await setProjectCategory(project.id, category))) {
         return jsonError("couldn’t save that right now. please try again later.", 503);
       }
-      return Response.json({ category: body.category });
+      return Response.json({ category });
     }
     if (typeof body?.name !== "string") return jsonError("invalid request.", 400);
     const name = body.name.replace(/\s+/g, " ").trim();

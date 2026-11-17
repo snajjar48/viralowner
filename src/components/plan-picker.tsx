@@ -115,7 +115,7 @@ export function PlanPicker({
                   </span>
                   <span>
                     <span className="font-medium">start from scratch:</span>{" "}
-                    <span className="text-muted">upload your clips, describe the video you want, and we edit it for you. no inspo needed.</span>
+                    <span className="text-muted">upload your clips, describe the video you want, and we edit it for you. no example video needed.</span>
                   </span>
                 </span>
               )}

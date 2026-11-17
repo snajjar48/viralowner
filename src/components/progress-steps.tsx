@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { CheckIcon } from "./icons";
 
-const STEPS = ["inspo", "clips", "options"] as const;
+const STEPS = ["the video", "your clips", "finish"] as const;
 
 /**
  * The 3-step indicator at the top of steps 1–3. Steps before the current one

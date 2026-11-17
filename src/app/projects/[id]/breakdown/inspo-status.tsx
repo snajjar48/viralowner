@@ -70,7 +70,7 @@ export function InspoStatus({
 
   if (status === "failed") {
     return (
-      <StateCard tone="error" icon={<AlertIcon className="size-8 text-coral" />} title="we hit a snag with your inspo">
+      <StateCard tone="error" icon={<AlertIcon className="size-8 text-coral" />} title="we hit a snag with your video">
         <p className="text-sm text-muted">{error ?? "something went wrong. please try again."}</p>
         <div className="flex flex-wrap justify-center gap-2 pt-1">
           <button
@@ -99,7 +99,7 @@ export function InspoStatus({
             <SparkleIcon className="size-6" />
           </span>
         }
-        title="analyzing your inspo..."
+        title="studying your video..."
       >
         <p className="text-sm text-muted">
           {step ? `${step}...` : "finding every cut, what’s in each shot, and why it works."}

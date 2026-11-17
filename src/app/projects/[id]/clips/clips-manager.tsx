@@ -884,7 +884,7 @@ function ShortClipNote({ item, shots }: { item: Item; shots: Shot[] }) {
       <AlertIcon className="mt-0.5 size-3.5 shrink-0" />
       <span>
         {on.length === 1
-          ? `this clip is ${item.durationS.toFixed(1)}s but shot ${on[0].index + 1} is ${on[0].durationS.toFixed(1)}s, so that shot will be a little shorter. a longer clip matches the inspo better.`
+          ? `this clip is ${item.durationS.toFixed(1)}s but shot ${on[0].index + 1} is ${on[0].durationS.toFixed(1)}s, so that shot will be a little shorter. a longer clip matches the original better.`
           : `this clip is ${item.durationS.toFixed(1)}s but shots ${on.map((s) => s.index + 1).join(", ")} need ${need.toFixed(1)}s together. we never repeat footage, so some of them will be shorter.`}
       </span>
     </p>

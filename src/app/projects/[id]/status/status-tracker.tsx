@@ -9,7 +9,7 @@ import { ProgressBar } from "@/components/progress-bar";
 import { JOB_STAGES, type JobStage } from "@/lib/processing/types";
 
 const STAGE_COPY: Record<JobStage, { title: string; detail: string }> = {
-  analyzing: { title: "analyzing", detail: "studying your inspo’s timing and style" },
+  analyzing: { title: "analyzing", detail: "studying the original video’s timing and style" },
   matching: { title: "matching", detail: "picking the best moment from each clip" },
   editing: { title: "editing", detail: "cutting to the pace, adding text and captions" },
   finishing: { title: "finishing", detail: "exporting in full hd, 1080×1920" },

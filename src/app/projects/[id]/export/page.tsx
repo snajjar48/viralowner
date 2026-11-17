@@ -63,7 +63,7 @@ async function Export({ id, version }: { id: string; version: number | null }) {
       >
         <ArrowLeftIcon className="size-4" /> back to your video
       </Link>
-      <PageTitle title="ready to post" subtitle={`version ${render.version} · 1080×1920 mp4, full hd for tiktok, reels and shorts.`} />
+      <PageTitle title="ready to post" subtitle={`version ${render.version} · ready for TikTok, Instagram Reels and YouTube Shorts.`} />
 
       <SaveVideo
         fileUrl={`/api/projects/${id}/renders/${render.id}/file`}

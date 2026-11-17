@@ -18,8 +18,8 @@ export const metadata: Metadata = {
 };
 
 const PROJECT_STATUS: Record<ProjectStatus, { label: string; tone: ProjectCardData["tone"] }> = {
-  draft: { label: "inspo not analyzed", tone: "draft" },
-  analyzing: { label: "analyzing inspo", tone: "working" },
+  draft: { label: "not started yet", tone: "draft" },
+  analyzing: { label: "studying your video", tone: "working" },
   ready_for_clips: { label: "add your clips", tone: "draft" },
   processing: { label: "editing", tone: "working" },
   done: { label: "ready to post", tone: "ready" },

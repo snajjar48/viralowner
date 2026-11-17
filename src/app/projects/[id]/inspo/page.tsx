@@ -6,7 +6,7 @@ import { loadProject } from "@/lib/project-page";
 import { InspoUploader } from "@/components/inspo-uploader";
 
 export const metadata: Metadata = {
-  title: "change your inspo",
+  title: "change the video",
   robots: { index: false, follow: false },
 };
 
@@ -27,8 +27,8 @@ async function ReplaceInspo({ id }: { id: string }) {
   return (
     <FlowShell step={1} projectId={id}>
       <PageTitle
-        title="choose a different inspo"
-        subtitle="a new inspo means a new shot list. your uploaded clips stay, but you’ll match them to the new shots."
+        title="choose a different video"
+        subtitle="a new video means a new shot list. your uploaded clips stay, but you’ll match them to the new shots."
       />
       <InspoUploader projectId={id} category={project.category} />
     </FlowShell>

@@ -38,7 +38,7 @@ export function ShotCount({ projectId, count, min, max, inspo, locked }: { proje
             number of shots
           </h2>
           <p className="text-xs text-muted">
-            {count === inspo ? "same as the inspo." : `the inspo has ${inspo}. `}
+            {count === inspo ? "same as the original." : `the original has ${inspo}. `}
             {count < inspo && "shots next to each other are joined, so you film less."}
             {count > inspo && "long shots are split, for a faster edit."}
           </p>
@@ -57,7 +57,7 @@ export function ShotCount({ projectId, count, min, max, inspo, locked }: { proje
       </div>
       {count !== inspo && !locked && (
         <button type="button" onClick={() => set(inspo)} disabled={busy} className="w-fit cursor-pointer text-xs text-muted underline underline-offset-4 hover:text-foreground">
-          back to the inspo’s {inspo}
+          back to the original’s {inspo}
         </button>
       )}
       {locked && <p className="text-xs text-muted">this video has versions already. start a new project to change the number of shots.</p>}

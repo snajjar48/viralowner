@@ -93,9 +93,9 @@ function Choice({
 }
 
 const TEXT_CHOICES: { mode: TextMode; title: string; description: string }[] = [
-  { mode: "match", title: "match the inspo", description: "the same words, style and placement as the inspo" },
+  { mode: "match", title: "match the original", description: "the same words, style and placement as the original video" },
   { mode: "adapt", title: "match the style, use my business", description: "same style and placement, words about you" },
-  { mode: "custom", title: "write my own", description: "your exact words and lines, in the inspo’s style" },
+  { mode: "custom", title: "write my own", description: "your exact words and lines, in the original’s style" },
 ];
 
 // "Start from scratch": there's no inspo to match.
@@ -121,7 +121,7 @@ const MUSIC_CHOICES: { mode: MusicMode; title: string; description: string }[] =
     },
     {
       mode: "inspo",
-      title: "use the inspo’s audio",
+      title: "use the original video’s sound",
       description: "the same sound as the video you’re recreating",
     },
     {
@@ -246,7 +246,7 @@ export function OptionsFields({
           <TextStylePicker
             value={value.text.style}
             onChange={(style) => set({ text: { ...value.text, style } })}
-            autoName={variant === "scratch" ? "we pick" : "like inspo"}
+            autoName={variant === "scratch" ? "we pick" : "like the original"}
           />
         </div>
       </Section>

@@ -38,9 +38,9 @@ export const MESSAGES = {
   empty: "that file is empty. try saving the video again.",
   unreadable: "we couldn’t read that video. try saving it again, or screen-record it and upload that.",
   inspoTooLong: (s: number) =>
-    `that video is ${formatDuration(s)}. inspo videos need to be ${INSPO_MAX_SECONDS} seconds or less.`,
+    `that video is ${formatDuration(s)}. the video you remake needs to be ${INSPO_MAX_SECONDS} seconds or less.`,
   inspoTooBig: (b: number) =>
-    `that video is ${formatBytes(b)}. inspo videos need to be ${formatBytes(INSPO_MAX_BYTES)} or less. a screen recording is usually smaller.`,
+    `that video is ${formatBytes(b)}. the video you remake needs to be ${formatBytes(INSPO_MAX_BYTES)} or less. a screen recording is usually smaller.`,
   clipTooLong: (s: number) =>
     `that clip is ${formatDuration(s)}. clips need to be ${CLIP_MAX_SECONDS / 60} minutes or less.`,
   clipTooBig: (b: number) => `that clip is ${formatBytes(b)}. clips need to be ${formatBytes(CLIP_MAX_BYTES)} or less.`,

@@ -90,7 +90,7 @@ export async function startNewRender(
   extras: Extras = {},
 ): Promise<{ render: Render } | Fail> {
   const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
-  if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "your inspo isn’t analyzed yet." };
+  if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "we haven’t finished studying your video yet." };
   const uploaded = clips.filter((c) => c.status === "uploaded");
   if (!uploaded.length) return { status: 400, error: "upload at least one clip first." };
   if (!project.clipsRightsConfirmedAt) {
@@ -205,7 +205,7 @@ export async function startStoryboard(
   options: VideoOptions,
 ): Promise<{ jobId: string } | Fail> {
   const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
-  if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "your inspo isn’t analyzed yet." };
+  if (!inspo?.breakdown || inspo.status !== "ready") return { status: 400, error: "we haven’t finished studying your video yet." };
   const uploaded = clips.filter((c) => c.status === "uploaded");
   if (!uploaded.length) return { status: 400, error: "upload at least one clip first." };
   if (!project.clipsRightsConfirmedAt) {
@@ -294,7 +294,7 @@ export async function submit(
 export async function retryRender(userId: string, project: Project, render: Render) {
   if (project.kind === "scratch") return retryScratchRender(userId, project, render);
   const [inspo, clips] = await Promise.all([getInspiration(userId, project.id), listClips(userId, project.id)]);
-  if (!inspo?.breakdown) return { status: 400, error: "your inspo isn’t analyzed yet." } as Fail;
+  if (!inspo?.breakdown) return { status: 400, error: "we haven’t finished studying your video yet." } as Fail;
   const uploaded = clips.filter((c) => c.status === "uploaded");
   // Clips removed since: drop them from the shot list rather than failing.
   const ids = new Set(uploaded.map((c) => c.id));

@@ -78,7 +78,7 @@ export function PromptStart() {
       <button
         type="button"
         onClick={start}
-        disabled={!prompt.trim() || !category || busy}
+        disabled={!prompt.trim() || busy}
         className={`${buttonClass} flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
       >
         {busy ? "starting…" : "next: add your clips"} <ArrowRightIcon className="size-4" />

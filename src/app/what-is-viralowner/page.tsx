@@ -68,7 +68,7 @@ export default function WhatIsPage() {
         </ol>
       </Section>
 
-      <Section eyebrow="no inspo? no problem." title="or just describe it.">
+      <Section eyebrow="no video to copy? no problem." title="or just describe it.">
         <div className="grid max-w-4xl gap-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:grid-cols-[1fr_1fr] sm:p-8">
           <p className="text-pretty text-muted">
             on Pro, you can start from scratch: write what you want the way you’d brief an editor (“a 15 second video of
@@ -140,7 +140,7 @@ export default function WhatIsPage() {
               },
               {
                 q: "can i use the original video’s sound?",
-                a: "you can keep your clips’ own sound, upload your own audio, or use the inspo’s sound if you have the rights to it.",
+                a: "you can keep your clips’ own sound, upload your own audio, or use the original video’s sound if you have the rights to it.",
               },
               {
                 q: "what size is the video?",

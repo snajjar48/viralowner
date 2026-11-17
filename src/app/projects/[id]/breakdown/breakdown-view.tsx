@@ -149,7 +149,7 @@ export function BreakdownView({
   return (
     <>
       <PageTitle
-        title="here’s how your inspo is built"
+        title="here’s how that video is made"
         subtitle={
           oneTake
             ? "this one is a single take with the pauses cut out. film yours in one go and we’ll cut it the same way."
@@ -158,7 +158,7 @@ export function BreakdownView({
       />
 
       <section aria-label="summary" className="flex gap-4">
-        <VideoPlayer src={videoUrl} size="sm" label="your inspo video" className="w-32 sm:w-40" />
+        <VideoPlayer src={videoUrl} size="sm" label="the original video" className="w-32 sm:w-40" />
         <dl className="grid flex-1 grid-cols-1 content-start gap-2 min-[420px]:grid-cols-2">
           {stats.map((s) => (
             <div key={s.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
@@ -169,71 +169,6 @@ export function BreakdownView({
         </dl>
       </section>
 
-      {b.insights && (
-        <section
-          aria-labelledby="why-heading"
-          className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5"
-        >
-          <h2 id="why-heading" className="flex items-center gap-2 text-lg font-medium">
-            <SparkleIcon className="size-4 text-coral" /> why it works
-          </h2>
-          <dl className="flex flex-col gap-3 text-sm">
-            <div>
-              <dt className="text-xs text-muted">the hook</dt>
-              <dd>{b.insights.hook}</dd>
-            </div>
-            <div>
-              <dt className="text-xs text-muted">the structure</dt>
-              <dd>{b.insights.structure}</dd>
-            </div>
-            {b.insights.whyItWorks.length > 0 && (
-              <div>
-                <dt className="text-xs text-muted">why people watch to the end</dt>
-                <dd>
-                  <ul className="mt-1 flex flex-col gap-1.5">
-                    {b.insights.whyItWorks.map((reason) => (
-                      <li key={reason} className="flex gap-2">
-                        <span
-                          aria-hidden="true"
-                          className="mt-2 size-1.5 shrink-0 rounded-full bg-linear-to-r from-violet to-coral"
-                        />
-                        {reason}
-                      </li>
-                    ))}
-                  </ul>
-                </dd>
-              </div>
-            )}
-            {b.insights.audio && (
-              <div>
-                <dt className="text-xs text-muted">sound</dt>
-                <dd>{b.insights.audio}</dd>
-              </div>
-            )}
-          </dl>
-        </section>
-      )}
-
-      {b.style && (
-        <section aria-labelledby="style-heading" className="flex flex-col gap-3">
-          <h2 id="style-heading" className="text-lg font-medium">
-            editing style we’ll copy
-          </h2>
-          <dl className="grid grid-cols-2 gap-2">
-            {styleStats(b.style).map((st) => (
-              <div key={st.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
-                <dt className="text-xs text-muted">{st.label}</dt>
-                <dd className="text-sm font-medium">{st.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-      )}
-
-      {!oneTake && (
-        <ShotCount projectId={projectId} count={b.shotCount} min={range.min} max={range.max} inspo={range.inspo} locked={hasVersions} />
-      )}
-
       {oneTake ? (
         <section
           aria-labelledby="take-heading"
@@ -243,13 +178,13 @@ export function BreakdownView({
             film it in one take
           </h2>
           <p className="text-sm text-muted">
-            the inspo looks like {b.shotCount} shots, but it’s really one person talking with every pause, breath and
+            the original looks like {b.shotCount} shots, but it’s really one person talking with every pause, breath and
             “um” cut out{b.style?.alternateZoom ? ", jumping between a normal and a zoomed-in shot" : ""}. you don’t need
             separate clips.
           </p>
           <ul className="flex flex-col gap-1.5 text-sm">
             {[
-              "set your phone up at eye level and talk to it, like the inspo.",
+              "set your phone up at eye level and talk to it, like the original.",
               "say your version from start to finish. pause whenever you like.",
               "messed up a line? just say it again. we keep the last good one.",
               "one long clip is perfect. a few clips work too, in order.",
@@ -262,7 +197,7 @@ export function BreakdownView({
           </ul>
           <details className="group">
             <summary className="cursor-pointer text-sm text-muted underline underline-offset-4 hover:text-foreground">
-              see every cut in the inspo
+              see every cut in the original
             </summary>
             <div className="pt-3">
               <ShotList shots={b.shots} detailed />
@@ -278,6 +213,78 @@ export function BreakdownView({
         </section>
       )}
 
+      <details className="group rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5">
+        <summary className="cursor-pointer text-sm font-medium text-muted hover:text-foreground">
+          see the full breakdown: why it works, the editing style{!oneTake ? " and the number of shots" : ""}
+        </summary>
+        <div className="flex flex-col gap-6 pt-4">
+        {b.insights && (
+          <section
+            aria-labelledby="why-heading"
+            className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:p-5"
+          >
+            <h2 id="why-heading" className="flex items-center gap-2 text-lg font-medium">
+              <SparkleIcon className="size-4 text-coral" /> why it works
+            </h2>
+            <dl className="flex flex-col gap-3 text-sm">
+              <div>
+                <dt className="text-xs text-muted">the hook</dt>
+                <dd>{b.insights.hook}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted">the structure</dt>
+                <dd>{b.insights.structure}</dd>
+              </div>
+              {b.insights.whyItWorks.length > 0 && (
+                <div>
+                  <dt className="text-xs text-muted">why people watch to the end</dt>
+                  <dd>
+                    <ul className="mt-1 flex flex-col gap-1.5">
+                      {b.insights.whyItWorks.map((reason) => (
+                        <li key={reason} className="flex gap-2">
+                          <span
+                            aria-hidden="true"
+                            className="mt-2 size-1.5 shrink-0 rounded-full bg-linear-to-r from-violet to-coral"
+                          />
+                          {reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              )}
+              {b.insights.audio && (
+                <div>
+                  <dt className="text-xs text-muted">sound</dt>
+                  <dd>{b.insights.audio}</dd>
+                </div>
+              )}
+            </dl>
+          </section>
+        )}
+
+        {b.style && (
+          <section aria-labelledby="style-heading" className="flex flex-col gap-3">
+            <h2 id="style-heading" className="text-lg font-medium">
+              editing style we’ll copy
+            </h2>
+            <dl className="grid grid-cols-2 gap-2">
+              {styleStats(b.style).map((st) => (
+                <div key={st.label} className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                  <dt className="text-xs text-muted">{st.label}</dt>
+                  <dd className="text-sm font-medium">{st.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </section>
+        )}
+
+        {!oneTake && (
+          <ShotCount projectId={projectId} count={b.shotCount} min={range.min} max={range.max} inspo={range.inspo} locked={hasVersions} />
+        )}
+        </div>
+      </details>
+
       <div className="sticky bottom-4 flex flex-col gap-3 pt-2">
         <Link href={`/projects/${projectId}/clips`} className={`${buttonClass} flex items-center justify-center gap-2`}>
           {oneTake ? "looks good, upload my take" : "looks good, upload my clips"} <ArrowRightIcon className="size-4" />
@@ -287,7 +294,7 @@ export function BreakdownView({
         href={`/projects/${projectId}/inspo`}
         className="self-center text-sm text-muted underline underline-offset-4 hover:text-foreground"
       >
-        use a different inspo
+        use a different video
       </Link>
     </>
   );

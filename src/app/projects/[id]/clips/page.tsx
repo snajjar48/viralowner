@@ -60,7 +60,7 @@ async function Clips({ id }: { id: string }) {
         title={oneTake ? "now add your take" : "now add your clips"}
         subtitle={
           oneTake
-            ? "upload your one long clip of you talking. we’ll cut out the pauses, retakes and “um”s to match the inspo."
+            ? "upload your one long clip of you talking. we’ll cut out the pauses, retakes and “um”s to match the original."
             : "upload the clips you filmed. match each one to a shot, or let us figure it out."
         }
       />
