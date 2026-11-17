@@ -4,9 +4,10 @@ import { isSupabaseConfigured, supabasePublicKey, supabaseUrl } from "./env";
 
 /**
  * Refreshes the Supabase session cookie on each request and, when
- * `requireUser` is set, sends signed-out visitors to /login.
+ * `requireUser` is set, sends signed-out visitors to /login. With `signedInTo`, signed-in visitors
+ * go there instead (the home page sends them to their dashboard).
  */
-export async function updateSession(request: NextRequest, requireUser: boolean) {
+export async function updateSession(request: NextRequest, requireUser: boolean, signedInTo?: string) {
   let response = NextResponse.next({ request });
   let signedIn = false;
 
@@ -38,6 +39,12 @@ export async function updateSession(request: NextRequest, requireUser: boolean) 
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
     const redirect = NextResponse.redirect(loginUrl);
+    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+    return redirect;
+  }
+
+  if (signedInTo && signedIn) {
+    const redirect = NextResponse.redirect(new URL(signedInTo, request.url));
     response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
     return redirect;
   }

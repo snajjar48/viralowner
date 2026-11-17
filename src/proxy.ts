@@ -57,6 +57,12 @@ export async function proxy(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
+  // Signed-in people go from the home page to their dashboard. Only checked when a sign-in cookie
+  // is there, so visitors and search engines get the home page with no extra work.
+  if (pathname === "/" && request.cookies.getAll().some((c) => c.name.startsWith("sb-") && c.name.includes("auth-token"))) {
+    return updateSession(request, false, "/dashboard");
+  }
+
   // The showcase's thumbnails (public/showcase/) and each page's featured image.
   if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/") || pathname.endsWith("/opengraph-image")) {
     return NextResponse.next();
