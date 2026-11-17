@@ -333,6 +333,9 @@ class JobError(Exception):
 
 def report(stage: str | None, progress: int) -> None:
     """Called from inside a job to publish how it's going."""
+    if JOB.get("floor"):
+        # The review's fix pass: the bar stays at "finishing" instead of starting over.
+        stage, progress = "finishing", max(progress, JOB["floor"])
     job_id = modal.current_function_call_id()
     if job_id:
         progress_store[job_id] = {"stage": stage, "progress": max(0, min(100, progress)), "updated_at": time.time()}
@@ -1239,6 +1242,7 @@ def start_job(req: dict | None = None) -> None:
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
     JOB["model"] = CLAUDE_MODEL
+    JOB["floor"] = 0
     JOB["t0"] = time.time()
     warm_speech()  # most jobs need speech; boot the GPU while the clips download
 
@@ -2166,7 +2170,7 @@ def _safe(fn, *args):
 
 OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
 MATCH_FRAME_WIDTH = 384
-MAX_CLIP_FRAMES = 72  # frames of the user's clips sent to Claude
+MAX_CLIP_FRAMES = 96  # frames of the user's clips sent to Claude
 MAX_CLIP_SPEECH_S = 150  # transcribe the clips for matching only if they're this short in total
 # Shots and joins in between are kept lossless, so the picture is compressed only once, at the end.
 LOSSLESS = ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
@@ -5747,7 +5751,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     # The plan a storyboard showed: the first version makes exactly that (no second directing).
     directed = sc.get("directed") if isinstance(sc.get("directed"), dict) and not base else None
     cost = 0.0
-    prefs = standing_preferences(req.get("history"))  # what this user has asked for before
+    # What this user has asked for before (already worked out, or from their history), like remakes.
+    prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
     business = (req.get("business") or "").strip()[:2200] if isinstance(req.get("business"), str) else ""
     director_context = prefs + (("\n\nabout the user's business:\n" + business) if business else "")
 
@@ -5941,6 +5946,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
         "preferences": prefs,
         "writePost": bool(req.get("writePost")) or not (base and request),
+        # Text the user set in the editor themselves (the text below may also be ours, rewritten for a request).
+        "editorText": req["editorText"] if "editorText" in req else isinstance(carry.get("textItems"), list),
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -6943,7 +6950,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # themselves in the editor, or asked now for text at certain moments only.
     asked_now = "\n".join(x for x in (request, notes, str(req.get("captionInstructions") or "")) if x)
     whole_video_text = asks_text_whole_video(asked_now) or (
-        asks_text_whole_video(prefs or "") and not isinstance(carry.get("textItems"), list)
+        asks_text_whole_video(prefs or "")
+        and not (req["editorText"] if "editorText" in req else isinstance(carry.get("textItems"), list))
         and not asks_text_timed(asked_now))
     if whole_video_text and text_items:
         def _set(x, a, b):
@@ -7378,16 +7386,127 @@ def notify_job(url: str, payload: dict) -> None:
             time.sleep(5 * (attempt + 1))
 
 
+# ---- the editor watches its own cut before the user sees it
+
+REVIEW_SYSTEM = """You check a short-form video that ViralOwner (an app that edits people's own clips into TikToks and Reels) just made, before the user sees it, the way a careful editor watches their cut before sending it. You get everything the user asked for (their description of the video or their change request, their notes, and their standing preferences), the on-screen text the editor planned, and frames from the finished video every half second.
+
+Find only clear misses:
+- something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed, an effect they asked for or asked to remove, the length;
+- obvious defects: on-screen text cut off by the edge of the frame, text covering a face or the product, text that can't be read, a black or blank frame, the same footage twice in a row, text or captions with typos or words the user didn't write.
+Don't flag taste, small timing differences, or things the clips can't do (if they asked for a pour and no clip shows one, that isn't a miss). If the video does what was asked, say so and list nothing.
+
+When there are misses, write `fix` as one change request to the editor in plain words, naming exactly what to change ("keep 'the perfect 🇵🇸 combination' on screen from the first frame to the last", "end on the bottle shot", "move the text up so it doesn't cover the face"), and nothing else."""
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ok": {"type": "boolean", "description": "true if the video does everything the user asked and has no obvious defects."},
+        "misses": {"type": "array", "items": {"type": "string"}, "description": "each clear miss, one line each. empty if ok."},
+        "fix": {"type": "string", "description": "the change request that fixes every miss, in plain words. empty if ok."},
+    },
+    "required": ["ok", "misses", "fix"],
+    "additionalProperties": False,
+}
+
+
+def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | None:
+    """The finished video checked against what the user asked for: {ok, misses, fix}, or None."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not video.exists():
+        return None
+    options = req.get("options") or {}
+    prefs = req.get("preferences") if isinstance(req.get("preferences"), str) else standing_preferences(req.get("history"))
+    asks = [
+        ("what they asked for (start from scratch)", ((req.get("scratch") or {}).get("prompt") or "") if isinstance(req.get("scratch"), dict) else ""),
+        ("their change request", req.get("request") or ""),
+        ("their notes", options.get("notes") or ""),
+        ("their text setting", ((options.get("text") or {}).get("custom") or "") if (options.get("text") or {}).get("mode") == "custom" else ""),
+        ("their standing preferences", prefs or ""),
+    ]
+    asks = [(k, str(v).strip()[:2000]) for k, v in asks if str(v or "").strip()]
+    if not isinstance(req.get("scratch"), dict) and not req.get("previous"):
+        asks.insert(0, ("the kind of video", "a remake of a viral video (the inspo) with the user's own clips: it follows the inspo's structure and style"))
+    plan = out.get("plan") or {}
+    items = plan.get("textItems") if isinstance(plan.get("textItems"), list) else None
+    texts = ([f"{x.get('start')}-{x.get('end')}s: {x.get('text')!r}" for x in items] if items is not None
+             else [repr(t) for t in plan.get("texts") or [] if t])
+    duration = probe(video)["duration"]
+    times = [round(k * 0.5 + 0.25, 2) for k in range(min(40, int(duration / 0.5)))]
+    with ThreadPoolExecutor(8) as pool:
+        frames = list(pool.map(lambda t: grab_frame(video, t, workdir / f"review{int(t * 100):05d}.jpg", 360), times))
+    content: list[dict] = [{"type": "text", "text": (
+        "what the user asked for:\n" + ("\n".join(f"- {k}: {v}" for k, v in asks) or "- nothing specific")
+        + f"\n\nthe video is {duration:.1f}s. on-screen text the editor planned:\n" + ("\n".join(texts) or "none")
+        + "\n\nframes from the finished video:")}]
+    for t, f in zip(times, frames):
+        if f:
+            content += [{"type": "text", "text": f"{t:.2f}s"},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(f)}}]
+    result = ask_claude(REVIEW_SYSTEM, content, REVIEW_SCHEMA, "review failed", effort="high")
+    data = result["data"]
+    data["cost"] = result["cost_usd"]
+    print(f"review (${result['cost_usd']}): ok={data.get('ok')} misses={data.get('misses')} fix={data.get('fix')!r}")
+    return data
+
+
+def made_with_review(req: dict, make) -> dict:
+    """Makes the version, watches it, and if it clearly misses what was asked, makes it once more with
+    the fix (same file), before the user ever sees it. `make(req, workdir)` makes one version."""
+    with tempfile.TemporaryDirectory() as tmp:
+        install_emoji_kit(req, Path(tmp))
+        out = make(req, Path(tmp))
+        if req.get("storyboard") or req.get("review") is False:
+            return out
+        try:
+            verdict = review_video(req, out, Path(tmp) / "final.mp4", Path(tmp))
+        except Exception as e:  # noqa: BLE001 - a failed check never fails the video
+            print(f"review skipped: {type(e).__name__}: {e}")
+            return out
+    if not verdict:
+        return out
+    meta = out.setdefault("meta", {})
+    meta["costUsd"] = round(float(meta.get("costUsd") or 0) + float(verdict.get("cost") or 0), 4)
+    fix = str(verdict.get("fix") or "").strip()
+    if verdict.get("ok") or not fix:
+        return out
+    report("finishing", 95)
+    plan = out.get("plan") or {}
+    carry = {k: v for k, v in (req.get("carry") or {}).items() if k != "textItems"}
+    if isinstance(plan.get("textItems"), list):
+        carry["textItems"] = plan["textItems"]
+    asked = str(req.get("request") or "").strip()
+    req2 = {**req, "request": (f"{asked}\n\nalso: {fix}" if asked else fix)[:1500], "shots": plan.get("shots") or req.get("shots"),
+            "previous": {"storageKey": req["outputKey"], "plan": plan, "postCopy": out.get("postCopy"), "textChanged": False},
+            "carry": carry, "writePost": False,
+            "editorText": req["editorText"] if "editorText" in req else isinstance((req.get("carry") or {}).get("textItems"), list)}
+    JOB["floor"] = 95
+    try:
+        with tempfile.TemporaryDirectory() as tmp2:
+            install_emoji_kit(req, Path(tmp2))
+            out2 = make(req2, Path(tmp2))
+    except Exception as e:  # noqa: BLE001 - the first version is still there, and good to deliver
+        print(f"review fix failed, keeping the first version: {type(e).__name__}: {e}")
+        return out
+    finally:
+        JOB["floor"] = 0
+    # The user sees what they asked for: the note describes the video, not the internal fix.
+    out2.setdefault("plan", {})["note"] = plan.get("note") or out2.get("plan", {}).get("note")
+    out2["postCopy"] = out.get("postCopy") or out2.get("postCopy")
+    m2 = out2.setdefault("meta", {})
+    m2["costUsd"] = round(float(m2.get("costUsd") or 0) + float(meta.get("costUsd") or 0), 4)
+    m2["reviewFixed"] = verdict.get("misses")
+    print(f"review: made again with the fix ({len(verdict.get('misses') or [])} misses)")
+    return out2
+
+
 @app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=1800)
 def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
         start_job(req)
-        with tempfile.TemporaryDirectory() as tmp:
-            install_emoji_kit(req, Path(tmp))
-            if isinstance(req.get("scratch"), dict):
-                return render_scratch(req, Path(tmp))
-            return render_video(req, Path(tmp))
+        make = render_scratch if isinstance(req.get("scratch"), dict) else render_video
+        return made_with_review(req, make)
     except JobError:
         raise
     except Exception as e:  # noqa: BLE001
