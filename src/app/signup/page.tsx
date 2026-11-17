@@ -19,7 +19,7 @@ const BENEFITS = [
   {
     icon: ClockIcon,
     title: "Hours back, every week",
-    body: "No timelines, no keyframes, no late nights in an editor. Send raw clips and get back finished edits.",
+    body: "No editing apps, nothing to learn, no late nights editing. Send your clips and get back finished videos.",
   },
   {
     icon: TrendIcon,
@@ -29,7 +29,7 @@ const BENEFITS = [
 ];
 
 const STEPS = [
-  { icon: UploadIcon, label: "Upload your raw clips" },
+  { icon: UploadIcon, label: "Upload your clips" },
   { icon: WandIcon, label: "We edit them into a viral format" },
   { icon: TrendIcon, label: "You post and watch the views roll in" },
 ];

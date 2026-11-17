@@ -19,7 +19,7 @@ const ROWS: { label: string; cells: [string, string, string, string] }[] = [
   },
   {
     label: "skills you need",
-    cells: ["cuts, timing, captions, export settings", "none, but you manage someone", "some", "none"],
+    cells: ["cuts, timing, captions, saving it right", "none, but you manage someone", "some", "none"],
   },
   {
     label: "follows what’s working right now",
@@ -46,7 +46,7 @@ const REASONS = [
   },
   {
     t: "right on the first try",
-    b: "a free storyboard before anything is made, your business profile on every video, and your notes applied on version one, not version seven.",
+    b: "a free preview before anything is made, your business profile on every video, and your notes applied on version one, not version seven.",
   },
   {
     t: "your spin, not a template",
@@ -54,11 +54,11 @@ const REASONS = [
   },
   {
     t: "quality you’d post",
-    b: "full quality export, never softer than your clips. no stretched footage, no blurry slow motion to fill time.",
+    b: "saved at full quality, never softer than your clips. no stretched footage, no blurry slow motion to fill time.",
   },
   {
-    t: "changes without a timeline",
-    b: "“make it faster.” “keep the pause.” “those two words together.” the edit changes, the timeline stays our problem.",
+    t: "changes in plain words",
+    b: "“make it faster.” “keep the pause.” “those two words together.” the edit changes, and the editing stays our problem.",
   },
   {
     t: "made for the apps",

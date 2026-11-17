@@ -100,7 +100,7 @@ export function Storyboard({
     return (
       <section className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4" aria-label="storyboard">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium">your storyboard</p>
+          <p className="text-sm font-medium">your preview</p>
           <button
             type="button"
             onClick={start}

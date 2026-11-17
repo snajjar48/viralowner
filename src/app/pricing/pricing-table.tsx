@@ -15,7 +15,7 @@ import {
 const BASIC_ITEMS = [
   "remake any viral video with your clips",
   "every caption and text style",
-  "free storyboard preview before it’s made",
+  "free preview before it’s made",
   "post caption written for you",
   "full quality download",
 ];

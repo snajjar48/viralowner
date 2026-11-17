@@ -22,11 +22,11 @@ const PROCESS = [
   },
   {
     title: "we plan your edit",
-    body: "which of your clips goes in each shot, the on-screen text rewritten for your business, and where the captions go. you can see the plan as a storyboard before anything is made, free.",
+    body: "which of your clips goes in each shot, the on-screen text rewritten for your business, and where the captions go. you can preview the plan, shot by shot, before anything is made, free.",
   },
   {
     title: "we make it",
-    body: "cut, timed, captioned and exported at full quality, with text kept out of the way of the app’s buttons. usually ready in a few minutes.",
+    body: "cut, timed, captioned and saved at full quality, with text kept out of the way of the app’s buttons. usually ready in a few minutes.",
   },
   {
     title: "you make it yours",
@@ -47,7 +47,7 @@ export default function WhatIsPage() {
             a video editor that works like a person, in minutes.
           </h1>
           <p className="text-lg text-pretty text-muted sm:text-xl">
-            show it a video that went viral and hand it your raw clips. it edits yours the same way: the same structure,
+            show it a video that went viral and hand it your own clips. it edits yours the same way: the same structure,
             the same rhythm, the same kind of text and captions, with your footage, your business and your words.
           </p>
           <JoinCta id="hero" source="what-is-hero" />
@@ -75,7 +75,7 @@ export default function WhatIsPage() {
             our smoothies being made, cut to the beat, ending on the logo”), add your clips and we plan the whole edit.
           </p>
           <ul className="flex flex-col gap-2.5">
-            <Check>you get the same free storyboard first</Check>
+            <Check>you get the same free preview first</Check>
             <Check>upload your own song and we cut to its beats</Check>
             <Check>transitions, sound effects and text, planned for you</Check>
           </ul>
@@ -110,7 +110,7 @@ export default function WhatIsPage() {
         <div className="grid gap-10 md:grid-cols-2">
           <ul className="flex flex-col gap-3">
             <Check>a video you’d like to remake (or, on Pro, a description of the one you want)</Check>
-            <Check>a few raw clips from your phone, uploaded as they are</Check>
+            <Check>a few clips from your phone, uploaded as they are</Check>
             <Check>your business name and the words you use, once, so we spell them right forever</Check>
           </ul>
           <div className="flex flex-col gap-3">
@@ -132,7 +132,7 @@ export default function WhatIsPage() {
             items={[
               {
                 q: "how long does a video take?",
-                a: "the storyboard preview takes about a minute. the finished video usually takes a few minutes, and we email you when it’s ready.",
+                a: "the free preview takes about a minute. the finished video usually takes a few minutes, and we email you when it’s ready.",
               },
               {
                 q: "what’s a “change”?",

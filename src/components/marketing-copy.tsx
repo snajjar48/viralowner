@@ -4,11 +4,11 @@ import { CameraIcon, EyeIcon, FilmIcon, RefreshIcon, SparkleIcon, TextIcon } fro
 export const HOW_IT_WORKS = [
   {
     title: "pick a video that went viral",
-    body: "upload one you wish you’d made. we study every cut, how long each shot holds, the text, the captions and the timing.",
+    body: "save one you wish you’d made from TikTok or Instagram and upload it. we study every cut, how long each shot holds, the text, the captions and the timing.",
   },
   {
     title: "add your own clips",
-    body: "film on your phone and upload the raw takes. no trimming, no editing app, no timeline.",
+    body: "film on your phone and upload the clips as they are. no trimming and no editing app.",
   },
   {
     title: "get your version",
@@ -35,7 +35,7 @@ export const FEATURES = [
   {
     icon: <EyeIcon className="size-5" />,
     title: "preview before it’s made",
-    body: "see a storyboard of every shot, its text and where captions go, before anything is made. free.",
+    body: "preview every shot, its text and where captions go, before anything is made. free.",
   },
   {
     icon: <RefreshIcon className="size-5" />,
@@ -45,7 +45,7 @@ export const FEATURES = [
   {
     icon: <CameraIcon className="size-5" />,
     title: "as sharp as you shot it",
-    body: "exported at full quality, never softer than your clips, with text kept clear of the TikTok and Reels buttons.",
+    body: "saved at full quality, never softer than your clips, with text kept clear of the TikTok and Reels buttons.",
   },
 ];
 
@@ -63,7 +63,7 @@ export const WHO = [
 export const HOME_FAQ = [
   {
     q: "do i need to know how to edit?",
-    a: "no. you upload clips and say what you want in plain words. there’s no timeline, no keyframes and nothing to learn.",
+    a: "no. you upload clips and say what you want in plain words. there’s no editing app and nothing to learn.",
   },
   {
     q: "is this copying someone else’s video?",
@@ -71,7 +71,11 @@ export const HOME_FAQ = [
   },
   {
     q: "what do i need to film?",
-    a: "a phone. film a few raw takes of whatever the video needs (you, your product, your space) and upload them as they are. we pick the best moment of each.",
+    a: "a phone. film a few clips of whatever the video needs (you, your product, your space) and upload them as they are. we pick the best moment of each.",
+  },
+  {
+    q: "how do i get the video i want to remake?",
+    a: "on TikTok, tap the share arrow and then “save video”. on Instagram, or if there’s no save button, screen-record it on your phone. then upload it from your camera roll. we show you how, step by step, when you start.",
   },
   {
     q: "what if it’s not quite right?",

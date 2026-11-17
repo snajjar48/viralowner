@@ -19,7 +19,7 @@ const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: b
   { label: "changes per video", cells: [`${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`] },
   { label: "first video free (free trial)", cells: ["✓", "✓"] },
   { label: "remake any viral video with your clips", cells: ["✓", "✓"] },
-  { label: "free storyboard preview", cells: ["✓", "✓"] },
+  { label: "free preview before it’s made", cells: ["✓", "✓"] },
   { label: "word-by-word captions, every style", cells: ["✓", "✓"] },
   { label: "fix caption words yourself (free)", cells: ["✓", "✓"] },
   { label: "on-screen text styles", cells: ["✓", "✓"] },

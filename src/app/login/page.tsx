@@ -17,7 +17,7 @@ function Pitch() {
           your next <GradientText>viral video</GradientText> is waiting.
         </h2>
         <p className="max-w-lg text-lg text-muted text-pretty">
-          Drop in your raw clips and we’ll turn them into edits with your spin on them. You skip
+          Upload your clips and we’ll turn them into finished videos with your spin on them. You skip
           the editing and keep the views.
         </p>
       </div>

@@ -23,11 +23,11 @@ export default function AdLandingPage() {
               <span className="bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">the video that’s going viral.</span>
             </h1>
             <p className="max-w-xl text-lg text-pretty text-muted">
-              show us a video that’s blowing up and upload your raw clips. we edit yours the same way, with your business in
+              show us a video that’s blowing up and upload your own clips. we edit yours the same way, with your business in
               it, captioned and ready to post. no editing app, no hours lost.
             </p>
             <ul className="flex flex-col gap-2">
-              <Check>no editing skills, no timeline</Check>
+              <Check>no editing skills needed</Check>
               <Check>captions and text in your words, spelled your way</Check>
               <Check>your first video is free</Check>
             </ul>

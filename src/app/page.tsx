@@ -31,7 +31,7 @@ export default function Home() {
               <span className="bg-linear-to-r from-violet to-coral bg-clip-text text-transparent">keep the views.</span>
             </h1>
             <p className="max-w-xl text-lg text-pretty text-muted sm:text-xl">
-              send us a video that went viral and your own raw clips. we edit yours the same way, with your business,
+              send us a video that went viral and your own clips, straight from your phone. we edit yours the same way, with your business,
               your words and your spin on it.
             </p>
             <JoinCta id="hero" source="home-hero" />
