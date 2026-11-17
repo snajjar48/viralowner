@@ -74,3 +74,13 @@ those lessons go with that category's videos, after the lessons for every video.
 Every video's study is kept in `studies/` at the top of the project (`travel.json`, `food.json`, `talking.json`).
 The study scripts read them first, so a rerun only studies new videos, and the playbook is always rewritten from
 everything ever studied. The videos themselves can be deleted once they're studied.
+
+`influencer-playbook.md` comes from studies of 33 real viral influencer and vlog videos (day in the life, get ready
+with me, family vlogs, routines, taste tests, hauls, storytimes), plus outside research notes
+(`studies/influencer-research.md`, used only where they agree with the videos), and leads every video in the
+influencer / vlog category. Captions were moved to 70–78% down (out of the platforms' bottom UI) by hand.
+Make it again with:
+
+```
+modal run scripts/study-influencer.py --folder "<folder of videos>" --out <dir> --research studies/influencer-research.md
+```
