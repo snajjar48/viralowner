@@ -5876,16 +5876,35 @@ def install_emoji_kit(req: dict, workdir: Path, fetch=None) -> list[str]:
     from PIL import Image
 
     key = req.get("emojiKit")
-    if not isinstance(key, str):
-        return []
     fetch = fetch or r2_fetch
-    user = key.split("/emoji/")[0] + "/emoji/"
+    if isinstance(key, str):
+        user = key.split("/emoji/")[0] + "/emoji/"
+    else:
+        # The site didn't say: look in the maker's own folder (every video, not only when the site
+        # passed the kit along).
+        src = str(req.get("outputKey") or "")
+        m = re.match(r"^(u/[A-Za-z0-9-]+/)", src)
+        if not m:
+            return []
+        user = m.group(1) + "emoji/"
+    # The finished kit, else an upload whose phone never said "finish" (its sheets are all there).
+    candidates = [key] if isinstance(key, str) else []
+    candidates += [k for k in (user + "kit.json", user + "pending.json") if k not in candidates]
     out_dir = workdir / "emoji_kit"
     out_dir.mkdir(exist_ok=True)
     have: list[str] = []
     try:
-        fetch(key, workdir / "emoji_kit.json")
-        kit = json.loads((workdir / "emoji_kit.json").read_text())
+        kit = None
+        for cand in candidates:
+            try:
+                fetch(cand, workdir / "emoji_kit.json")
+                kit = json.loads((workdir / "emoji_kit.json").read_text())
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if not isinstance(kit, dict):
+            print("emoji kit: none uploaded from the maker's phone yet, using Google's emoji")
+            return []
         cell, cols = int(kit["cell"]), int(kit["cols"])
         if not (32 <= cell <= 512 and 1 <= cols <= 64):
             return []
@@ -5895,7 +5914,11 @@ def install_emoji_kit(req: dict, workdir: Path, fetch=None) -> list[str]:
             if not isinstance(skey, str) or not skey.startswith(user) or not re.match(EMOJI_KIT_SHEET_RE, skey):
                 continue
             path = workdir / f"emoji_sheet{n}{Path(skey).suffix}"
-            fetch(skey, path)
+            try:
+                fetch(skey, path)
+            except Exception as e:  # noqa: BLE001 - one missing sheet doesn't lose the others
+                print(f"emoji kit sheet {n} unavailable: {type(e).__name__}")
+                continue
             if path.stat().st_size > 16 * 1024 * 1024:
                 continue
             img = Image.open(path).convert("RGBA")
