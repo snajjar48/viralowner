@@ -5,6 +5,7 @@ import { updateSession } from "@/lib/supabase/proxy";
 // The only paths anyone can reach without the password.
 const PUBLIC_PATHS = new Set([
   "/", // home page
+  "/home", // the logo: dashboard when signed in, home page otherwise
   "/what-is-viralowner", // public: how it works
   "/why-viralowner", // public: why us
   "/pricing", // public: plans

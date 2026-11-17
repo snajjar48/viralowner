@@ -26,7 +26,7 @@ export function MarketingShell({ children, minimal = false }: { children: ReactN
       <BackgroundGlow />
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-background/70 backdrop-blur-xl">
         <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-          <Link href="/" aria-label="viralowner home" className="shrink-0">
+          <Link href="/home" prefetch={false} aria-label="viralowner home" className="shrink-0">
             <Image src="/logo.svg" alt="viralowner" width={1458} height={418} preload className="h-7 w-auto" />
           </Link>
           {minimal ? (

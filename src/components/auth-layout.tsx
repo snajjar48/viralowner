@@ -24,7 +24,7 @@ export function BackgroundGlow() {
 
 export function Logo({ className = "h-9 w-auto" }: { className?: string }) {
   return (
-    <Link href="/" aria-label="viralowner home" className="inline-block">
+    <Link href="/home" prefetch={false} aria-label="viralowner home" className="inline-block">
       <Image src="/logo.svg" alt="viralowner" width={1458} height={418} className={className} />
     </Link>
   );
