@@ -5813,6 +5813,51 @@ def scratch_inputs(cleaned: dict, clips: list[dict]) -> dict:
     }
 
 
+def scratch_shot_edits(req: dict, shots: list[dict], clips: list[dict], index_of: dict, shot_pos: dict) -> list[tuple]:
+    """The user's own clip and trim choices from the editor, applied to `shots` (clean_director's
+    shape: clip from 0, start, end) in place. Returns what the user changed: (position, clip, start, end)."""
+    edits = {shot_pos.get(e.get("shotIndex"), e.get("shotIndex")): e for e in req.get("shots") or []
+             if isinstance(e, dict) and not e.get("removed")}
+    changed = []
+    for i, s in enumerate(shots):
+        e = edits.get(i) or {}
+        ci = index_of.get(e.get("clipId"))
+        if ci is None:
+            continue
+        d = clips[ci]["duration"]
+        a = e.get("trimStartS") if isinstance(e.get("trimStartS"), (int, float)) else None
+        b = e.get("trimEndS") if isinstance(e.get("trimEndS"), (int, float)) else None
+        if ci != s["clip"] and a is None and b is None:
+            # A different clip, no trim given: the same length from its start.
+            a, b = 0.0, min(d, s["end"] - s["start"])
+        a = min(max(0.0, a if a is not None else s["start"]), max(0.0, d - SCRATCH_MIN_SHOT_S))
+        b = min(max(b if b is not None else s["end"], a + SCRATCH_MIN_SHOT_S), d)
+        if ci != s["clip"] or abs(a - s["start"]) > 0.05 or abs(b - s["end"]) > 0.05:
+            changed.append((i, ci, r2(a), r2(b)))
+        s.update(clip=ci, start=r2(a), end=r2(b))
+    return changed
+
+
+def keep_user_shots(shots: list[dict], user: list[tuple], before: int) -> int:
+    """After a change request: the shots the user set themselves stay exactly as they set them. Each is
+    found in the new plan (same clip, most overlap; or the same place if the shot count didn't change)
+    and given the user's trim back. Returns how many had to be put back."""
+    fixed = 0
+    for i, ci, a, b in user:
+        same = [k for k, s in enumerate(shots) if s["clip"] == ci]
+        if same:
+            k = max(same, key=lambda k: (min(b, shots[k]["end"]) - max(a, shots[k]["start"]), k == i))
+        elif len(shots) == before and i < len(shots):
+            k = i
+        else:
+            continue
+        s = shots[k]
+        if s["clip"] != ci or abs(s["start"] - a) > 0.05 or abs(s["end"] - b) > 0.05:
+            s.update(clip=ci, start=a, end=b)
+            fixed += 1
+    return fixed
+
+
 def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> dict:
     """A "start from scratch" version: Claude directs (or the earlier version is rebuilt with the
     user's own shot edits), then render_video builds it."""
@@ -5886,6 +5931,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         request = {"custom": "use my own on-screen text now (the lines in the text setting).",
                    "none": "take all the on-screen text off.",
                    "adapt": "write the on-screen text for me now."}[text_mode]
+    user_shots: list[tuple] = []
     if previous and request:
         report("analyzing", 6)
     max_s = SCRATCH_MAX_S
@@ -5894,22 +5940,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         # An edit without words: the same plan, with the user's own clip and trim choices per shot.
         cleaned = clean_director({**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
                                   "hashtags": (base.get("postCopy") or {}).get("hashtags", [])}, clips, max_s, text_mode)
-        edits = {shot_pos.get(e.get("shotIndex"), e.get("shotIndex")): e for e in req.get("shots") or []
-                 if isinstance(e, dict) and not e.get("removed")}
-        for i, s in enumerate(cleaned["shots"]):
-            e = edits.get(i) or {}
-            ci = index_of.get(e.get("clipId"))
-            if ci is None:
-                continue
-            d = clips[ci]["duration"]
-            a = e.get("trimStartS") if isinstance(e.get("trimStartS"), (int, float)) else None
-            b = e.get("trimEndS") if isinstance(e.get("trimEndS"), (int, float)) else None
-            if ci != s["clip"] and a is None and b is None:
-                # A different clip, no trim given: the same length from its start.
-                a, b = 0.0, min(d, s["end"] - s["start"])
-            a = min(max(0.0, a if a is not None else s["start"]), max(0.0, d - SCRATCH_MIN_SHOT_S))
-            b = min(max(b if b is not None else s["end"], a + SCRATCH_MIN_SHOT_S), d)
-            s.update(clip=ci, start=r2(a), end=r2(b))
+        scratch_shot_edits(req, cleaned["shots"], clips, index_of, shot_pos)
         cleaned["shots"] = separate_scratch_shots(cleaned["shots"], clips, None) or cleaned["shots"]
         cleaned["summary"] = ""
         print("scratch: rebuilt from the earlier version with the user's shot edits")
@@ -5946,6 +5977,17 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                 t += length
             previous.pop("_all_shots", None)
             previous.pop("_kept", None)
+            # The user's own clip and trim choices made in the editor alongside the request: the
+            # director works from them, and they're put back exactly afterwards (keep_user_shots).
+            as_clean = [{"clip": x["clip"] - 1, "start": x["start_s"], "end": x["end_s"]} for x in previous["shots"]]
+            user_shots = scratch_shot_edits(req, as_clean, clips, index_of, shot_pos)
+            for x, c in zip(previous["shots"], as_clean):
+                x.update(clip=c["clip"] + 1, start_s=c["start"], end_s=c["end"])
+            if user_shots:
+                request = (request + "\n\n(the user also set these shots themselves in the editor, and they stay exactly "
+                           "as set: " + "; ".join(f"shot {i + 1} is clip {ci + 1} from {a:.2f}s to {b:.2f}s"
+                                                   for i, ci, a, b in user_shots) + ")")[:2200]
+                print(f"scratch: user shot edits with the request: {user_shots}")
             # The current caption and hashtags, so a change can keep them, and what the captions say.
             previous = {**previous, "caption": (base.get("postCopy") or {}).get("caption", ""),
                         "hashtags": (base.get("postCopy") or {}).get("hashtags", []),
@@ -5972,6 +6014,10 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
+        if user_shots:
+            put_back = keep_user_shots(cleaned["shots"], user_shots, len(previous["shots"]))
+            if put_back:
+                print(f"scratch: put back {put_back} shot(s) the user set themselves")
         caption_fixes = clean_caption_fixes(caption_fixes, result["data"].get("caption_fixes"))
         if text_mode == "custom" and custom_text.strip() and not custom_lines_kept(cleaned["shots"], custom_text):
             # The user's own words go in exactly as typed, whatever Claude did with them.
@@ -6779,6 +6825,23 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             else:
                 text_rule = TEXT_RULES["adapt"]
         report("matching", 25)
+        # Shots the user set themselves in the editor (a clip, a trim) stay as they set them: the
+        # request changes everything else.
+        before = {x.get("shotIndex"): x for x in (previous.get("plan") or {}).get("shots") or [] if isinstance(x, dict)}
+        id_of = {i: c["id"] for i, c in enumerate(clips)}
+
+        def set_by_user(i: int, f: dict) -> bool:
+            if f["clip"] is None or f["start"] is None:
+                return False
+            b = before.get(shot_number(req, i, n)) or before.get(i)
+            if not b:
+                return True
+            moved = lambda x, y: (x is None) != (y is None) or (x is not None and abs(float(x) - float(y)) > 0.05)  # noqa: E731
+            return id_of.get(f["clip"]) != b.get("clipId") or moved(f["start"], b.get("trimStartS")) or moved(f["end"], b.get("trimEndS"))
+
+        user_set = [set_by_user(i, f) for i, f in enumerate(fixed)]
+        if any(user_set):
+            print(f"revise: shots the user set themselves stay as set: {[i + 1 for i, u in enumerate(user_set) if u]}")
         result = revise_plan(request, guide, shots, clips, [{"clip": p["clip"], "start": p["start"]} for p in current],
                              plan_texts, layout, style, post, lays, cap_ys, faces, frames, caption_style, text_rule,
                              one_take=jump, caption_text=str(previous["plan"].get("captionText") or ""),
@@ -6806,6 +6869,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 v = r.get(key)
                 if isinstance(v, (int, float)) and 0 <= v <= 1:
                     layout[field][i] = float(v)
+            if user_set[i] and not jump:
+                continue  # the user's own clip and trim, untouched
             if not jump and isinstance(r.get("clip"), int) and 0 < r["clip"] <= len(clips):
                 ci = r["clip"] - 1
                 if ci != current[i]["clip"] or abs(float(r["start_s"]) - current[i]["start"]) > 0.05:
