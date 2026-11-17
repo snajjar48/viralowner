@@ -7587,6 +7587,8 @@ def notify_job(url: str, payload: dict) -> None:
 
 REVIEW_SYSTEM = """You check a short-form video that ViralOwner (an app that edits people's own clips into TikToks and Reels) just made, before the user sees it, the way a careful editor watches their cut before sending it. You get everything the user asked for (their description of the video or their change request, their notes, and their standing preferences), the on-screen text the editor planned, and frames from the finished video every half second.
 
+When you're given every separate ask as a numbered list, go through each one against the video and the edit details and say whether it's done; any ask that clearly isn't done is a miss.
+
 Find only clear misses:
 - something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed (slow motion or none), an effect or transition they asked for or asked to remove, the sound they asked for, captions on or off, cutting on the beat, the length. Use "how it's edited" for what frames can't show;
 - obvious defects: on-screen text cut off by the edge of the frame, text covering a face or the product, text that can't be read, a black or blank frame, the same footage twice in a row, text or captions with typos or words the user didn't write.
@@ -7622,6 +7624,8 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
         ("their standing preferences", prefs or ""),
     ]
     asks = [(k, str(v).strip()[:2000]) for k, v in asks if str(v or "").strip()]
+    if req.get("_asks"):
+        asks.append(("every separate ask, to check one by one", "\n".join(f"{n + 1}. {a}" for n, a in enumerate(req["_asks"]))))
     if not isinstance(req.get("scratch"), dict) and not req.get("previous"):
         asks.insert(0, ("the kind of video", "a remake of a viral video (the inspo) with the user's own clips: it follows the inspo's structure and style"))
     plan = out.get("plan") or {}
@@ -7672,9 +7676,61 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
     return data
 
 
+ASKS_SYSTEM = """You read what a user asked a video editing app to do with their video (a description of the video, a change request, notes) and list every separate thing they asked for, so none gets missed. One line per ask, in plain words, specific and complete (keep their exact words for any text they want on screen, emoji included). Split combined asks ("make the text bigger and move it up" is two asks). Keep each ask's scope (which shot, which moment, the whole video). Include asks about the sound, speed, length, order, first or last shot, text, captions, effects, transitions, cuts and the caption/post. Leave out greetings and anything that isn't an ask. If something is ambiguous, write the most likely meaning. Empty list if they asked for nothing specific."""
+
+ASKS_SCHEMA = {
+    "type": "object",
+    "properties": {"asks": {"type": "array", "items": {"type": "string"}, "description": "every separate ask, one line each."}},
+    "required": ["asks"],
+    "additionalProperties": False,
+}
+
+
+def understand_asks(req: dict) -> list[str]:
+    """Every separate thing the user asked for in this version (their description, change request
+    and notes), one line each, so the editor does each one and the check after looks for each one."""
+    options = req.get("options") or {}
+    parts = [
+        ("description of the video", ((req.get("scratch") or {}).get("prompt") or "") if isinstance(req.get("scratch"), dict) and not req.get("previous") else ""),
+        ("change request", req.get("request") or ""),
+        ("notes", options.get("notes") or ""),
+    ]
+    parts = [(k, str(v).strip()[:3000]) for k, v in parts if str(v or "").strip()]
+    if not parts:
+        return []
+    try:
+        result = ask_claude(ASKS_SYSTEM, [{"type": "text", "text": "\n\n".join(f"{k}:\n{v}" for k, v in parts)}],
+                            ASKS_SCHEMA, "asks failed", effort="low")
+    except Exception as e:  # noqa: BLE001 - the request itself still goes to the editor as written
+        print(f"asks skipped: {type(e).__name__}: {e}")
+        return []
+    asks = [str(a).strip()[:300] for a in result["data"].get("asks") or [] if str(a).strip()][:20]
+    print(f"asks (${result['cost_usd']}): {asks}")
+    return asks
+
+
+def with_asks(req: dict, asks: list[str]) -> dict:
+    """The request (or, for a first version, the description or notes) with every ask listed after it,
+    so the editor does each one."""
+    if not asks:
+        return req
+    listed = "\n\nevery separate thing asked for, one by one (do every one):\n" + "\n".join(f"- {a}" for a in asks)
+    if str(req.get("request") or "").strip():
+        return {**req, "request": (str(req["request"]).strip() + listed)[:3000]}
+    if isinstance(req.get("scratch"), dict) and str(req["scratch"].get("prompt") or "").strip():
+        return {**req, "scratch": {**req["scratch"], "prompt": (req["scratch"]["prompt"].strip() + listed)[:4000]}}
+    options = req.get("options") or {}
+    if str(options.get("notes") or "").strip():
+        return {**req, "options": {**options, "notes": (options["notes"].strip() + listed)[:3000]}}
+    return req
+
+
 def made_with_review(req: dict, make) -> dict:
     """Makes the version, watches it, and if it clearly misses what was asked, makes it once more with
     the fix (same file), before the user ever sees it. `make(req, workdir)` makes one version."""
+    asks = [] if req.get("storyboard") else understand_asks(req)
+    req = with_asks(req, asks)
+    req["_asks"] = asks
     with tempfile.TemporaryDirectory() as tmp:
         install_emoji_kit(req, Path(tmp))
         out = make(req, Path(tmp))
@@ -7707,6 +7763,34 @@ def made_with_review(req: dict, make) -> dict:
         with tempfile.TemporaryDirectory() as tmp2:
             install_emoji_kit(req, Path(tmp2))
             out2 = make(req2, Path(tmp2))
+            # Checked again: if the fix still misses something, one more pass with what's left.
+            try:
+                again = review_video(req, out2, Path(tmp2) / "final.mp4", Path(tmp2))
+            except Exception as e:  # noqa: BLE001
+                print(f"second check skipped: {type(e).__name__}: {e}")
+                again = None
+        if again and not again.get("ok") and str(again.get("fix") or "").strip():
+            m2 = out2.setdefault("meta", {})
+            m2["costUsd"] = round(float(m2.get("costUsd") or 0) + float(again.get("cost") or 0), 4)
+            plan2 = out2.get("plan") or {}
+            carry3 = {k: v for k, v in (req2.get("carry") or {}).items() if k != "textItems"}
+            if isinstance(plan2.get("textItems"), list):
+                carry3["textItems"] = plan2["textItems"]
+            req3 = {**req2, "request": (f"{req2['request']}\n\nstill missing: {again['fix']}")[:3000],
+                    "shots": plan2.get("shots") or req2.get("shots"),
+                    "previous": {"storageKey": req["outputKey"], "plan": plan2, "postCopy": out2.get("postCopy"), "textChanged": False},
+                    "carry": carry3}
+            try:
+                with tempfile.TemporaryDirectory() as tmp3:
+                    install_emoji_kit(req, Path(tmp3))
+                    out3 = make(req3, Path(tmp3))
+                m3 = out3.setdefault("meta", {})
+                m3["costUsd"] = round(float(m3.get("costUsd") or 0) + float(m2.get("costUsd") or 0), 4)
+                verdict = {**verdict, "misses": list(verdict.get("misses") or []) + list(again.get("misses") or [])}
+                out2 = out3
+                print(f"review: made a third time for what was still missing ({len(again.get('misses') or [])})")
+            except Exception as e:  # noqa: BLE001 - the second version is still good to deliver
+                print(f"second fix failed, keeping the second version: {type(e).__name__}: {e}")
     except Exception as e:  # noqa: BLE001 - the first version is still there, and good to deliver
         print(f"review fix failed, keeping the first version: {type(e).__name__}: {e}")
         return out
