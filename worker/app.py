@@ -31,8 +31,15 @@ import modal
 
 APP_NAME = "viralowner-worker"
 CLAUDE_MODEL = "claude-opus-5-5"
-# USD per million tokens (Claude Opus 5.5), for the cost log.
-PRICES = {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20}
+# USD per million tokens, for the cost log.
+MODEL_PRICES = {
+    "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20},
+    "claude-fable-5-2": {"input": 8.00, "output": 40.00, "cache_write": 10.00, "cache_read": 0.20},
+}
+PRICES = MODEL_PRICES[CLAUDE_MODEL]
+# Models a comparison test (scripts/compare-models.py, through render_upload only) may pick; real jobs
+# from the website always use CLAUDE_MODEL.
+TEST_MODELS = set(MODEL_PRICES)
 WHISPER_MODEL = "large-v3-turbo"  # much more accurate than small, still quick on CPU
 CLAP_MODEL = "laion/larger_clap_general"  # recognizes sound effects
 MODELS_DIR = "/models"
@@ -1231,6 +1238,7 @@ def start_job(req: dict | None = None) -> None:
     JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
+    JOB["model"] = CLAUDE_MODEL
     JOB["t0"] = time.time()
     warm_speech()  # most jobs need speech; boot the GPU while the clips download
 
@@ -1255,7 +1263,7 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
     asked = time.time()
     # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
     with client.beta.messages.stream(
-        model=CLAUDE_MODEL,
+        model=JOB.get("model") or CLAUDE_MODEL,
         max_tokens=64000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # if a safety check declines, another model finishes the request
@@ -1277,7 +1285,7 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
         "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
     }
-    cost = sum(usage[k] * PRICES[k] for k in usage) / 1_000_000
+    cost = sum(usage[k] * MODEL_PRICES.get(JOB.get("model") or CLAUDE_MODEL, PRICES)[k] for k in usage) / 1_000_000
     print(f"claude [{refusal_message[:40]}] effort={effort}: {time.time() - asked:.1f}s, "
           f"in={usage['input']} out={usage['output']} cache_read={usage['cache_read']}")
     data = json.loads(text)
@@ -3131,6 +3139,16 @@ def frozen_runs(path: Path, min_run: int, start: float = 0.0, length: float | No
     return runs
 
 
+def picture_seconds(path: Path) -> float:
+    """How many seconds of picture the file really has (its video frames counted, at the output rate)."""
+    try:
+        n = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
+                 "stream=nb_read_packets", "-of", "csv=p=0", str(path)]).strip().strip(",")
+        return int(n) / OUT_FPS
+    except (subprocess.CalledProcessError, ValueError):
+        return 0.0
+
+
 def held_at_cuts(runs: list[tuple[float, float]], bounds: list[float],
                  footage: list[tuple[float, float]] | None = None) -> list[tuple[float, float]]:
     """The runs that end at a cut or the end of the video (a shot that ran out of picture), leaving out
@@ -3243,11 +3261,8 @@ def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | 
 # ---- looks over the whole video (applied with the text, at the end)
 
 def fire_overlays(cuts: list[dict | None], starts: list[float], inputs: list[str]) -> list[str]:
-    """Lays the flames over the joined video at each fire cut (adding their inputs); labels the result [fired].
-    First, every frame of the joined video gets its exact time (frame number / fps): whatever the joining
-    left in the timestamps, the pictures, text and flames layered on next line up with a perfect clock
-    (held frames were seen at the cuts otherwise)."""
-    out, src, j = [f"[0:v]setpts=N/({OUT_FPS}*TB)[clock]"], "clock", 0
+    """Lays the flames over the joined video at each fire cut (adding their inputs); labels the result [fired]."""
+    out, src, j = [], "0:v", 0
     for i, c in enumerate(cuts):
         clip = Path(FIRE_DIR) / f"fire-{FIRE_SEEDS[j % len(FIRE_SEEDS)]}.mov"
         if not c or c.get("name") != "fire" or not clip.exists():
@@ -6834,6 +6849,13 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     joined = workdir / "joined.mkv"
     join_shots(seg_paths, durations, cuts, workdir, joined)
     total = sum(durations)
+    # The whole video, every frame: a joined video with picture missing is joined again the safe way.
+    if picture_seconds(joined) < total - 0.15:
+        print(f"WARNING joined video has {picture_seconds(joined):.2f}s of picture for {total:.2f}s: joining again")
+        join_shots_reencoded(seg_paths, durations, workdir, joined) if not any(cuts) else \
+            join_shots(seg_paths, durations, cuts, workdir, joined)
+        if picture_seconds(joined) < total - 0.15:
+            raise RuntimeError(f"joined video is short: {picture_seconds(joined):.2f}s of {total:.2f}s")
     # No held frames, ever: a shot that ran out of picture is cut again, then joined the slow, safe way.
     bounds = [sum(durations[:i + 1]) for i in range(len(durations))]
     min_run = 12 if JOB.get("slowmo_asked") else 5  # slow motion the user asked for may show a frame up to ~4 times
@@ -7054,6 +7076,21 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         raise JobError("making this video took too long. please try again.")
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
+    # Never deliver a video with picture missing: made again, then without the emoji pictures, and if
+    # it's still short the job fails (the user tries again, free) rather than getting a broken video.
+    for attempt in range(2):
+        have = picture_seconds(out)
+        if have >= total - 0.15:
+            break
+        print(f"WARNING finished video has {have:.2f}s of picture for {total:.2f}s (attempt {attempt + 1})")
+        if attempt == 0:
+            result = final_encode(pictures, ass, limit)
+        else:
+            result = final_encode([], build_ass(base_timeline, style, layout, words, shown_captions, caption_y_at), limit)
+        if result.returncode != 0:
+            raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
+    if picture_seconds(out) < total - 0.15:
+        raise RuntimeError(f"finished video is short: {picture_seconds(out):.2f}s of {total:.2f}s")
     # The finished video is checked the same way: held frames it has that the joined video doesn't
     # come from the final encode, which is made again (up to twice).
     final_held = held_at_cuts(frozen_runs(out, min_run), bounds)
@@ -7408,8 +7445,11 @@ def hook_job(req: dict) -> dict:
 @app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=900)
 def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
     """For testing from a laptop: renders files sent directly (keys map to bytes; skips storage).
-    Same machine as render_job, so its timings match the real thing."""
+    Same machine as render_job, so its timings match the real thing. `req["testModel"]`: a comparison
+    test's model (one of TEST_MODELS); real renders never take this path."""
     start_job(req)
+    if req.get("testModel") in TEST_MODELS:
+        JOB["model"] = req["testModel"]
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
         result: dict = {}
