@@ -22,9 +22,10 @@ const DONE = "vo-emoji-kit";
 
 let running = false;
 
-/** At most one try a day on each device (a phone on a slow connection shouldn't redo it every visit). */
+/** At most one try every two hours on each device (a phone on a slow connection shouldn't redo it every
+ * visit, but one that was interrupted gets its emoji into videos the same day). */
 const TRIED = "vo-emoji-kit-tried";
-const DAY = 24 * 60 * 60 * 1000;
+const RETRY_MS = 2 * 60 * 60 * 1000;
 
 function stored(key: string, value?: string): string | null {
   try {
@@ -58,7 +59,7 @@ async function sync() {
       return;
     }
     const tried = Number(stored(TRIED) ?? 0);
-    if (Date.now() - tried < DAY) return;
+    if (Date.now() - tried < RETRY_MS) return;
     stored(TRIED, String(Date.now()));
     if (await upload(style)) stored(DONE, mark);
   } finally {

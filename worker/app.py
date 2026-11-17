@@ -3883,6 +3883,58 @@ def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: lis
     return out
 
 
+# ---- "keep the text on the whole video": done by the code, not left to the model
+
+_TEXT_WORD = re.compile(r"\b(text|texts|words?|title|titles|captions?|writing|overlays?|lines?)\b")
+_KEEP_WORD = re.compile(r"\b(keep|kept|stay|stays|staying|leave|left|show|shown|showing|visible|remain|remains|up)\b"
+                        r"|on[ -]?screen|disappear|go(es)? away|drop(s|ping)? out|vanish|come(s)? back|reappear")
+_SPAN_WORD = re.compile(r"\b(whole|entire|full|throughout|all the way|the whole time|all the time|every (shot|frame|second)"
+                        r"|start to (finish|end)|beginning to (the )?end|first (frame|second) to (the )?last|never|nonstop|non-stop)\b")
+_NOT_WHOLE = re.compile(r"\b(don'?t|do not|doesn'?t|shouldn'?t|not)\b.{0,25}\b(keep|stay|whole|entire|throughout|all the way)\b")
+_TIMED = re.compile(r"\b(only (at|for|in|during)|for the first|after (the )?\d|until|then (remove|hide|take)|disappear(s)? (after|when|at))\b")
+
+
+def asks_text_whole_video(text: str) -> bool:
+    """Whether these words (a request, notes or standing preferences) ask for the on-screen text to stay
+    up for the whole video, e.g. "keep the text over the whole video", "don't let the words disappear"."""
+    for sentence in re.split(r"[.!?;\n]+", (text or "").lower()):
+        if (_TEXT_WORD.search(sentence) and _KEEP_WORD.search(sentence) and _SPAN_WORD.search(sentence)
+                and not _NOT_WHOLE.search(sentence)):
+            return True
+        # "don't let the text disappear" / "the words keep disappearing": the same ask.
+        if _TEXT_WORD.search(sentence) and re.search(r"(don'?t|never|stop)\b.{0,30}(disappear|go away|drop out|vanish)"
+                                                     r"|keeps? (disappearing|going away|dropping out)", sentence):
+            return True
+    return False
+
+
+def asks_text_timed(text: str) -> bool:
+    """Whether these words ask for text only at certain moments (then the whole-video rule doesn't apply)."""
+    return any(_TEXT_WORD.search(sn) and _TIMED.search(sn) for sn in re.split(r"[.!?;\n]+", (text or "").lower()))
+
+
+def fill_text_gaps(spans: list, total: float, get, set_):
+    """Stretches timed text so something is on screen from 0 to `total` with no gaps: the first text
+    starts at 0, each text that ends in a gap runs on until the next one starts, the last runs to the
+    end. Text shown at the same time as other text keeps its own timing otherwise."""
+    live = [x for x in spans if get(x)[1] > get(x)[0]]
+    if not live or total <= 0:
+        return spans
+    live.sort(key=lambda x: get(x)[0])
+    first = get(live[0])[0]
+    for x in live:
+        if get(x)[0] <= first + 1e-6:
+            set_(x, 0.0, get(x)[1])
+    for x in live:
+        a, b = get(x)
+        covered = any(get(y)[0] <= b + 0.01 < get(y)[1] for y in live if y is not x)
+        if covered:
+            continue
+        later = [get(y)[0] for y in live if get(y)[0] >= b - 1e-6 and y is not x]
+        set_(x, a, min(later) if later else total)
+    return spans
+
+
 def clean_text_items(raw, total: float) -> list[dict] | None:
     """On-screen text set in the editor: each line of text with its own time on screen (any time,
     across any number of shots), place and look. None if there are none (the per-shot text is used)."""
@@ -6765,6 +6817,18 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
+    # "Keep the text on the whole video": done here, every time, not left to the editing model. What
+    # the user asks now always counts; their standing preferences count unless they just timed the text
+    # themselves in the editor, or asked now for text at certain moments only.
+    asked_now = "\n".join(x for x in (request, notes, str(req.get("captionInstructions") or "")) if x)
+    whole_video_text = asks_text_whole_video(asked_now) or (
+        asks_text_whole_video(prefs or "") and not isinstance(carry.get("textItems"), list)
+        and not asks_text_timed(asked_now))
+    if whole_video_text and text_items:
+        def _set(x, a, b):
+            x["start"], x["end"] = round(a, 2), round(b, 2)
+        fill_text_gaps(text_items, sum(durations), lambda x: (x["start"], x["end"]), _set)
+        print(f"text kept on the whole video: {[(x['start'], x['end']) for x in text_items]}")
 
     # The post caption, written while the video is finished (a change request keeps the one it has,
     # unless it was asked to change it). It reads the cut video and is told the on-screen text.
@@ -6787,6 +6851,12 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     # (An empty list is a choice too: the user removed all the text.)
     base_timeline = (items_timeline(text_items, style, layout, position) if text_items is not None
                      else overlay_timeline(plan, plan_texts, lays))
+    if whole_video_text and text_items is None and base_timeline:
+        # Each shot's own text: no shot without text, from the first frame to the last.
+        base_timeline = [list(t) for t in base_timeline]
+        fill_text_gaps(base_timeline, sum(durations), lambda t: (t[0], t[1]), lambda t, a, b: t.__setitem__(slice(0, 2), [a, b]))
+        base_timeline = [tuple(t) for t in base_timeline]
+        print("text kept on the whole video (shot text)")
     text_timeline, emoji_texts = emoji_text_pictures(base_timeline, style, layout, workdir)
     ass = build_ass(text_timeline, style, layout, words, shown_captions, caption_y_at)
 
