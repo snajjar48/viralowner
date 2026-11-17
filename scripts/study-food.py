@@ -226,6 +226,13 @@ def main(folder: str, out: str):
     # Each study is saved as it arrives, so a rerun only studies what's missing.
     each = outdir / "each"
     each.mkdir(exist_ok=True)
+    # Every video studied before (studies/food.json, kept in the project): never studied again, and
+    # still part of the playbook even once its video is deleted.
+    kept = Path(__file__).resolve().parent.parent / "studies" / "food.json"
+    if kept.exists():
+        for r in json.loads(kept.read_text()):
+            if not (each / f"{r['name']}.json").exists():
+                (each / f"{r['name']}.json").write_text(json.dumps(r, ensure_ascii=False))
     todo = [p for p in files if not (each / f"{p.name}.json").exists()]
     print(f"{len(todo)} to study")
     for r in study.starmap(((p.name, p.read_bytes()) for p in todo), return_exceptions=True):
@@ -233,7 +240,8 @@ def main(folder: str, out: str):
             print(f"failed: {r}")
             continue
         (each / f"{r['name']}.json").write_text(json.dumps(r, ensure_ascii=False))
-    done = [json.loads((each / f"{p.name}.json").read_text()) for p in files if (each / f"{p.name}.json").exists()]
+    done = [json.loads(f.read_text()) for f in sorted(each.glob("*.json"))]  # everything ever studied
+    kept.write_text(json.dumps(done, indent=1, ensure_ascii=False))  # saved back to the project
     (outdir / "studies.json").write_text(json.dumps(done, indent=1, ensure_ascii=False))
     keys = ["duration_s", "shots", "cuts_per_10s", "median_shot_s", "longest_shot_s", "shortest_shot_s", "words",
             "first_word_s", "median_motion", "quality_fps", "quality_video_kbps", "quality_height"]

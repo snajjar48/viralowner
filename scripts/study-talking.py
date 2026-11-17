@@ -242,6 +242,13 @@ def main(folder: str, out: str):
     # Each study is saved as it arrives, so a rerun only studies what's missing.
     each = outdir / "each"
     each.mkdir(exist_ok=True)
+    # Every video studied before (studies/talking.json, kept in the project): never studied again, and
+    # still part of the playbook even once its video is deleted.
+    kept = Path(__file__).resolve().parent.parent / "studies" / "talking.json"
+    if kept.exists():
+        for r in json.loads(kept.read_text()):
+            if not (each / f"{r['name']}.json").exists():
+                (each / f"{r['name']}.json").write_text(json.dumps(r, ensure_ascii=False))
     todo = [p for p in files if not (each / f"{p.name}.json").exists()]
     print(f"{len(todo)} to study")
     for r in study.starmap(((p.name, p.read_bytes()) for p in todo), return_exceptions=True):
@@ -249,7 +256,8 @@ def main(folder: str, out: str):
             print(f"failed: {r}")
             continue
         (each / f"{r['name']}.json").write_text(json.dumps(r, ensure_ascii=False))
-    done = [json.loads((each / f"{p.name}.json").read_text()) for p in files if (each / f"{p.name}.json").exists()]
+    done = [json.loads(f.read_text()) for f in sorted(each.glob("*.json"))]  # everything ever studied
+    kept.write_text(json.dumps(done, indent=1, ensure_ascii=False))  # saved back to the project
     if len(done) < len(files):
         print(f"only {len(done)} of {len(files)} studied: not writing the playbook yet. run it again.")
         return

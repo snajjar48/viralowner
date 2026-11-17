@@ -68,3 +68,9 @@ is added and the worker is deployed. The admin dashboard's categories page shows
 
 Each category also learns every day from the change requests, notes and feedback on its own videos (`src/lib/lessons.ts`);
 those lessons go with that category's videos, after the lessons for every video.
+
+## Study notes
+
+Every video's study is kept in `studies/` at the top of the project (`travel.json`, `food.json`, `talking.json`).
+The study scripts read them first, so a rerun only studies new videos, and the playbook is always rewritten from
+everything ever studied. The videos themselves can be deleted once they're studied.
