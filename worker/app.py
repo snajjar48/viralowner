@@ -2170,8 +2170,10 @@ def _safe(fn, *args):
 
 OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
 MATCH_FRAME_WIDTH = 384
-MAX_CLIP_FRAMES = 96  # frames of the user's clips sent to Claude
-MAX_CLIP_SPEECH_S = 150  # transcribe the clips for matching only if they're this short in total
+MAX_CLIP_FRAMES = 96  # frames of the user's clips sent to Claude (at least)
+MIN_FRAMES_PER_CLIP = 6  # ...and more with many clips, so each clip is still seen well (up to 40 clips)
+MAX_CLIP_FRAMES_CAP = 240
+MAX_CLIP_SPEECH_S = 300  # transcribe the clips for matching only if they're this short in total
 # Shots and joins in between are kept lossless, so the picture is compressed only once, at the end.
 LOSSLESS = ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
 # The finished video: near the clips' own quality (TikTok and Instagram re-compress it on upload,
@@ -2302,9 +2304,13 @@ def grab_frame(path: Path, t: float, dest: Path, width: int) -> Path | None:
     return dest if dest.exists() and dest.stat().st_size > 0 else None
 
 
-def sample_clip_frames(clips: list[dict], workdir: Path, limit: int = MAX_CLIP_FRAMES) -> None:
-    """Adds clip["frames"] = [(seconds, jpeg), ...], spread evenly, about `limit` in total."""
+def sample_clip_frames(clips: list[dict], workdir: Path, limit: int = MAX_CLIP_FRAMES, per_clip: int = MIN_FRAMES_PER_CLIP,
+                       cap: int = MAX_CLIP_FRAMES_CAP) -> None:
+    """Adds clip["frames"] = [(seconds, jpeg), ...], spread evenly, about `limit` in total (more with many
+    clips: at least `per_clip` each, up to `cap` in all)."""
     from concurrent.futures import ThreadPoolExecutor
+
+    limit = max(limit, min(cap, per_clip * len(clips)))
 
     total = sum(c["duration"] for c in clips)
     interval = max(1.0, total / limit)
@@ -5180,6 +5186,8 @@ SCRATCH_MAX_S = 180.0
 SCRATCH_MAX_SHOTS = 60
 SCRATCH_MIN_SHOT_S = 0.4
 SCRATCH_CLIP_FRAMES = 120  # more than matching: Claude is choosing everything
+SCRATCH_FRAMES_PER_CLIP = 8  # at least this many per clip with many clips...
+SCRATCH_CLIP_FRAMES_CAP = 320  # ...up to this many in all
 SCRATCH_MAX_WORDS = 5000  # word timings sent to Claude (beyond this, phrase timings only)
 POSITIONS = ["top", "middle", "bottom"]
 
@@ -5841,7 +5849,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         if directed:
             print("scratch: the storyboard's plan didn't fit the clips any more, directing again")
         report("analyzing", 8)
-        sample_clip_frames(clips, workdir, limit=SCRATCH_CLIP_FRAMES)
+        sample_clip_frames(clips, workdir, limit=SCRATCH_CLIP_FRAMES, per_clip=SCRATCH_FRAMES_PER_CLIP,
+                           cap=SCRATCH_CLIP_FRAMES_CAP)
         report("analyzing", 12)
         audio_info_box: list[dict] = []
         jobs = [lambda: scratch_speech(clips)]

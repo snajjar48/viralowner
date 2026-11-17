@@ -8,7 +8,7 @@ export const INSPO_MAX_BYTES = 200 * 1024 * 1024;
 // Room for camera footage (4K at 100–200 Mbps is about 1 GB a minute). Big files upload in parts.
 export const CLIP_MAX_BYTES = 4 * 1024 * 1024 * 1024;
 export const CLIP_MAX_SECONDS = 5 * 60;
-export const MAX_CLIPS = 20;
+export const MAX_CLIPS = 40;
 
 /** For <input accept>. Extensions too, because some browsers leave file.type empty. */
 export const VIDEO_ACCEPT = "video/mp4,video/quicktime,.mp4,.mov,.m4v";
