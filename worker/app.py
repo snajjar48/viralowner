@@ -3095,6 +3095,80 @@ def cut_shot(clip: dict, start: float, take: float, duration: float, dest: Path,
         raise RuntimeError(f"cutting shot failed: {result.stderr[-500:]}")
 
 
+# ---- frozen picture: found exactly and fixed before a video is delivered
+#
+# Real footage never has several frames in a row that don't change at all (sensor noise alone changes
+# them), so such a run is a held frame: something ran out of picture.
+
+def frozen_runs(path: Path, min_run: int, start: float = 0.0, length: float | None = None) -> list[tuple[float, float]]:
+    """(start, end) seconds of every run of `min_run`+ frames that don't change at all. Measured on a
+    small grey copy: a held frame differs from the one before by ~0 (only the encoder's faint noise),
+    while the stillest real footage (a phone on a tripod) still changes by about 1 in 255."""
+    import numpy as np
+
+    w, h = 64, 114
+    window = [*(["-ss", f"{start:.3f}"] if start > 0 else []), *(["-t", f"{length:.3f}"] if length else [])]
+    raw = subprocess.run(["ffmpeg", "-v", "error", *window, "-i", str(path), "-map", "0:v:0", "-vf",
+                          f"fps={OUT_FPS},scale={w}:{h}:flags=area,format=gray", "-f", "rawvideo", "-"],
+                         capture_output=True, timeout=600).stdout
+    n = len(raw) // (w * h)
+    if n < 2:
+        return []
+    frames = np.frombuffer(raw[: n * w * h], dtype=np.uint8).reshape(n, h, w).astype(np.int16)
+    still = np.abs(np.diff(frames, axis=0)).mean(axis=(1, 2)) < 0.15  # still[k]: frame k+1 same as k
+    runs, k = [], 0
+    while k < len(still):
+        if not still[k]:
+            k += 1
+            continue
+        j = k
+        while j + 1 < len(still) and still[j + 1]:
+            j += 1
+        length = j - k + 2  # frames in the run
+        if length >= min_run:
+            runs.append((round(k / OUT_FPS, 3), round((j + 2) / OUT_FPS, 3)))
+        k = j + 1
+    return runs
+
+
+def held_at_cuts(runs: list[tuple[float, float]], bounds: list[float],
+                 footage: list[tuple[float, float]] | None = None) -> list[tuple[float, float]]:
+    """The runs that end at a cut or the end of the video (a shot that ran out of picture), leaving out
+    ones that are in the footage itself (`footage`: where the clips used are still, on the video's clock)."""
+    def in_footage(a: float, b: float) -> bool:
+        return any(min(b, y + 0.1) - max(a, x - 0.1) >= 0.5 * (b - a) for x, y in footage or [])
+    return [(a, b) for a, b in runs if any(abs(b - c) <= 0.12 for c in bounds) and not in_footage(a, b)]
+
+
+def footage_stills(plan: list[dict], clips: list[dict], starts: list[float]) -> list[tuple[float, float]]:
+    """Where the footage each shot uses is still by itself (a phone on a tripod filming a still scene,
+    a screen recording of a still screen), mapped onto the finished video's clock."""
+    out = []
+    for i, p in enumerate(plan):
+        c = clips[p["clip"]]
+        take = max(0.05, float(p.get("take") or p["duration"]))
+        k = p["duration"] / take
+        try:
+            runs = frozen_runs(c["path"], 3, start=max(0.0, p["start"] - 0.2), length=take + 0.4)
+        except Exception:  # noqa: BLE001
+            continue
+        out += [(starts[i] + (a - 0.2) * k, starts[i] + (b - 0.2) * k) for a, b in runs]
+    return out
+
+
+def join_shots_reencoded(seg_paths: list[Path], durations: list[float], workdir: Path, dest: Path) -> None:
+    """Joins hard-cut shots by decoding them (every frame retimed to the output rate) instead of
+    copying: slower, but no shot can start late or leave a gap."""
+    n = len(seg_paths)
+    parts = [f"[{i}:v]settb=AVTB,setpts=PTS-STARTPTS,fps={OUT_FPS},trim=duration={durations[i]:.4f},"
+             f"setpts=PTS-STARTPTS,format=yuv420p[v{i}]" for i in range(n)]
+    parts += [f"[{i}:a]atrim=0:{durations[i]:.4f},asetpts=PTS-STARTPTS[a{i}]" for i in range(n)]
+    parts.append("".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[vo][ao]")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *[x for p in seg_paths for x in ("-i", p.name)],
+                    "-filter_complex", ";".join(parts), "-map", "[vo]", "-map", "[ao]", "-t", f"{sum(durations):.3f}",
+                    *LOSSLESS, "-c:a", "pcm_s16le", dest.name], cwd=workdir, check=True, capture_output=True)
+
+
 def transition_plan(durations: list[float], transitions: list[str]) -> list[dict | None]:
     """For each cut: {"xfade", "d", "fx"}, or None for a hard cut. Never more than 40% of either shot."""
     out: list[dict | None] = []
@@ -3169,8 +3243,11 @@ def join_shots(seg_paths: list[Path], durations: list[float], plan: list[dict | 
 # ---- looks over the whole video (applied with the text, at the end)
 
 def fire_overlays(cuts: list[dict | None], starts: list[float], inputs: list[str]) -> list[str]:
-    """Lays the flames over the joined video at each fire cut (adding their inputs); labels the result [fired]."""
-    out, src, j = [], "0:v", 0
+    """Lays the flames over the joined video at each fire cut (adding their inputs); labels the result [fired].
+    First, every frame of the joined video gets its exact time (frame number / fps): whatever the joining
+    left in the timestamps, the pictures, text and flames layered on next line up with a perfect clock
+    (held frames were seen at the cuts otherwise)."""
+    out, src, j = [f"[0:v]setpts=N/({OUT_FPS}*TB)[clock]"], "clock", 0
     for i, c in enumerate(cuts):
         clip = Path(FIRE_DIR) / f"fire-{FIRE_SEEDS[j % len(FIRE_SEEDS)]}.mov"
         if not c or c.get("name") != "fire" or not clip.exists():
@@ -6757,6 +6834,28 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     joined = workdir / "joined.mkv"
     join_shots(seg_paths, durations, cuts, workdir, joined)
     total = sum(durations)
+    # No held frames, ever: a shot that ran out of picture is cut again, then joined the slow, safe way.
+    bounds = [sum(durations[:i + 1]) for i in range(len(durations))]
+    min_run = 12 if JOB.get("slowmo_asked") else 5  # slow motion the user asked for may show a frame up to ~4 times
+    held = held_at_cuts(frozen_runs(joined, min_run), bounds)
+    stills: list[tuple[float, float]] = []
+    if held:  # only then: is it the footage itself?
+        stills = footage_stills(plan, clips, [sum(durations[:i]) for i in range(len(durations))])
+        held = held_at_cuts(held, bounds, stills)
+    for attempt in range(2):
+        if not held:
+            break
+        redo = sorted({min(range(len(bounds)), key=lambda i: abs(bounds[i] - b)) for _a, b in held})
+        print(f"WARNING held frames {held} (attempt {attempt + 1}): cutting shots {redo} again")
+        for i in redo:
+            cut(i)
+        if attempt == 1 and not any(cuts):
+            join_shots_reencoded(seg_paths, durations, workdir, joined)  # second try: the safe join
+        else:
+            join_shots(seg_paths, durations, cuts, workdir, joined)
+        held = held_at_cuts(frozen_runs(joined, min_run), bounds, stills)
+    if held:
+        print(f"WARNING held frames remain after the retries: {held}")
 
     use_inspo_audio = music == "inspo" and probe(inspo_path)["has_audio"]
     use_own_audio = music == "upload" and own_audio.exists() and own_audio.stat().st_size > 0
@@ -6955,12 +7054,28 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         raise JobError("making this video took too long. please try again.")
     if result.returncode != 0:
         raise RuntimeError(f"final encode failed: {result.stderr[-800:]}")
-    # Watch for frozen picture (there should never be any): logged so it can be fixed at the source.
-    frozen = subprocess.run(["ffmpeg", "-v", "info", "-i", out.name, "-map", "0:v", "-vf",
-                             "freezedetect=n=0.0005:d=0.4", "-f", "null", "-"], cwd=workdir, capture_output=True, text=True)
-    spans = [ln.split("] ")[-1] for ln in frozen.stderr.splitlines() if "freeze_start" in ln or "freeze_duration" in ln]
-    if spans:
-        print(f"WARNING frozen picture in the finished video: {spans[:10]}")
+    # The finished video is checked the same way: held frames it has that the joined video doesn't
+    # come from the final encode, which is made again (up to twice).
+    final_held = held_at_cuts(frozen_runs(out, min_run), bounds)
+    if final_held and not stills:
+        stills = footage_stills(plan, clips, [sum(durations[:i]) for i in range(len(durations))])
+    known = {round(b, 1) for _a, b in held_at_cuts(frozen_runs(joined, min_run), bounds, stills)} if final_held else set()
+    for attempt in range(2 if final_held else 0):
+        new_held = [r for r in held_at_cuts(frozen_runs(out, min_run), bounds, stills) if round(r[1], 1) not in known]
+        if not new_held:
+            break
+        print(f"WARNING held frames in the finished video {new_held}: making it again (attempt {attempt + 1})")
+        try:
+            again = final_encode(pictures, ass, limit)
+        except subprocess.TimeoutExpired:
+            break
+        if again.returncode != 0:
+            raise RuntimeError(f"final encode failed: {again.stderr[-800:]}")
+    else:
+        left = ([r for r in held_at_cuts(frozen_runs(out, min_run), bounds, stills) if round(r[1], 1) not in known]
+                if final_held else [])
+        if left:
+            print(f"WARNING held frames remain in the finished video: {left}")
 
     # ---- finishing
     report("finishing", 92)
