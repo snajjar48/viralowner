@@ -4,6 +4,7 @@ import { JsonLd, ORGANIZATION } from "@/components/structured-data";
 import { ShowcaseSection } from "@/components/showcase";
 import { featuredVideos } from "@/content/showcase";
 import Link from "next/link";
+import { PRICING_PAGE_PUBLIC } from "@/lib/plan-format";
 import { TrendIcon, WandIcon } from "@/components/icons";
 import { FEATURES, HOME_FAQ, HOW_IT_WORKS, WHO } from "@/components/marketing-copy";
 import { Faq, FeatureGrid, HeroVisual, JoinCta, JoinSection, MarketingShell, Section, Steps } from "@/components/marketing";
@@ -89,20 +90,22 @@ export default function Home() {
         </p>
       </Section>
 
-      <Section eyebrow="pricing" title="your first video is free.">
-        <div className="flex flex-col items-start gap-4 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-8">
-          <p className="max-w-xl text-pretty text-muted">
-            make one video, ask for a change, download it. then pick a monthly plan if you want more, with up to 30
-            videos a month and 3 changes on each.
-          </p>
-          <Link
-            href="/pricing"
-            className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full border border-white/15 px-5 text-sm font-medium transition hover:bg-white/10"
-          >
-            see pricing <span aria-hidden="true">→</span>
-          </Link>
-        </div>
-      </Section>
+      {PRICING_PAGE_PUBLIC && (
+        <Section eyebrow="pricing" title="your first video is free.">
+          <div className="flex flex-col items-start gap-4 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-8">
+            <p className="max-w-xl text-pretty text-muted">
+              make one video, ask for a change, download it. then pick a monthly plan if you want more, with up to 30
+              videos a month and 3 changes on each.
+            </p>
+            <Link
+              href="/pricing"
+              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full border border-white/15 px-5 text-sm font-medium transition hover:bg-white/10"
+            >
+              see pricing <span aria-hidden="true">→</span>
+            </Link>
+          </div>
+        </Section>
+      )}
 
       <Section eyebrow="questions" title="good questions.">
         <div className="max-w-3xl">

@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
+import { PRICING_PAGE_PUBLIC } from "@/lib/plan-format";
 
 const LINKS = [
   { href: "/what-is-viralowner", label: "how it works" },
   { href: "/why-viralowner", label: "why us" },
-  { href: "/pricing", label: "pricing" },
+  ...(PRICING_PAGE_PUBLIC ? [{ href: "/pricing", label: "pricing" }] : []),
 ];
 
 /** The public site's links and main button (a menu on phones). */

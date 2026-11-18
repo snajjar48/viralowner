@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { BackgroundGlow } from "./auth-layout";
 import { SHOWCASE } from "@/content/showcase";
+import { PRICING_PAGE_PUBLIC } from "@/lib/plan-format";
 import { MarketingNav } from "./marketing-nav";
 import { JsonLd } from "./structured-data";
 import { WaitlistForm } from "./waitlist-form";
@@ -65,9 +66,11 @@ function Footer({ minimal }: { minimal: boolean }) {
             <Link href="/why-viralowner" className="text-muted hover:text-foreground">
               why viralowner
             </Link>
-            <Link href="/pricing" className="text-muted hover:text-foreground">
-              pricing
-            </Link>
+            {PRICING_PAGE_PUBLIC && (
+              <Link href="/pricing" className="text-muted hover:text-foreground">
+                pricing
+              </Link>
+            )}
             {SHOWCASE.length > 0 && (
               <Link href="/made-with-viralowner" className="text-muted hover:text-foreground">
                 made with viralowner

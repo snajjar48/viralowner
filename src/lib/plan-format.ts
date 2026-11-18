@@ -78,3 +78,6 @@ export function chargeSummary(plan: Plan) {
   const every = plan.interval === "monthly" ? "month" : "year";
   return `you’ll be charged ${price} today, then ${price} every ${every} until you cancel. cancel anytime from your dashboard.`;
 }
+
+/** The public pricing page (/pricing) and the links to it. Off for now: the page sends visitors home. */
+export const PRICING_PAGE_PUBLIC = false;

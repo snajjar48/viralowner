@@ -3,7 +3,8 @@ import { pageMetadata } from "@/lib/seo";
 import { breadcrumbs, JsonLd } from "@/components/structured-data";
 import { Fragment, Suspense } from "react";
 import { Faq, JoinSection, MAIN_CTA, MarketingShell, Section } from "@/components/marketing";
-import { CHANGES_PER_VIDEO, VIDEO_LIMITS } from "@/lib/plan-format";
+import { CHANGES_PER_VIDEO, PRICING_PAGE_PUBLIC, VIDEO_LIMITS } from "@/lib/plan-format";
+import { redirect } from "next/navigation";
 import { getPlans } from "@/lib/plans";
 import { PricingTable } from "./pricing-table";
 
@@ -36,6 +37,7 @@ const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: b
 ];
 
 export default function PricingPage() {
+  if (!PRICING_PAGE_PUBLIC) redirect("/");
   return (
     <MarketingShell>
       <JsonLd data={breadcrumbs("pricing", "/pricing")} />
