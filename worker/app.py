@@ -36,8 +36,8 @@ APP_NAME = "viralowner-worker"
 CLAUDE_MODEL = "claude-opus-5-5"
 # USD per million tokens, for the cost log.
 MODEL_PRICES = {
-    "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20},
-    "claude-fable-5-2": {"input": 8.00, "output": 40.00, "cache_write": 10.00, "cache_read": 0.20},
+    "claude-opus-5-5": {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_write_1h": 8.00, "cache_read": 0.20},
+    "claude-fable-5-2": {"input": 8.00, "output": 40.00, "cache_write": 10.00, "cache_write_1h": 16.00, "cache_read": 0.20},
 }
 PRICES = MODEL_PRICES[CLAUDE_MODEL]
 # Models a comparison test (scripts/compare-models.py, through render_upload only) may pick; real jobs
@@ -1246,6 +1246,7 @@ def start_job(req: dict | None = None) -> None:
     JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
+    JOB["asks_effects"] = True  # whether the request could touch the effects (understand_asks)
     JOB["calls"] = []  # every AI call in this job: which step, tokens, cost (for the cost log)
     JOB["model"] = CLAUDE_MODEL
     JOB["floor"] = 0
@@ -1262,11 +1263,12 @@ def job_heads_up() -> list[str]:
     return list(JOB["heads_up"])
 
 
-def cache_last(content: list[dict]) -> None:
-    """Marks the end of the part of a request that repeats from call to call, so it's cached (5 minutes,
-    renewed each time it's read)."""
+def cache_last(content: list[dict], hour: bool = False) -> None:
+    """Marks the end of the part of a request that repeats from call to call, so it's cached: 5 minutes,
+    or an hour with `hour` (the user's clip pictures: people come back with a change well after 5
+    minutes, and a cache write costs 2x for an hour but each reread a tenth). Renewed each time it's read."""
     if content:
-        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
+        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral", **({"ttl": "1h"} if hour else {})}}
 
 
 def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
@@ -1289,8 +1291,10 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         max_tokens=64000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # if a safety check declines, another model finishes the request
-        # The instructions and playbook are the same call after call: cached, so they're read once.
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        # The instructions and playbook are the same call after call: cached, so they're read once. (When
+        # the request caches its clips for an hour, the instructions in front of them must be too.)
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral", **({"ttl": "1h"} if any(
+            (c.get("cache_control") or {}).get("ttl") == "1h" for c in content if isinstance(c, dict)) else {})}}],
         messages=[{"role": "user", "content": content}],
         output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     ) as stream:
@@ -1302,10 +1306,13 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
     text = next(b.text for b in response.content if b.type == "text")
 
     u = response.usage
+    created = getattr(u, "cache_creation", None)
+    hour_written = (getattr(created, "ephemeral_1h_input_tokens", 0) or 0) if created else 0
     usage = {
         "input": u.input_tokens,
         "output": u.output_tokens,
-        "cache_write": getattr(u, "cache_creation_input_tokens", 0) or 0,
+        "cache_write": (getattr(u, "cache_creation_input_tokens", 0) or 0) - hour_written,
+        "cache_write_1h": hour_written,
         "cache_read": getattr(u, "cache_read_input_tokens", 0) or 0,
     }
     cost = sum(usage[k] * MODEL_PRICES.get(JOB.get("model") or CLAUDE_MODEL, PRICES)[k] for k in usage) / 1_000_000
@@ -5662,9 +5669,9 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
-    # Everything above is the same on a fix pass and on a quick change request: cached, so those calls
-    # reread the clip pictures for a tenth of the price. What's said comes after (speech can come back
-    # a little different each time it's heard, and would break the cache).
+    # Everything above is the same on a fix pass and on the user's change requests: cached (5 minutes;
+    # cache_last can make it an hour), so those calls reread the clip pictures for a tenth of the price. What's said comes after (speech can
+    # come back a little different each time it's heard, and would break the cache).
     cache_last(content)
     for ci, c in enumerate(clips):
         said = describe_speech(c.get("speech") or [], words_ok)
@@ -6886,6 +6893,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     effects = given or effects_from(inspo_style, n, jump)
     effects_note = ""
     words = request or ("" if given else effects_guide)
+    if request and given and JOB.get("asks_effects") is False:
+        # A change that's clearly about something else (text, order, length...): the effects stay as they are.
+        print("effects kept: the request isn't about them")
+        words = ""
     if words.strip():  # Claude reads every request; it changes nothing when none of it is about effects
         report("analyzing", 6)
         try:
@@ -7893,8 +7904,14 @@ ASKS_SYSTEM = """You read what a user asked a video editing app to do with their
 
 ASKS_SCHEMA = {
     "type": "object",
-    "properties": {"asks": {"type": "array", "items": {"type": "string"}, "description": "every separate ask, one line each."}},
-    "required": ["asks"],
+    "properties": {"asks": {"type": "array", "items": {"type": "string"}, "description": "every separate ask, one line each."},
+                   "about_effects": {"type": "boolean", "description": (
+                       "true if anything asked could touch the edit's effects: transitions, the style of the cuts, "
+                       "motion, zooms, shake, speed, slow motion, effects, looks, filters, color, sound effects, "
+                       "sounds, energy, pacing, the vibe or feel, or the edit's style. true if unsure. false only "
+                       "when every ask is clearly about something else (text, captions, order, which shots, "
+                       "length, trims, the post).")}},
+    "required": ["asks", "about_effects"],
     "additionalProperties": False,
 }
 
@@ -7918,7 +7935,8 @@ def understand_asks(req: dict) -> list[str]:
         print(f"asks skipped: {type(e).__name__}: {e}")
         return []
     asks = [str(a).strip()[:300] for a in result["data"].get("asks") or [] if str(a).strip()][:20]
-    print(f"asks (${result['cost_usd']}): {asks}")
+    JOB["asks_effects"] = result["data"].get("about_effects") is not False
+    print(f"asks (${result['cost_usd']}): {asks}, about effects: {JOB['asks_effects']}")
     return asks
 
 
@@ -7947,6 +7965,11 @@ def text_set_by_user(req: dict) -> bool:
     return isinstance(carry.get("textItems"), list) and carry.get("textItemsByUser") is True
 
 
+# The AI steps that edit the video. A version made without any (the user's own edits page changes: trims,
+# text, timing) is exactly what they set, so it isn't reviewed.
+EDITING_STEPS = {"direct_edit", "revise_plan", "match_clips", "plan_effects", "revise_text_items", "select_lines"}
+
+
 def made_with_review(req: dict, make) -> dict:
     """Makes the version, watches it, and if it clearly misses what was asked, makes it once more with
     the fix (same file), before the user ever sees it. `make(req, workdir)` makes one version."""
@@ -7955,8 +7978,12 @@ def made_with_review(req: dict, make) -> dict:
     req["_asks"] = asks
     with tempfile.TemporaryDirectory() as tmp:
         install_emoji_kit(req, Path(tmp))
+        before = len(JOB.get("calls") or [])
         out = make(req, Path(tmp))
         if req.get("storyboard") or req.get("review") is False:
+            return out
+        if not any(c["step"] in EDITING_STEPS for c in (JOB.get("calls") or [])[before:]):
+            print("review skipped: no AI edits in this version (the user's own changes)")
             return out
         try:
             verdict = review_video(req, out, Path(tmp) / "final.mp4", Path(tmp))
@@ -7981,6 +8008,7 @@ def made_with_review(req: dict, make) -> dict:
             "carry": carry, "writePost": False,
             "editorText": text_set_by_user(req)}
     JOB["floor"] = 95
+    JOB["asks_effects"] = True  # the fix can be about anything
     warm_speech()
     try:
         with tempfile.TemporaryDirectory() as tmp2:
