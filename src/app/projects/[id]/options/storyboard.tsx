@@ -75,7 +75,7 @@ export function Storyboard({
       <div className="flex flex-col gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-4" aria-live="polite">
         <p className="text-sm font-medium">planning your video…</p>
         <ProgressBar value={state.progress} label="planning" />
-        <p className="text-xs text-muted">picking the best moment for each shot and placing your text. about a minute.</p>
+        <p className="text-xs text-muted">picking the best moment for each shot and placing your text. this could take up to 5 minutes.</p>
       </div>
     );
   }

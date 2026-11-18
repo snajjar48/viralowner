@@ -124,7 +124,7 @@ export function StatusTracker({
     <div className="flex flex-col gap-6">
       <PageTitle
         title={state.version > 1 ? `making version ${state.version}...` : "making your video..."}
-        subtitle="this usually takes less than a minute."
+        subtitle="this could take up to 5 minutes."
       />
       <div className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
         <ProgressBar value={state.status === "queued" ? 0 : state.progress} label={state.status === "queued" ? "waiting to start" : "progress"} />

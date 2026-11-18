@@ -132,7 +132,7 @@ export default function WhatIsPage() {
             items={[
               {
                 q: "how long does a video take?",
-                a: "the free preview takes about a minute. the finished video usually takes a few minutes, and we email you when it’s ready.",
+                a: "the free preview and the finished video can each take up to 5 minutes, and we email you when your video’s ready.",
               },
               {
                 q: "what’s a “change”?",
