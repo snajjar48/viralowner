@@ -8,6 +8,9 @@ import { ArrowRightIcon } from "@/components/icons";
 import { PasswordInput } from "@/components/password-input";
 import { safeNextPath } from "@/lib/safe-next";
 
+// Sign-up is hidden until launch (see src/proxy.ts), so new people go to the waitlist.
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
+
 const LINK_ERROR = "That confirmation link is invalid or has expired. Try logging in.";
 
 export function LoginForm() {
@@ -93,10 +96,10 @@ export function LoginForm() {
         <span className="h-px flex-1 bg-white/10" />
       </div>
       <Link
-        href="/signup"
+        href={SIGNUPS_OPEN ? "/signup" : "/"}
         className="flex h-12 items-center justify-center rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:border-white/30 hover:bg-white/10"
       >
-        Create an account
+        {SIGNUPS_OPEN ? "Create an account" : "Join the waitlist"}
       </Link>
     </form>
   );

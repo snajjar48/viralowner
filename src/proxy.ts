@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, isValidAccessToken } from "@/lib/site-access";
 import { updateSession } from "@/lib/supabase/proxy";
 
-// The only paths anyone can reach without the password.
+// Pages anyone can reach with no sign-in or session work at all (the marketing pages, the
+// legal pages, and the servers that call in: Stripe, the worker and Vercel's cron).
 const PUBLIC_PATHS = new Set([
   "/", // home page
   "/home", // the logo: dashboard when signed in, home page otherwise
@@ -12,6 +13,7 @@ const PUBLIC_PATHS = new Set([
   "/start", // public: landing page for ads
   "/made-with-viralowner", // public: videos made with viralowner
   "/terms",
+  "/privacy",
   "/robots.txt",
   "/sitemap.xml",
   "/apple-icon", // the site's phone icon
@@ -29,7 +31,12 @@ const PUBLIC_PATHS = new Set([
   "/icon.svg",
 ]);
 
-// Pages that also need a signed-in account (on top of the site password).
+// Sign-up stays behind the site password (SITE_PASSWORD, entered on /unlock) until it opens
+// with NEXT_PUBLIC_SIGNUPS_OPEN=true. Everything else is open, and each API route checks sign-in itself.
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
+const PASSWORD_PATHS = SIGNUPS_OPEN ? [] : ["/signup", "/api/auth/signup"];
+
+// Pages that need a signed-in account.
 const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/scratch", "/projects", "/plans", "/business", "/profile", "/admin", "/reset-password"];
 
 function needsAccount(pathname: string) {
@@ -68,19 +75,17 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (isValidAccessToken(request.cookies.get(ACCESS_COOKIE)?.value)) {
-    const response = await updateSession(request, needsAccount(pathname));
-    response.headers.set("X-Robots-Tag", "noindex, nofollow");
-    return response;
+  if (PASSWORD_PATHS.includes(pathname) && !isValidAccessToken(request.cookies.get(ACCESS_COOKIE)?.value)) {
+    if (pathname.startsWith("/api/")) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const unlockUrl = new URL("/unlock", request.url);
+    unlockUrl.searchParams.set("next", pathname + search);
+    return NextResponse.redirect(unlockUrl);
   }
 
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const unlockUrl = new URL("/unlock", request.url);
-  unlockUrl.searchParams.set("next", pathname + search);
-  return NextResponse.redirect(unlockUrl);
+  // Account pages, sign-in pages and the app: not for search engines.
+  const response = await updateSession(request, needsAccount(pathname));
+  response.headers.set("X-Robots-Tag", "noindex, nofollow");
+  return response;
 }
 
 export const config = {
