@@ -23,6 +23,7 @@ import hmac
 import json
 import os
 import subprocess
+import sys
 import re
 import shutil
 import tempfile
@@ -638,7 +639,9 @@ speech_image = (
 )
 
 
-@app.cls(image=speech_image, gpu=["L4", "A10G", "T4"], timeout=600, scaledown_window=240)
+# Idle GPUs are billed: a minute of idle, not four. Each step that's about to need speech boots or keeps
+# one warm ahead of time (warm_speech), so nothing waits on a cold start.
+@app.cls(image=speech_image, gpu=["L4", "A10G", "T4"], timeout=600, scaledown_window=60)
 @modal.concurrent(max_inputs=4)
 class Speech:
     @modal.enter()
@@ -1243,6 +1246,7 @@ def start_job(req: dict | None = None) -> None:
     JOB["lessons"] = lessons.strip()[:6000] if isinstance(lessons, str) else ""
     JOB["heads_up"] = []
     JOB["slowmo_asked"] = False
+    JOB["calls"] = []  # every AI call in this job: which step, tokens, cost (for the cost log)
     JOB["model"] = CLAUDE_MODEL
     JOB["floor"] = 0
     JOB["t0"] = time.time()
@@ -1256,6 +1260,13 @@ def start_job(req: dict | None = None) -> None:
 
 def job_heads_up() -> list[str]:
     return list(JOB["heads_up"])
+
+
+def cache_last(content: list[dict]) -> None:
+    """Marks the end of the part of a request that repeats from call to call, so it's cached (5 minutes,
+    renewed each time it's read)."""
+    if content:
+        content[-1] = {**content[-1], "cache_control": {"type": "ephemeral"}}
 
 
 def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
@@ -1300,6 +1311,10 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
     cost = sum(usage[k] * MODEL_PRICES.get(JOB.get("model") or CLAUDE_MODEL, PRICES)[k] for k in usage) / 1_000_000
     print(f"claude [{refusal_message[:40]}] effort={effort}: {time.time() - asked:.1f}s, "
           f"in={usage['input']} out={usage['output']} cache_read={usage['cache_read']}")
+    JOB.setdefault("calls", []).append({
+        "step": sys._getframe(1).f_code.co_name, "effort": effort, "seconds": round(time.time() - asked, 1),
+        "images": sum(1 for c in content if isinstance(c, dict) and c.get("type") == "image"),
+        **usage, "cost": round(cost, 4)})
     data = json.loads(text)
     if editing:
         h = data.get("heads_up") if isinstance(data, dict) else None
@@ -4165,6 +4180,46 @@ def asks_text_timed(text: str) -> bool:
     return any(_TEXT_WORD.search(sn) and _TIMED.search(sn) for sn in re.split(r"[.!?;\n]+", (text or "").lower()))
 
 
+_NO_EFFECTS = re.compile(r"\b(remove|no|without|drop|get rid of|take out|turn off|lose|ditch)\s+(?:all\s+|any\s+|the\s+)?"
+                         r"(?:of\s+the\s+)?(?:[a-z]+\s+(?:or|and)\s+)?(?:sound\s+)?(?:effects|sfx)\b")
+
+
+def asks_no_effects(text: str) -> bool:
+    """Whether these words ask for every effect gone ("remove any zooms or effects", "no effects"): the
+    added sound effects go with them. "remove the zoom effects" names one effect, so it doesn't count."""
+    return bool(_NO_EFFECTS.search((text or "").lower()))
+
+
+def closing_joins_main(texts: list[str]) -> list[str]:
+    """Text kept on the whole video, with a different line added on some shots (a closing call to
+    action): the main text stays and the new line goes under it, instead of replacing it. The main text
+    is the first shot's, repeated on most of the shots."""
+    main = (texts[0] if texts else "").strip()
+    shown = [t.strip() for t in texts if (t or "").strip()]
+    if not main or sum(1 for t in shown if t == main) < max(2, len(shown) / 2):
+        return texts
+    out = list(texts)
+    for i, t in enumerate(texts):
+        t = (t or "").strip()
+        if t and t != main and main.lower() not in t.lower() and len((main + "\n" + t).split("\n")) <= 4:
+            out[i] = main + "\n" + t
+    return out
+
+
+def unstack_sequential_text(items: list[dict]) -> list[dict]:
+    """Free-timed text that comes one after another but overlaps for a moment (the next line pops up
+    while the last is still leaving): the earlier one ends as the next starts, so they never sit on top
+    of each other. Text meant to stack (both up together for a while) keeps its timing."""
+    for a in items:
+        for b in items:
+            if b is a or b["start"] <= a["start"] + 0.3:
+                continue
+            overlap = a["end"] - b["start"]
+            if 0 < overlap <= 0.5 and b["end"] > a["end"]:
+                a["end"] = round(b["start"], 2)
+    return items
+
+
 def fill_text_gaps(spans: list, total: float, get, set_):
     """Stretches timed text so something is on screen from 0 to `total` with no gaps: the first text
     starts at 0, each text that ends in a gap runs on until the next one starts, the last runs to the
@@ -5027,15 +5082,24 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
                 text_items: list[dict] | None = None) -> dict:
     cap = scaled(CAPTION_LOOKS.get(caption_style or "bold-pop", CAPTION_LOOKS["bold-pop"]), layout["captionScale"])
     cap_default = caption_center(cap)
-    content: list[dict] = [{"type": "text", "text": (
-        f"the user's request: {json.dumps(request, ensure_ascii=False)}\n"
+    # The user's clips first: the same on a fix pass and on a quick change request, so they're cached and
+    # reread for a tenth of the price. The request and the current version come after.
+    content: list[dict] = [{"type": "text", "text": f"the user's {len(clips)} clips:"}]
+    for ci, c in enumerate(clips):
+        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
+        for t, p in c["frames"]:
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+    cache_last(content)
+    content.append({"type": "text", "text": (
+        f"\nthe user's request: {json.dumps(request, ensure_ascii=False)}\n"
         + (f"what the user told us about their video: {json.dumps(notes, ensure_ascii=False)}\n" if notes else "")
         + f"\nthe current version ({len(shots)} shots). on-screen text: {style_summary(style)}, size {layout['textScale']:.2f}; "
         + (f"captions on ('{caption_style}'), size {layout['captionScale']:.2f}." if caption_style else "captions off.")
         + f"\npost caption: {json.dumps(post.get('caption', ''), ensure_ascii=False)}\nhashtags: {' '.join(post.get('hashtags', []))}"
         + (f"\nthe captions now say: {json.dumps(caption_text, ensure_ascii=False)}" if caption_style and caption_text else "")
         + (f"\ncaption fixes already in effect: {json.dumps(caption_fixes, ensure_ascii=False)}" if caption_fixes else "")
-    )}]
+    )})
     for i, s in enumerate(shots):
         c = current[i]
         lay = lays[i]
@@ -5050,12 +5114,6 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
         )})
         if frames[i]:
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(frames[i])}})
-    content.append({"type": "text", "text": f"\nthe user's {len(clips)} clips:"})
-    for ci, c in enumerate(clips):
-        content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
-        for t, p in c["frames"]:
-            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
     ask = ["make the requested change and return the whole updated plan."]
     if one_take:
         ask.append("this video is the user's one take with the pauses cut out: each shot is one cut of the take. keep "
@@ -5604,6 +5662,11 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
         for t, p in c["frames"]:
             content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
+    # Everything above is the same on a fix pass and on a quick change request: cached, so those calls
+    # reread the clip pictures for a tenth of the price. What's said comes after (speech can come back
+    # a little different each time it's heard, and would break the cache).
+    cache_last(content)
+    for ci, c in enumerate(clips):
         said = describe_speech(c.get("speech") or [], words_ok)
         content.append({"type": "text", "text": f"said in clip {ci + 1}:\n{said}" if said else f"nothing is said in clip {ci + 1}."})
 
@@ -6168,7 +6231,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         # The prompt (and any change request) can say how the captions should look and read.
         "captionInstructions": "\n".join(x for x in (prompt, request) if x)[:1500],
         "preferences": prefs,
-        "writePost": bool(req.get("writePost")) or not (base and request),
+        # A new caption only on the first version or when asked (repost): edits keep the one the user has.
+        "writePost": bool(req.get("writePost")) or not base,
         # Text the user set in the editor themselves (the text below may also be ours, rewritten for a request).
         "editorText": text_set_by_user(req),
     }
@@ -6829,6 +6893,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             cost += effects_cost
         except Exception as e:  # noqa: BLE001
             print(f"effects planning failed: {type(e).__name__}: {e}")
+    if asks_no_effects("\n".join((request, notes))) and effects.get("sfx"):
+        effects = {**effects, "sfx": []}  # "remove any effects": the sound effects too
+        print("no effects asked: sound effects removed")
 
     # Inspo timing is kept exactly only when the inspo's own audio plays (the shots must line up with it).
     keep_timing = music == "inspo"
@@ -7192,11 +7259,18 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 layout["captionScale"] = rules["scale"]
 
     report("editing", 80)
+    warm_speech()  # the review hears the finished video in a minute or two
     faces: list = [[] for _ in plan]
     if any(t.strip() for t in plan_texts) or words:
         with ThreadPoolExecutor(6) as pool:
             faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), plan))
     shown_captions = caption_style if words else None
+    _asked = "\n".join(x for x in (request, notes, str(req.get("captionInstructions") or "")) if x)
+    if asks_text_whole_video(_asked) and not carry.get("textItems"):
+        joined_texts = closing_joins_main(plan_texts)
+        if joined_texts != plan_texts:
+            print(f"closing text joins the whole-video text: {[t for t in joined_texts if t]}")
+            plan_texts = joined_texts
     lays, cap_ys = place_text(plan, plan_texts, layout, style, inspo_text["align"], spots, position,
                               shown_captions, faces, keep_lines)
     starts = [sum(durations[:i]) for i in range(len(durations))]
@@ -7217,6 +7291,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
     user_timed = text_set_by_user(req)
+    if text_items and not user_timed:
+        text_items = unstack_sequential_text(text_items)
     if text_items and not user_timed:
         # Text that ran to the end of the video still does when shots got longer (text the user timed
         # in the editor keeps their timing).
@@ -7905,6 +7981,7 @@ def made_with_review(req: dict, make) -> dict:
             "carry": carry, "writePost": False,
             "editorText": text_set_by_user(req)}
     JOB["floor"] = 95
+    warm_speech()
     try:
         with tempfile.TemporaryDirectory() as tmp2:
             install_emoji_kit(req, Path(tmp2))
