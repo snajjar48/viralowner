@@ -2231,7 +2231,7 @@ def _safe(fn, *args):
 #   finishing  uploads the video to storage
 
 OUT_W, OUT_H, OUT_FPS = 1080, 1920, 30
-MATCH_FRAME_WIDTH = 384
+MATCH_FRAME_WIDTH = 448  # sharp enough to judge focus, faces, labels and small text
 MAX_CLIP_FRAMES = 96  # frames of the user's clips sent to Claude (at least)
 MIN_FRAMES_PER_CLIP = 6  # ...and more with many clips, so each clip is still seen well (up to 40 clips)
 MAX_CLIP_FRAMES_CAP = 240
@@ -2458,7 +2458,8 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
         *(["this is a fresh take: make different choices from the most obvious ones where it still works."] if fresh else []),
     ]
     content.append({"type": "text", "text": "\n".join(ask)})
-    return ask_claude(with_playbook(MATCH_SYSTEM, True), content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.")
+    return ask_claude(with_playbook(MATCH_SYSTEM, True), content, MATCH_SCHEMA, "we couldn’t make a video from these clips. try different ones.",
+                      effort="xhigh")
 
 
 def unused_start(used: list[tuple[float, float]], clip_len: float, length: float, want: float,
@@ -4193,7 +4194,7 @@ def revise_text_items(request: str, items: list[dict], total: float) -> tuple[li
         f"text now:\n{listing}\n\nif the request asks to change the on-screen text, make exactly that change. if it "
         "doesn't (it's about the shots, sound, captions or anything else), set text_items_changed to false.")}]
     result = ask_claude(TEXT_ITEMS_SYSTEM, content, TEXT_ITEMS_SCHEMA, "we couldn’t make that change. try wording it differently.",
-                        effort="high")
+                        effort="xhigh")
     data = result["data"]
     if data.get("text_items_changed") and isinstance(data.get("text_items"), list):
         return merge_text_item_changes(items, data["text_items"]), result["cost_usd"]
@@ -4762,7 +4763,7 @@ def select_lines(inspo: dict, lines: list[dict], groups: list[list[int]], text_m
         TEXT_RULES["adapt"] if text_mode == "adapt" else "on-screen text: set already. return an empty string for every inspo shot.",
     ])
     return ask_claude(with_playbook(JUMPCUT_SYSTEM, True), [{"type": "text", "text": text}], JUMPCUT_SCHEMA,
-                      "we couldn’t edit that take. try filming it again.")
+                      "we couldn’t edit that take. try filming it again.", effort="xhigh")
 
 
 def final_lines(lines: list[dict], groups: list[list[int]], keep_ids: list[int]) -> list[dict]:
@@ -5566,7 +5567,7 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
     # (xhigh spent 3-5 minutes thinking on each change).
     return ask_claude(with_playbook(DIRECTOR_SYSTEM, False), content, DIRECTOR_SCHEMA,
                       "we couldn’t make a video from that. try different clips or a different prompt.",
-                      effort="high" if (previous and request) else "xhigh")
+                      effort="xhigh")
 
 
 def clean_director(data: dict, clips: list[dict], max_s: float, text_mode: str, talking: set[int] | None = None) -> dict:
@@ -7592,7 +7593,8 @@ When you're given every separate ask as a numbered list, go through each one aga
 Find only clear misses:
 - something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed (slow motion or none), an effect or transition they asked for or asked to remove, the sound they asked for, captions on or off, cutting on the beat, the length. Use "how it's edited" for what frames can't show;
 - obvious defects: on-screen text cut off by the edge of the frame, text covering a face or the product, text that can't be read, a black or blank frame, the same footage twice in a row, text or captions with typos or words the user didn't write.
-Don't flag taste, small timing differences, or things the clips can't do (if they asked for a pour and no clip shows one, that isn't a miss). If the video does what was asked, say so and list nothing.
+- clear craft problems a top short-form editor would fix before posting, and only when the clips allow a better choice: a dull, blurry, dark or shaky first frame when a stronger moment exists; a cut that chops off an action or a reaction right before it pays off; a shot that's clearly out of focus or shaking when a steadier take of the same thing exists; ending on a weak or random frame instead of the payoff.
+Never flag what the footage or the chosen sound can't do: the editor's note says when the clips don't have something (no pour, no face, no bottle) and that's final, not a miss. The app never adds music on its own: with the clips' own sound, "cut to the beat" means cutting with the rhythm of what's heard, never adding a song. Don't flag taste, small timing differences, or things the clips can't do (if they asked for a pour and no clip shows one, that isn't a miss). If the video does what was asked, say so and list nothing.
 
 When there are misses, write `fix` as one change request to the editor in plain words, naming exactly what to change ("keep 'the perfect 🇵🇸 combination' on screen from the first frame to the last", "end on the bottle shot", "move the text up so it doesn't cover the face"), and nothing else."""
 
@@ -7651,7 +7653,8 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
              "upload": "the user's own audio file", "none": "no sound"}.get(music, music)
     facts = [f"sound: {sound}", f"captions: {'on' if (options.get('captions') or {}).get('enabled') else 'off'}",
              f"shots: {len(shots_out)}", f"speeds: {eff.get('speeds') or 'all normal'}",
-             f"transitions: {eff.get('transitions') or 'hard cuts'}", f"motions: {eff.get('motions') or 'none'}"]
+             f"transitions: {eff.get('transitions') or 'hard cuts'}", f"motions: {eff.get('motions') or 'none'}",
+             "sound effects: " + (", ".join(str(e.get("name")) for e in eff.get("sfx") or [] if isinstance(e, dict)) or "none")]
     if starts_out:
         facts.append("cuts at: " + ", ".join(map(str, starts_out[:-1])) + "s")
     elif lengths:
@@ -7659,17 +7662,18 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
     if facts_in.get("beats"):
         facts.append(f"the song's beats: {facts_in['beats']}")
     with ThreadPoolExecutor(8) as pool:
-        frames = list(pool.map(lambda t: grab_frame(video, t, workdir / f"review{int(t * 100):05d}.jpg", 360), times))
+        frames = list(pool.map(lambda t: grab_frame(video, t, workdir / f"review{int(t * 100):05d}.jpg", 448), times))
     content: list[dict] = [{"type": "text", "text": (
         "what the user asked for:\n" + ("\n".join(f"- {k}: {v}" for k, v in asks) or "- nothing specific")
         + f"\n\nthe video is {duration:.1f}s. how it's edited: " + "; ".join(facts)
         + "\non-screen text the editor planned:\n" + ("\n".join(texts) or "none")
+        + (f"\nthe editor's note about this version: {plan.get('note')}" if plan.get("note") else "")
         + "\n\nframes from the finished video:")}]
     for t, f in zip(times, frames):
         if f:
             content += [{"type": "text", "text": f"{t:.2f}s"},
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(f)}}]
-    result = ask_claude(REVIEW_SYSTEM, content, REVIEW_SCHEMA, "review failed", effort="high")
+    result = ask_claude(REVIEW_SYSTEM, content, REVIEW_SCHEMA, "review failed", effort="xhigh")
     data = result["data"]
     data["cost"] = result["cost_usd"]
     print(f"review (${result['cost_usd']}): ok={data.get('ok')} misses={data.get('misses')} fix={data.get('fix')!r}")
@@ -7700,7 +7704,7 @@ def understand_asks(req: dict) -> list[str]:
         return []
     try:
         result = ask_claude(ASKS_SYSTEM, [{"type": "text", "text": "\n\n".join(f"{k}:\n{v}" for k, v in parts)}],
-                            ASKS_SCHEMA, "asks failed", effort="low")
+                            ASKS_SCHEMA, "asks failed", effort="medium")
     except Exception as e:  # noqa: BLE001 - the request itself still goes to the editor as written
         print(f"asks skipped: {type(e).__name__}: {e}")
         return []
