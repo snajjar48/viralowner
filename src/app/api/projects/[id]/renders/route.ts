@@ -295,9 +295,10 @@ function withTextItems(
   items: TextItem[] | undefined,
   textSettingsChanged = false,
 ): Pick<RenderSettings, "carry"> {
-  if (items !== undefined) return { carry: { ...(carried.carry ?? {}), textItems: items } };
+  if (items !== undefined) return { carry: { ...(carried.carry ?? {}), textItems: items, textItemsByUser: true } };
   if (!textSettingsChanged || !carried.carry?.textItems) return carried;
   const rest = { ...carried.carry };
   delete rest.textItems;
+  delete rest.textItemsByUser;
   return Object.keys(rest).length ? { carry: rest } : {};
 }

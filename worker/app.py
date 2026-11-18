@@ -18,11 +18,13 @@ Try one:  modal run worker/app.py::try_analyze --path some-video.mp4
 from __future__ import annotations
 
 import base64
+import hashlib
 import hmac
 import json
 import os
 import subprocess
 import re
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -1244,6 +1246,11 @@ def start_job(req: dict | None = None) -> None:
     JOB["model"] = CLAUDE_MODEL
     JOB["floor"] = 0
     JOB["t0"] = time.time()
+    # Shots already cut in this job (a fix pass reuses the ones that didn't change).
+    old = JOB.get("shot_cache_dir")
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+    JOB["shot_cache_dir"] = tempfile.mkdtemp(prefix="shots")
     warm_speech()  # most jobs need speech; boot the GPU while the clips download
 
 
@@ -1271,7 +1278,8 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
         max_tokens=64000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",  # if a safety check declines, another model finishes the request
-        system=system,
+        # The instructions and playbook are the same call after call: cached, so they're read once.
+        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": content}],
         output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     ) as stream:
@@ -2366,6 +2374,67 @@ def grab_frame(path: Path, t: float, dest: Path, width: int) -> Path | None:
     return dest if dest.exists() and dest.stat().st_size > 0 else None
 
 
+def frame_quality(path: Path, times: list[float]) -> dict[float, dict]:
+    """How each moment of a clip looks: sharpness (detail), brightness and shake (how far the picture
+    jumps in a fifteenth of a second), measured on the real frames."""
+    import cv2
+    import numpy as np
+
+    out: dict[float, dict] = {}
+    cap = cv2.VideoCapture(str(path))
+    try:
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ok1, a = cap.read()
+            cap.set(cv2.CAP_PROP_POS_MSEC, (t + 0.067) * 1000)
+            ok2, b = cap.read()
+            if not ok1:
+                continue
+            g = cv2.cvtColor(cv2.resize(a, (360, int(360 * a.shape[0] / a.shape[1]))), cv2.COLOR_BGR2GRAY)
+            q = {"sharp": float(cv2.Laplacian(g, cv2.CV_64F).var()), "bright": float(g.mean()), "shift": 0.0}
+            if ok2:
+                h = cv2.cvtColor(cv2.resize(b, (g.shape[1], g.shape[0])), cv2.COLOR_BGR2GRAY)
+                (dx, dy), _ = cv2.phaseCorrelate(np.float32(g), np.float32(h))
+                q["shift"] = float((dx * dx + dy * dy) ** 0.5)
+            out[t] = q
+    finally:
+        cap.release()
+    return out
+
+
+def quality_note(c: dict, t: float) -> str:
+    """A short warning for a frame that looks bad (blurry, dark, blown out, shaky), else ''."""
+    q = (c.get("quality") or {}).get(t)
+    return f" ({q})" if q else ""
+
+
+def label_frame_quality(clips: list[dict]) -> None:
+    """Marks sampled frames that are clearly too dark or blown out, so the editor picks well-lit
+    moments: clip["quality"] = {seconds: "looks too dark here"}. (Sharpness and shake are left to
+    Claude, who sees the frames: measured detail mislabels smooth subjects like oil or a white bowl as
+    blurry, and a steady pan as shaky.)"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        with ThreadPoolExecutor(6) as pool:
+            measured = list(pool.map(lambda c: frame_quality(c["path"], [t for t, _ in c.get("frames") or []]), clips))
+    except Exception as e:  # noqa: BLE001 - only a hint
+        print(f"frame quality skipped: {type(e).__name__}: {e}")
+        return
+    flagged = 0
+    for c, m in zip(clips, measured):
+        c["quality"] = {}
+        for t, q in m.items():
+            if q["bright"] < 40:
+                c["quality"][t] = "looks too dark here"
+            elif q["bright"] > 235:
+                c["quality"][t] = "looks blown out here"
+            else:
+                continue
+            flagged += 1
+    print(f"frame quality: {flagged} frames too dark or blown out")
+
+
 def sample_clip_frames(clips: list[dict], workdir: Path, limit: int = MAX_CLIP_FRAMES, per_clip: int = MIN_FRAMES_PER_CLIP,
                        cap: int = MAX_CLIP_FRAMES_CAP) -> None:
     """Adds clip["frames"] = [(seconds, jpeg), ...], spread evenly, about `limit` in total (more with many
@@ -2390,6 +2459,7 @@ def sample_clip_frames(clips: list[dict], workdir: Path, limit: int = MAX_CLIP_F
     for (ci, t, _), p in zip(jobs, results):
         if p:
             clips[ci]["frames"].append((t, p))
+    label_frame_quality(clips)
 
 
 def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict], fixed: list[dict],
@@ -2422,7 +2492,7 @@ def match_clips(inspo: dict, inspo_frames: list[Path | None], clips: list[dict],
     for ci, c in enumerate(clips):
         content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
         for t, p in c["frames"]:
-            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
         said = [f"[{s['startS']:.1f}s–{s['endS']:.1f}s] {s['text']}" for s in c.get("speech") or []]
         if said:
@@ -3798,6 +3868,19 @@ def fit_lines(text: str, look: dict, avail: float, keep_lines: bool) -> tuple[li
         while len(lines) > most and size > floor:
             size = max(floor, round(size * 0.93))
             lines = wrap(size, text)
+    if keep_lines and len(lines) == 1:
+        # One long line that would have to shrink a lot to fit is split in two at the most even word
+        # break instead, so the text stays big (text already on several lines is kept as written).
+        split = []
+        for ln in lines:
+            words = ln.split()
+            if len(words) >= 4 and line_width(ln, look, size) * 0.78 > avail:
+                best = min(range(1, len(words)), key=lambda k: abs(line_width(" ".join(words[:k]), look, size)
+                                                                 - line_width(" ".join(words[k:]), look, size)))
+                split += [" ".join(words[:best]), " ".join(words[best:])]
+            else:
+                split.append(ln)
+        lines = split
     widest = max(line_width(ln, look, size) for ln in lines)
     if widest > avail:
         size = max(round(size * 0.5), int(size * avail / widest))
@@ -4971,7 +5054,7 @@ def revise_plan(request: str, notes: str, shots: list[dict], clips: list[dict], 
     for ci, c in enumerate(clips):
         content.append({"type": "text", "text": f"clip {ci + 1} ({c['duration']:.1f}s long{fps_note(c)})"})
         for t, p in c["frames"]:
-            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
     ask = ["make the requested change and return the whole updated plan."]
     if one_take:
@@ -5191,7 +5274,19 @@ def plan_effects(words: str, effects: dict, shots: list[dict]) -> tuple[dict, st
 
 
 def r2_fetch(key: str, dest: Path) -> None:
+    """Downloads `key` to `dest`. Uploads never change, so within a job each is downloaded once (a fix
+    pass reuses it); finished versions (renders/) are always fetched fresh."""
+    cache = JOB.get("shot_cache_dir")
+    keep = Path(cache, "dl-" + hashlib.sha1(key.encode()).hexdigest()) if cache and "/renders/" not in key else None
+    if keep and keep.exists():
+        shutil.copyfile(keep, dest)
+        return
     r2_client().download_file(os.environ["R2_BUCKET"], key, str(dest))
+    if keep:
+        try:
+            shutil.copyfile(dest, keep)
+        except OSError:
+            pass
 
 
 def r2_store(path: Path, key: str) -> None:
@@ -5507,7 +5602,7 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
                                                     "a different part that never overlaps another (back to back is fine)"
                                                     if c.get("multi") else "")})
         for t, p in c["frames"]:
-            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s"})
+            content.append({"type": "text", "text": f"clip {ci + 1} at {t:.1f}s{quality_note(c, t)}"})
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(p)}})
         said = describe_speech(c.get("speech") or [], words_ok)
         content.append({"type": "text", "text": f"said in clip {ci + 1}:\n{said}" if said else f"nothing is said in clip {ci + 1}."})
@@ -6075,7 +6170,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         "preferences": prefs,
         "writePost": bool(req.get("writePost")) or not (base and request),
         # Text the user set in the editor themselves (the text below may also be ours, rewritten for a request).
-        "editorText": req["editorText"] if "editorText" in req else isinstance(carry.get("textItems"), list),
+        "editorText": text_set_by_user(req),
     }
 
     def fetch_once(key: str, dest: Path) -> None:
@@ -7006,8 +7101,23 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         t_in = cuts[i - 1] if i > 0 else None
         t_out = cuts[i] if i < len(cuts) else None
         tail = t_out["d"] if t_out and t_out["xfade"] else 0.0
-        cut_shot(clips[p["clip"]], p["start"], p["take"], p["duration"], seg_paths[i], tail, motions[i], color,
-                 t_in, t_out, SPEED_RATES.get(effects["speeds"][i], 1.0), effects["shotEffects"][i])
+        args = (p["start"], p["take"], p["duration"], tail, motions[i], color, t_in, t_out,
+                SPEED_RATES.get(effects["speeds"][i], 1.0), list(effects["shotEffects"][i] or []))
+        clip = clips[p["clip"]]
+        cache = JOB.get("shot_cache_dir")
+        key = hashlib.sha1(json.dumps([str(clip.get("id") or clip["path"].name), clip["path"].stat().st_size,
+                                       *args], sort_keys=True, default=str).encode()).hexdigest() if cache else None
+        hit = Path(cache, key + ".mkv") if key else None
+        if hit and hit.exists():
+            shutil.copyfile(hit, seg_paths[i])  # the same shot as the version before: reused
+        else:
+            cut_shot(clip, p["start"], p["take"], p["duration"], seg_paths[i], tail, motions[i], color,
+                     t_in, t_out, args[8], effects["shotEffects"][i])
+            if hit:
+                try:
+                    shutil.copyfile(seg_paths[i], hit)
+                except OSError:
+                    pass
         done += 1
         report("editing", 45 + int(28 * done / len(plan)))
 
@@ -7106,13 +7216,24 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
+    user_timed = text_set_by_user(req)
+    if text_items and not user_timed:
+        # Text that ran to the end of the video still does when shots got longer (text the user timed
+        # in the editor keeps their timing).
+        last_end = max(x["end"] for x in text_items)
+        total_now = sum(durations)
+        if last_end < total_now - 0.3:
+            for x in text_items:
+                if x["end"] >= last_end - 0.35:
+                    x["end"] = round(total_now, 2)
+            print(f"text that ended the video now runs to the new end ({total_now:.2f}s)")
     # "Keep the text on the whole video": done here, every time, not left to the editing model. What
     # the user asks now always counts; their standing preferences count unless they just timed the text
     # themselves in the editor, or asked now for text at certain moments only.
     asked_now = "\n".join(x for x in (request, notes, str(req.get("captionInstructions") or "")) if x)
     whole_video_text = asks_text_whole_video(asked_now) or (
         asks_text_whole_video(prefs or "")
-        and not (req["editorText"] if "editorText" in req else isinstance(carry.get("textItems"), list))
+        and not user_timed
         and not asks_text_timed(asked_now))
     if whole_video_text and text_items:
         def _set(x, a, b):
@@ -7352,6 +7473,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             **({"removedShots": req["_removedShots"]} if req.get("_removedShots") else {}),
             "texts": plan_texts,
             **({"textItems": text_items} if text_items is not None else {}),
+            **({"textItemsByUser": True} if text_items is not None and user_timed else {}),
             # What's on screen and when, for the editor's text list.
             "textTimeline": timeline_items(base_timeline),
             # How text without a look of its own is drawn (the editor shows it that way).
@@ -7588,12 +7710,14 @@ def notify_job(url: str, payload: dict) -> None:
 
 REVIEW_SYSTEM = """You check a short-form video that ViralOwner (an app that edits people's own clips into TikToks and Reels) just made, before the user sees it, the way a careful editor watches their cut before sending it. You get everything the user asked for (their description of the video or their change request, their notes, and their standing preferences), the on-screen text the editor planned, and frames from the finished video every half second.
 
+Text asked to stay on screen the whole video must still be visible in the very last frames, even when other text (a call to action, a closing line) is added at the end: if the closing text replaces it instead of joining it, that's a miss.
+
 When you're given every separate ask as a numbered list, go through each one against the video and the edit details and say whether it's done; any ask that clearly isn't done is a miss.
 
 Find only clear misses:
 - something the user explicitly asked for that isn't in the video, or is done differently: the words, text that should stay on screen the whole video, the first or last shot, the order, the speed (slow motion or none), an effect or transition they asked for or asked to remove, the sound they asked for, captions on or off, cutting on the beat, the length. Use "how it's edited" for what frames can't show;
 - obvious defects: on-screen text cut off by the edge of the frame, text covering a face or the product, text that can't be read, a black or blank frame, the same footage twice in a row, text or captions with typos or words the user didn't write.
-- clear craft problems a top short-form editor would fix before posting, and only when the clips allow a better choice: a dull, blurry, dark or shaky first frame when a stronger moment exists; a cut that chops off an action or a reaction right before it pays off; a shot that's clearly out of focus or shaking when a steadier take of the same thing exists; ending on a weak or random frame instead of the payoff.
+- clear craft problems a top short-form editor would fix before posting, and only when the clips allow a better choice: a cut that chops someone off in the middle of a word or sentence (check "what's heard" against the cut times); captions whose words don't match what's heard; a dull, blurry, dark or shaky first frame when a stronger moment exists; a cut that chops off an action or a reaction right before it pays off; a shot that's clearly out of focus or shaking when a steadier take of the same thing exists; ending on a weak or random frame instead of the payoff.
 Never flag what the footage or the chosen sound can't do: the editor's note says when the clips don't have something (no pour, no face, no bottle) and that's final, not a miss. The app never adds music on its own: with the clips' own sound, "cut to the beat" means cutting with the rhythm of what's heard, never adding a song. Don't flag taste, small timing differences, or things the clips can't do (if they asked for a pour and no clip shows one, that isn't a miss). If the video does what was asked, say so and list nothing.
 
 When there are misses, write `fix` as one change request to the editor in plain words, naming exactly what to change ("keep 'the perfect 🇵🇸 combination' on screen from the first frame to the last", "end on the bottle shot", "move the text up so it doesn't cover the face"), and nothing else."""
@@ -7661,6 +7785,15 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
         facts.append("footage used per shot (seconds): " + ", ".join(map(str, lengths)))
     if facts_in.get("beats"):
         facts.append(f"the song's beats: {facts_in['beats']}")
+    if music in ("original", "upload"):
+        # What's heard, so a cut that chops someone off mid-word, or captions that don't match, are seen.
+        try:
+            heard = [w for seg in transcribe(video)["segments"] for w in seg.get("words") or []]
+        except Exception as e:  # noqa: BLE001
+            print(f"review transcript skipped: {type(e).__name__}: {e}")
+            heard = []
+        if heard:
+            facts.append("what's heard, word@seconds: " + " ".join(f"{w['w']}@{w['s']:.2f}" for w in heard[:400]))
     with ThreadPoolExecutor(8) as pool:
         frames = list(pool.map(lambda t: grab_frame(video, t, workdir / f"review{int(t * 100):05d}.jpg", 448), times))
     content: list[dict] = [{"type": "text", "text": (
@@ -7729,6 +7862,15 @@ def with_asks(req: dict, asks: list[str]) -> dict:
     return req
 
 
+def text_set_by_user(req: dict) -> bool:
+    """Whether the on-screen text's words and timing were set by the user in the editor (this version
+    or one before it), so the worker keeps them, rather than text the editor itself timed."""
+    if "editorText" in req:
+        return bool(req["editorText"])
+    carry = req.get("carry") if isinstance(req.get("carry"), dict) else {}
+    return isinstance(carry.get("textItems"), list) and carry.get("textItemsByUser") is True
+
+
 def made_with_review(req: dict, make) -> dict:
     """Makes the version, watches it, and if it clearly misses what was asked, makes it once more with
     the fix (same file), before the user ever sees it. `make(req, workdir)` makes one version."""
@@ -7761,7 +7903,7 @@ def made_with_review(req: dict, make) -> dict:
     req2 = {**req, "request": (f"{asked}\n\nalso: {fix}" if asked else fix)[:1500], "shots": plan.get("shots") or req.get("shots"),
             "previous": {"storageKey": req["outputKey"], "plan": plan, "postCopy": out.get("postCopy"), "textChanged": False},
             "carry": carry, "writePost": False,
-            "editorText": req["editorText"] if "editorText" in req else isinstance((req.get("carry") or {}).get("textItems"), list)}
+            "editorText": text_set_by_user(req)}
     JOB["floor"] = 95
     try:
         with tempfile.TemporaryDirectory() as tmp2:

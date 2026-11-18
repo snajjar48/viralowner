@@ -212,6 +212,7 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     captionStyle:
       p.captionStyle === "off" || CAPTION_STYLES.some((c) => c.id === p.captionStyle) ? p.captionStyle : undefined,
     textItems: textItemsFrom(p.textItems),
+    ...(p.textItemsByUser === true ? { textItemsByUser: true } : {}),
     textTimeline: textItemsFrom(p.textTimeline),
     textDefaults: textDefaultsFrom(p.textDefaults),
     jumpcut: Array.isArray(p.jumpcut)

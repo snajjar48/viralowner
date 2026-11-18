@@ -167,6 +167,8 @@ export interface Carry {
   proofs?: Proof[];
   /** On-screen text set in the editor: free-timed, not tied to shots ([] = no text). */
   textItems?: TextItem[];
+  /** True when the user set that text's words and timing themselves (the worker keeps their timing). */
+  textItemsByUser?: boolean;
 }
 
 /** One piece of on-screen text, on screen from `start` to `end` (seconds of the video), anywhere. */
@@ -315,6 +317,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   captionText?: string;
   /** The editor's free-timed text this version used, and what was on screen and when (any version). */
   textItems?: TextItem[];
+  /** The user set textItems themselves in the editor (this version or one before it). */
+  textItemsByUser?: boolean;
   textTimeline?: TextItem[];
   textDefaults?: TextDefaults;
   /** The caption style this version used, when a request changed it from the one in the options. */
