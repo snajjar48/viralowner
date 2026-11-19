@@ -4048,7 +4048,8 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
             if asked_y is not None:
                 y = asked_y
             elif spot:
-                y = spot[1]  # same placement as the inspo
+                y = spot[1]  # same placement as the inspo...
+                y = free_spot(y, h, f) or y  # ...unless that's on a face in this shot (the nearest clear spot)
             else:
                 y = {"top": TOP_TEXT_Y + h / 2, "middle": 0.45}.get(position, 0.45 if caption_style else cap_default)
                 band = [(cap_default - cap_h / 2, cap_default + cap_h / 2)] if caption_style else []
@@ -4058,7 +4059,7 @@ def place_text(plan: list[dict], texts: list[str], layout: dict, style: dict, in
             else:
                 # Placed on purpose (asked for): it stays there, only kept inside the frame.
                 y = min(max(y, h / 2 + 0.005), 1 - h / 2 - 0.005)
-            lay = {"x": x, "y": y, "lines": lines, "size": size, "align": align, "h": h}
+            lay = {"x": x, "y": y, "lines": lines, "size": size, "align": align, "h": h, "w": w}
         lays.append(lay)
         cy = layout["captionYs"][i]
         blocked = f + ([(lay["y"] - lay["h"] / 2, lay["y"] + lay["h"] / 2)] if lay else [])
@@ -4254,6 +4255,76 @@ def unstack_sequential_text(items: list[dict]) -> list[dict]:
             if 0 < overlap <= 0.5 and b["end"] > a["end"]:
                 a["end"] = round(b["start"], 2)
     return items
+
+
+def text_box(lay: dict) -> tuple[float, float, float, float]:
+    """A drawn text block's (left, top, right, bottom), as fractions of the frame."""
+    if lay.get("look"):
+        w, h = block_size(lay["lines"], lay["look"], lay["size"])
+    else:
+        w, h = lay.get("w") or 0.7, lay["h"]
+    x, y = lay["x"], lay["y"]
+    left = {"left": x, "right": x - w}.get(lay.get("align", "center"), x - w / 2)
+    return left, y - h / 2, left + w, y + h / 2
+
+
+def separate_text(timeline: list, faces_at=None) -> list:
+    """Text shown at the same moment never sits on top of other text: when two blocks really overlap
+    on screen while both are up, the later one moves below the other (keeping the reading order),
+    inside the safe zone, off faces and captions where it can. Text that only touches (stacked on
+    purpose) and text shown one after another aren't touched."""
+    out = [list(t) for t in timeline]
+    gap = 0.012
+
+    def live(k: int, a: float, b: float) -> bool:
+        lay = out[k][3]
+        return bool(lay and lay.get("lines")) and min(out[k][1], b) - max(out[k][0], a) >= 0.15
+
+    def clear(c: float, h: float, blocked: list) -> bool:
+        return (SAFE["top"] <= c - h / 2 and c + h / 2 <= SAFE["bottom"]
+                and all(c + h / 2 + gap <= y0 or c - h / 2 - gap >= y1 for y0, y1 in blocked))
+
+    for _ in range(3):
+        moved = False
+        for j in range(len(out)):
+            a2, b2, text2, lay2 = out[j]
+            if not lay2 or not lay2.get("lines"):
+                continue
+            box2 = text_box(lay2)
+            hit = None
+            for i in range(j):
+                if not live(i, a2, b2):
+                    continue
+                box1 = text_box(out[i][3])
+                # Really on top of each other: text set right under other text (stacked words) is fine.
+                across = min(box1[2], box2[2]) - max(box1[0], box2[0])
+                down = min(box1[3], box2[3]) - max(box1[1], box2[1])
+                if across > 0.02 and down > 0.3 * min(box1[3] - box1[1], box2[3] - box2[1]):
+                    hit = (i, box1)
+                    break
+            if hit is None:
+                continue
+            i, box1 = hit
+            h2 = box2[3] - box2[1]
+            # Everything else on screen at the same time, by its horizontal reach.
+            blocked = [(bx[1], bx[3]) for k in range(len(out)) if k != j and live(k, a2, b2)
+                       for bx in [text_box(out[k][3])] if bx[2] > box2[0] and box2[2] > bx[0]]
+            faces = list(faces_at(a2, b2)) if faces_at else []
+            # Below the text it covered, so it still reads top to bottom in the order it appears: just
+            # under it, or the nearest clear spot further down (off faces and captions if possible).
+            below = box1[3] + gap + h2 / 2
+            downs = [below] + [c / 200 for c in range(int(below * 200) + 1, 152)]
+            y = next((c for c in downs if clear(c, h2, blocked + faces)), None)
+            if y is None:
+                y = next((c for c in downs if clear(c, h2, blocked)), None)
+            if y is None:
+                continue  # no room below: leave it as it was
+            print(f"text {text2[:30]!r} moved off {out[i][2][:30]!r}: y {lay2['y']:.2f} -> {y:.2f}")
+            out[j][3] = {**lay2, "y": round(y, 3)}
+            moved = True
+        if not moved:
+            break
+    return [tuple(t) for t in out]
 
 
 def fill_text_gaps(spans: list, total: float, get, set_):
@@ -6033,6 +6104,61 @@ def scratch_shot_edits(req: dict, shots: list[dict], clips: list[dict], index_of
     return changed
 
 
+def fit_scratch_speech(shots: list[dict], clips: list[dict], max_total: float | None = None) -> int:
+    """With the clips' own sound, a from-scratch shot never cuts someone off: a start inside a word moves
+    to just before it, and an end inside a word or mid-sentence runs on to the end of the sentence (if
+    that's within 1.5s), else ends at the last pause before the cut. Returns how many shots changed."""
+    changed = 0
+    for i, s in enumerate(shots):
+        if abs(SPEED_RATES.get(s.get("speed"), 1.0) - 1.0) > 0.01:
+            continue
+        c = clips[s["clip"]] if 0 <= s["clip"] < len(clips) else None
+        if not c or not c.get("has_audio") or c.get("speech") is None:
+            continue  # never transcribes here: only clips already heard
+        words = clip_words(c)
+        if not words:
+            continue
+        a, b = float(s["start"]), float(s["end"])
+        for w in words:
+            if w["s"] < a < w["e"] - 0.03:
+                a = max(0.0, w["s"] - 0.06)
+        ended = lambda w: w["w"].rstrip()[-1:] in ".?!"  # noqa: E731
+        inside = [k for k, w in enumerate(words) if w["s"] < b - 0.03 and w["e"] > b + 0.03]
+        before = [k for k, w in enumerate(words) if a <= w["s"] and w["e"] <= b + 0.03]
+        after = [k for k, w in enumerate(words) if w["s"] >= b - 0.03]
+        mid_sentence = bool(before and after and words[after[0]]["s"] - words[before[-1]]["e"] < 0.3
+                            and not ended(words[before[-1]]) and not words[before[-1]]["w"].rstrip().endswith(","))
+        if not inside and not mid_sentence:
+            continue
+        j = inside[0] if inside else before[-1]
+        while j + 1 < len(words) and words[j + 1]["s"] - words[j]["e"] < 0.35 and not ended(words[j]):
+            j += 1
+        end = words[j]["e"] + 0.12
+        new_b = None
+        if end - b <= 1.5 and end <= c["duration"] - 0.02:
+            new_b = end
+        else:
+            for k in range(len(words) - 1, -1, -1):
+                w = words[k]
+                if w["e"] > b or w["e"] <= a + 0.3:
+                    continue
+                pause = (words[k + 1]["s"] - w["e"]) if k + 1 < len(words) else 9.0
+                if pause >= 0.25 or ended(w) or w["w"].rstrip().endswith(","):
+                    back = min(b, w["e"] + 0.1)
+                    if back - a >= max(0.6, 0.6 * (b - a)):
+                        new_b = back
+                    break
+            if new_b is None and inside and words[inside[0]]["e"] + 0.1 - b <= 0.6 \
+                    and words[inside[0]]["e"] + 0.1 <= c["duration"] - 0.02:
+                new_b = words[inside[0]]["e"] + 0.1  # at least finish the word
+        if new_b is None or (abs(new_b - b) < 0.02 and abs(a - s["start"]) < 0.02):
+            continue
+        print(f"scratch shot {i + 1}: fitted to the speech, {s['start']:.2f}-{b:.2f} -> {a:.2f}-{new_b:.2f}")
+        s["start"], s["end"] = round(a, 2), round(new_b, 2)
+        changed += 1
+    return changed
+
+
 def keep_user_shots(shots: list[dict], user: list[tuple], before: int) -> int:
     """After a change request: the shots the user set themselves stay exactly as they set them. Each is
     found in the new plan (same clip, most overlap; or the same place if the shot count didn't change)
@@ -6209,6 +6335,14 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
+        if sound == "original":
+            before_fit = [(x["start"], x["end"]) for x in cleaned["shots"]]
+            if fit_scratch_speech(cleaned["shots"], clips):
+                total = sum((x["end"] - x["start"]) / SPEED_RATES.get(x["speed"], 1.0) for x in cleaned["shots"])
+                if max_s and total > max_s + 0.05:
+                    for x, (a0, b0) in zip(cleaned["shots"], before_fit):
+                        x["start"], x["end"] = a0, b0  # longer than allowed: as directed
+                    print("scratch: speech fit skipped, it made the video too long")
         if user_shots:
             put_back = keep_user_shots(cleaned["shots"], user_shots, len(previous["shots"]))
             if put_back:
@@ -7384,6 +7518,25 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         fill_text_gaps(base_timeline, sum(durations), lambda t: (t[0], t[1]), lambda t, a, b: t.__setitem__(slice(0, 2), [a, b]))
         base_timeline = [tuple(t) for t in base_timeline]
         print("text kept on the whole video (shot text)")
+    if base_timeline and not user_timed:
+        # Text up at the same time never overlaps other text (it moves just below or above, off faces).
+        starts = [sum(durations[:k]) for k in range(len(durations))]
+
+        cap_h = caption_height(scaled(CAPTION_LOOKS.get(shown_captions or "bold-pop", CAPTION_LOOKS["bold-pop"]),
+                                      layout["captionScale"]))
+
+        def faces_at(a: float, b: float) -> list:
+            """What text shouldn't move onto between a and b: faces, and the captions."""
+            out = [r for k, st in enumerate(starts) if k < len(faces) and min(b, st + durations[k]) - max(a, st) > 0.1
+                   for r in faces[k]]
+            if shown_captions:
+                for t in (a + 0.05, (a + b) / 2, b - 0.05):
+                    cy = caption_y_at(t)
+                    if cy is not None:
+                        out.append((cy - cap_h / 2, cy + cap_h / 2))
+            return out
+
+        base_timeline = separate_text(base_timeline, faces_at)
     text_timeline, emoji_texts = emoji_text_pictures(base_timeline, style, layout, workdir)
     ass = build_ass(text_timeline, style, layout, words, shown_captions, caption_y_at)
 
