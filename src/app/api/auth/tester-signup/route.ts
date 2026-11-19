@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
 import { clientIp } from "@/lib/client-ip";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, SIGNUPS_PER_NETWORK } from "@/lib/rate-limit";
 import { PASSWORD_MAX, PASSWORD_MIN } from "@/lib/signup-validation";
 import { ACCESS_COOKIE, ACCESS_MAX_AGE, accessToken } from "@/lib/site-access";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
@@ -24,7 +24,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (!(await checkRateLimit(`signup:${clientIp(request)}`))) {
+    if (!(await checkRateLimit(`signup:${clientIp(request)}`, SIGNUPS_PER_NETWORK))) {
       return Response.json({ error: "Too many attempts. Please try again in a few minutes." }, { status: 429 });
     }
   } catch (error) {

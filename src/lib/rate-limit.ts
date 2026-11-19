@@ -5,6 +5,11 @@ import { getSql } from "./db";
 const WINDOW_SECONDS = 10 * 60; // 10 minutes
 const MAX_REQUESTS = 5; // per key per window, unless the caller says otherwise
 
+// Per network (IP address), every 10 minutes. A whole office, class or event can share one Wi-Fi,
+// so these are high; each email address still has its own lower limit on log-ins.
+export const LOGINS_PER_NETWORK = 100;
+export const SIGNUPS_PER_NETWORK = 60;
+
 function hashKey(value: string) {
   return createHash("sha256").update(`viralowner:${value}`).digest("hex");
 }

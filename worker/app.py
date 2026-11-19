@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import random
 import re
 import shutil
 import tempfile
@@ -1271,6 +1272,22 @@ def cache_last(content: list[dict], hour: bool = False) -> None:
         content[-1] = {**content[-1], "cache_control": {"type": "ephemeral", **({"ttl": "1h"} if hour else {})}}
 
 
+BUSY_TRIES = 10  # waits of ~6s growing to 90s: about 10 minutes in all
+
+
+def claude_busy(e: Exception) -> bool:
+    """A rate limit, an overload or a dropped connection: worth waiting for. Anything else isn't."""
+    import anthropic
+
+    if isinstance(e, (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError)):
+        return True
+    if isinstance(e, anthropic.APIStatusError):
+        return e.status_code in (429, 500, 502, 503, 504, 529)
+    # Errors that arrive mid-answer in the stream carry the error type in their text.
+    text = str(e).lower()
+    return isinstance(e, anthropic.APIError) and ("overloaded" in text or "rate_limit" in text)
+
+
 def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
     """One structured-output request. Returns the parsed JSON plus usage and cost.
     `effort`: how hard Claude thinks. "high" for analysis and planning; "xhigh" where getting
@@ -1285,20 +1302,32 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
                    "requests and feedback; apply them by default so the first version is already right, unless this "
                    "user said otherwise):\n" + JOB["lessons"])
     asked = time.time()
-    # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
-    with client.beta.messages.stream(
-        model=JOB.get("model") or CLAUDE_MODEL,
-        max_tokens=64000,
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",  # if a safety check declines, another model finishes the request
-        # The instructions and playbook are the same call after call: cached, so they're read once. (When
-        # the request caches its clips for an hour, the instructions in front of them must be too.)
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral", **({"ttl": "1h"} if any(
-            (c.get("cache_control") or {}).get("ttl") == "1h" for c in content if isinstance(c, dict)) else {})}}],
-        messages=[{"role": "user", "content": content}],
-        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
-    ) as stream:
-        response = stream.get_final_message()
+    # Busy (many videos at once hitting the rate limit, or the API overloaded, even mid-answer): wait
+    # and try again, for up to about 10 minutes, instead of failing the video. After the SDK's own retries.
+    for attempt in range(BUSY_TRIES):
+        try:
+            # Streamed: deep thinking can take minutes, and a large max_tokens needs streaming.
+            with client.beta.messages.stream(
+                model=JOB.get("model") or CLAUDE_MODEL,
+                max_tokens=64000,
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",  # if a safety check declines, another model finishes the request
+                # The instructions and playbook are the same call after call: cached, so they're read once. (When
+                # the request caches its clips for an hour, the instructions in front of them must be too.)
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral", **({"ttl": "1h"} if any(
+                    (c.get("cache_control") or {}).get("ttl") == "1h" for c in content if isinstance(c, dict)) else {})}}],
+                messages=[{"role": "user", "content": content}],
+                output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
+            ) as stream:
+                response = stream.get_final_message()
+            break
+        except Exception as e:  # noqa: BLE001
+            if attempt == BUSY_TRIES - 1 or not claude_busy(e):
+                raise
+            wait = min(90.0, 6.0 * 1.6 ** attempt) * (0.75 + 0.5 * random.random())
+            print(f"claude busy ({type(e).__name__}: {str(e)[:80]}), waiting {wait:.0f}s (try {attempt + 2} of {BUSY_TRIES})")
+            JOB.setdefault("busy_waits", []).append(round(wait, 1))
+            time.sleep(wait)
     if response.stop_reason == "refusal":
         raise JobError(refusal_message)
     if response.stop_reason == "max_tokens":

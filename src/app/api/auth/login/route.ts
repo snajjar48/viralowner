@@ -1,5 +1,5 @@
 import { clientIp } from "@/lib/client-ip";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, LOGINS_PER_NETWORK } from "@/lib/rate-limit";
 import { isValidEmail, normalizeEmail } from "@/lib/signup-validation";
 import { createClient } from "@/lib/supabase/server";
 
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
 
   try {
     // Per connection, and per account (so one password can't be guessed from many places).
-    if (!(await checkRateLimit(`login:${clientIp(request)}`)) || !(await checkRateLimit(`login-email:${email}`, 10))) {
+    if (!(await checkRateLimit(`login:${clientIp(request)}`, LOGINS_PER_NETWORK)) || !(await checkRateLimit(`login-email:${email}`, 10))) {
       return Response.json(
         { error: "Too many attempts. Please try again in a few minutes." },
         { status: 429 },

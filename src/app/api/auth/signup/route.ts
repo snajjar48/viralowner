@@ -4,7 +4,7 @@ import { APP_TAG, isActiveStatus, syncSubscription } from "@/lib/billing";
 import { clientIp } from "@/lib/client-ip";
 import { isInterval, isTier } from "@/lib/plan-format";
 import { priceIdFor } from "@/lib/plans";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, SIGNUPS_PER_NETWORK } from "@/lib/rate-limit";
 import { parseSignup } from "@/lib/signup-validation";
 import { getStripe } from "@/lib/stripe";
 import { createAdminClient, createClient } from "@/lib/supabase/server";
@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (!(await checkRateLimit(`signup:${clientIp(request)}`))) {
+    if (!(await checkRateLimit(`signup:${clientIp(request)}`, SIGNUPS_PER_NETWORK))) {
       return Response.json(
         { error: "Too many attempts. Please try again in a few minutes." },
         { status: 429 },
