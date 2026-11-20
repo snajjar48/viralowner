@@ -99,7 +99,15 @@ export function releaseNativeClip(clip: NativeClip) {
 }
 
 /** Saves a finished video to Photos ("save") or opens the share sheet with it ("share"), from the app. */
-export function saveNativeVideo(url: string, fileName: string, mode: "save" | "share"): Promise<"done" | "canceled"> {
+export async function saveNativeVideo(url: string, fileName: string, mode: "save" | "share"): Promise<"done" | "canceled"> {
+  // The app downloads it without this site's sign-in, so it gets the signed storage link (a full URL).
+  const absolute = new URL(url, window.location.href);
+  if (absolute.origin === window.location.origin) {
+    absolute.searchParams.set("link", "1");
+    const res = await fetch(absolute, { cache: "no-store" });
+    if (!res.ok) throw new Error(`video link failed (${res.status})`);
+    url = ((await res.json()) as { url: string }).url;
+  }
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
     const stop = listen((msg) => {

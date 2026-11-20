@@ -5,7 +5,8 @@ import { createDownloadUrl } from "@/lib/storage";
 /**
  * A finished video's file: redirects to a freshly signed storage link, so a page
  * left open never ends up with an expired one. `?download=1` saves it as a file
- * instead of playing it.
+ * instead of playing it. `?link=1` returns the signed link as JSON instead (the iPhone app downloads
+ * it itself, without this site's sign-in cookies).
  */
 export async function GET(request: Request, ctx: RouteContext<"/api/projects/[id]/renders/[renderId]/file">) {
   return withProject(ctx.params, "Opening video file", async (_userId, project) => {
@@ -17,6 +18,9 @@ export async function GET(request: Request, ctx: RouteContext<"/api/projects/[id
       expiresIn: 3600,
       downloadName: download ? `viralowner-video-v${render.version}.mp4` : undefined,
     });
+    if (new URL(request.url).searchParams.get("link") === "1") {
+      return Response.json({ url }, { headers: { "cache-control": "private, no-store" } });
+    }
     return new Response(null, { status: 302, headers: { location: url, "cache-control": "private, no-store" } });
   });
 }
