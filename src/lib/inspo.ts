@@ -20,7 +20,7 @@ import {
   MULTIPART_MIN_BYTES,
   readRange,
 } from "./storage";
-import { readMp4Duration } from "./mp4";
+import { describeMp4, readMp4Duration } from "./mp4";
 import {
   checkInspo,
   extensionFor,
@@ -136,9 +136,10 @@ async function startInspoAnalysis(projectId: string, inspo: Inspiration): Promis
   if (!videoContentType("", head.contentType)) return reject(MESSAGES.type);
 
   const read = await readMp4Duration((s, e) => readRange(inspo.storageKey, s, e), head.sizeBytes);
-  // 0: a real video whose length isn't in its headers (saved from another app): the length the
-  // device reported, checked again when it's analyzed.
-  const durationS = read === 0 ? inspo.durationS : read;
+  // 0 (a real video whose length isn't in its headers) or unreadable here: the length the device
+  // reported (it played it to read that), and the file is checked again for real when it's analyzed.
+  if (read === null) console.error("Video header unreadable, using the device's length:", inspo.durationS, await describeMp4((s, e) => readRange(inspo.storageKey, s, e), head.sizeBytes));
+  const durationS = read === 0 || read === null ? inspo.durationS : read;
   if (durationS === null || durationS <= 0) return reject(MESSAGES.unreadable);
   if (durationS > INSPO_MAX_SECONDS + 0.5) return reject(MESSAGES.inspoTooLong(durationS), durationS);
 

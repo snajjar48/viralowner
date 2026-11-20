@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { readMp4Duration } from "./mp4";
+import { describeMp4, readMp4Duration } from "./mp4";
 import { createClip, getClip, markClipFailed, markClipUploaded, type Clip } from "./projects";
 import { workerFetch } from "./worker";
 import {
@@ -112,9 +112,10 @@ export async function completeClip(projectId: string, clipId: string, uploadId?:
   if (head.sizeBytes > CLIP_MAX_BYTES) return reject(MESSAGES.clipTooBig(head.sizeBytes));
   if (!videoContentType("", head.contentType)) return reject(MESSAGES.type);
   const read = await readMp4Duration((s, e) => readRange(clip.storageKey, s, e), head.sizeBytes);
-  // 0: a real video whose length isn't in its headers (saved from another app): the length the
-  // device reported, checked again when it's processed.
-  const durationS = read === 0 ? clip.durationS : read;
+  // 0 (a real video whose length isn't in its headers) or unreadable here: the length the device
+  // reported (it played it to read that), and the file is checked again for real when it's processed.
+  if (read === null) console.error("Video header unreadable, using the device's length:", clip.durationS, await describeMp4((s, e) => readRange(clip.storageKey, s, e), head.sizeBytes));
+  const durationS = read === 0 || read === null ? clip.durationS : read;
   if (durationS === null || durationS <= 0) return reject(MESSAGES.unreadable);
   if (durationS > CLIP_MAX_SECONDS + 0.5) return reject(MESSAGES.clipTooLong(durationS));
 

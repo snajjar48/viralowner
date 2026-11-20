@@ -124,3 +124,26 @@ function parseSidx(b: Uint8Array): number {
   for (let i = 0; i < count && at + 12 <= b.length; i++, at += 12) total += d.getUint32(at + 4);
   return total / timescale;
 }
+
+/** For the logs: the file's first bytes and its top-level boxes (type@offset:size), when it can't be read. */
+export async function describeMp4(read: ReadRange, fileSize: number): Promise<string> {
+  const out: string[] = [];
+  try {
+    const first = await read(0, Math.min(31, fileSize - 1));
+    out.push(`size=${fileSize} head=${Buffer.from(first).toString("hex")}`);
+    let offset = 0;
+    for (let i = 0; i < 24 && offset + 8 <= fileSize; i++) {
+      const head = await read(offset, Math.min(offset + 15, fileSize - 1));
+      let size = view(head).getUint32(0);
+      const type = fourcc(head, 4).replace(/[^\x20-\x7e]/g, "?");
+      if (size === 1 && head.length >= 16) size = Number(view(head).getBigUint64(8));
+      else if (size === 0) size = fileSize - offset;
+      out.push(`${type}@${offset}:${size}`);
+      if (size < 8) break;
+      offset += size;
+    }
+  } catch (error) {
+    out.push(`error=${error instanceof Error ? error.message : String(error)}`);
+  }
+  return out.join(" ");
+}
