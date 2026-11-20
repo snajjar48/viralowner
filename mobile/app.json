@@ -11,15 +11,24 @@
     "ios": {
       "bundleIdentifier": "com.viralowner.app",
       "supportsTablet": false,
-      "config": { "usesNonExemptEncryption": false },
+      "config": {
+        "usesNonExemptEncryption": false
+      },
       "infoPlist": {
-        "UIBackgroundModes": ["fetch"]
+        "UIBackgroundModes": [
+          "fetch"
+        ]
       }
     },
     "plugins": [
       [
         "expo-splash-screen",
-        { "image": "./assets/splash-icon.png", "imageWidth": 160, "backgroundColor": "#0B0B0F", "resizeMode": "contain" }
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160,
+          "backgroundColor": "#0B0B0F",
+          "resizeMode": "contain"
+        }
       ],
       [
         "expo-image-picker",
@@ -38,6 +47,11 @@
         }
       ],
       "expo-sharing"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "aa64a2e0-1a79-43a0-8be0-642d299ca286"
+      }
+    }
   }
 }
