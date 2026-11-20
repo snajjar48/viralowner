@@ -111,7 +111,10 @@ export async function completeClip(projectId: string, clipId: string, uploadId?:
   if (!head) return { status: 409, body: { error: "the upload didn’t finish. please try again." } };
   if (head.sizeBytes > CLIP_MAX_BYTES) return reject(MESSAGES.clipTooBig(head.sizeBytes));
   if (!videoContentType("", head.contentType)) return reject(MESSAGES.type);
-  const durationS = await readMp4Duration((s, e) => readRange(clip.storageKey, s, e), head.sizeBytes);
+  const read = await readMp4Duration((s, e) => readRange(clip.storageKey, s, e), head.sizeBytes);
+  // 0: a real video whose length isn't in its headers (saved from another app): the length the
+  // device reported, checked again when it's processed.
+  const durationS = read === 0 ? clip.durationS : read;
   if (durationS === null || durationS <= 0) return reject(MESSAGES.unreadable);
   if (durationS > CLIP_MAX_SECONDS + 0.5) return reject(MESSAGES.clipTooLong(durationS));
 
