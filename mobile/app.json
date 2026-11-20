@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "viralowner",
+    "slug": "viralowner",
+    "scheme": "viralowner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0B0F",
+    "ios": {
+      "bundleIdentifier": "com.viralowner.app",
+      "supportsTablet": false,
+      "config": { "usesNonExemptEncryption": false },
+      "infoPlist": {
+        "UIBackgroundModes": ["fetch"]
+      }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        { "image": "./assets/splash-icon.png", "imageWidth": 160, "backgroundColor": "#0B0B0F", "resizeMode": "contain" }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "viralowner uses your photos so you can pick the clips to edit into your video.",
+          "cameraPermission": "viralowner uses your camera so you can film a clip for your video.",
+          "microphonePermission": "viralowner uses your microphone to record sound with the clips you film."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "viralowner uses your photos so you can pick the clips to edit into your video.",
+          "savePhotosPermission": "viralowner saves your finished videos to your photos.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      "expo-sharing"
+    ]
+  }
+}

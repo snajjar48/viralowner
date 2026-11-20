@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { ClipThumb } from "@/components/clip-thumb";
 import { ConsentCheckbox } from "@/components/consent-checkbox";
 import { DropZone } from "@/components/drop-zone";
@@ -38,6 +38,14 @@ import {
   uploadToSignedUrl,
   UploadError,
 } from "@/lib/upload-client";
+import {
+  inApp,
+  isNativeClip,
+  pickNativeClips,
+  releaseNativeClip,
+  uploadNativeClip,
+  type NativeClip,
+} from "@/lib/native-app";
 import { planShrink, shrinkClip, worthShrinking, type ShrinkPlan } from "@/lib/shrink-clip";
 import { checkClip, MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
 
@@ -76,6 +84,7 @@ interface Item {
 // Clips uploading at once. Big clips upload several parts at once too (uploadInParts).
 const CONCURRENCY = 3;
 type SignedPut = { url: string; headers: Record<string, string> };
+const noSubscribe = () => () => {};
 const inFlight = (s: ItemStatus) => s === "queued" || s === "shrinking" || s === "uploading" || s === "verifying";
 
 export function ClipsManager({
@@ -127,8 +136,11 @@ export function ClipsManager({
   const [confirmed, setConfirmed] = useState(rightsConfirmed);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState("");
+  // Inside the viralowner app (its own Photos picker uploads the original files).
+  const app = useSyncExternalStore(noSubscribe, inApp, () => false);
 
-  const files = useRef(new Map<string, File>());
+  // The picked files. In the viralowner app, the app keeps the video and this is a stand-in for it.
+  const files = useRef(new Map<string, File | NativeClip>());
   // Each clip's still is saved next to it once both the still and its upload URL are ready.
   const thumbs = useRef(new Map<string, Blob>());
   const thumbTargets = useRef(new Map<string, SignedPut>());
@@ -209,7 +221,7 @@ export function ClipsManager({
         sending.current++;
         counted = true;
       }
-      file = await maybeShrink(key, file, controller.signal);
+      if (!isNativeClip(file)) file = await maybeShrink(key, file, controller.signal);
       if (controller.signal.aborted) return;
       if (!counted) {
         sending.current++;
@@ -232,7 +244,10 @@ export function ClipsManager({
       saveThumb(key);
       const onProgress = (percent: number) => patch(key, { percent });
       let uploadId: string | undefined;
-      if (multipart) {
+      if (isNativeClip(file)) {
+        // In the app: the app sends the original file in one go (it uploads in the background too).
+        await uploadNativeClip(file, upload, onProgress, controller.signal);
+      } else if (multipart) {
         try {
           await uploadInParts(file, multipart, onProgress, controller.signal);
           uploadId = multipart.uploadId;
@@ -240,7 +255,7 @@ export function ClipsManager({
           if (controller.signal.aborted) throw e;
           // Parts didn't work on this connection: send it in one go instead.
           onProgress(0);
-          await uploadToSignedUrl(file, upload, onProgress, controller.signal);
+          await uploadToSignedUrl(file as File, upload, onProgress, controller.signal);
         }
       } else {
         await uploadToSignedUrl(file, upload, onProgress, controller.signal);
@@ -260,11 +275,15 @@ export function ClipsManager({
         if (!uploadId) throw e;
         // The parts couldn't be joined: send it in one go instead.
         patch(key, { status: "uploading", percent: 0 });
-        await uploadToSignedUrl(file, upload, onProgress, controller.signal);
+        await uploadToSignedUrl(file as File, upload, onProgress, controller.signal);
         patch(key, { status: "verifying" });
         done = await complete();
       }
       patch(key, { status: "uploaded", percent: 100, durationS: done.clip.durationS });
+      if (isNativeClip(file)) {
+        releaseNativeClip(file); // the app's copy isn't needed any more
+        files.current.delete(key);
+      }
       if (!hasThumb() && done.thumbUrl) void waitForThumb(key, done.thumbUrl);
     } catch (e) {
       if (controller.signal.aborted) return; // removed by the user
@@ -292,7 +311,7 @@ export function ClipsManager({
     const missed: string[] = [];
     const make = async (key: string, timeoutMs: number) => {
       const file = files.current.get(key);
-      if (!file) return true;
+      if (!file || isNativeClip(file)) return true; // the app's clips get their still from the server
       const blob = await makeVideoThumbnail(file, 360, timeoutMs);
       if (!blob || !files.current.has(key)) return false;
       thumbs.current.set(key, blob);
@@ -331,7 +350,7 @@ export function ClipsManager({
     }
   }
 
-  async function addFiles(picked: File[]) {
+  async function addFiles(picked: (File | NativeClip)[]) {
     const room = MAX_CLIPS - itemsRef.current.filter((i) => i.status !== "failed").length;
     const problems: string[] = [];
     if (picked.length > room) {
@@ -341,7 +360,9 @@ export function ClipsManager({
     const added: Item[] = [];
     // Read every picked file's length at once (one at a time made picking 20 clips slow). A clip
     // this browser can't read doesn't hold the others up for long: the server reads it anyway.
-    const durations = await Promise.all(picked.map((f) => (checkClip(f, null) ? null : readVideoDuration(f, 3_000))));
+    const durations = await Promise.all(
+      picked.map((f) => (isNativeClip(f) ? f.durationS : checkClip(f, null) ? null : readVideoDuration(f, 3_000))),
+    );
     for (const [i, file] of picked.entries()) {
       const durationS = durations[i];
       const problem = checkClip(file, durationS);
@@ -356,7 +377,7 @@ export function ClipsManager({
         clipId: null,
         fileName: file.name,
         durationS,
-        previewUrl: URL.createObjectURL(file),
+        previewUrl: isNativeClip(file) ? null : URL.createObjectURL(file),
         thumbUrl: null,
         shotIndexes: [],
         multiUse: false,
@@ -373,11 +394,23 @@ export function ClipsManager({
     // Big vertical clips: could they be made smaller (only used on a slow connection)?
     for (const a of added) {
       const f = files.current.get(a.key);
-      if (f && f.size > 40 * 1024 * 1024) planning.current.set(a.key, planShrink(f));
+      if (f && !isNativeClip(f) && f.size > 40 * 1024 * 1024) planning.current.set(a.key, planShrink(f));
     }
     queue.current.push(...added.map((a) => a.key));
     pump();
     void makeThumbs(added.map((a) => a.key));
+  }
+
+  /** In the viralowner app: its own Photos picker, which hands over the original files. */
+  async function pickInApp() {
+    const room = MAX_CLIPS - itemsRef.current.filter((i) => i.status !== "failed").length;
+    if (room <= 0) return setSkipped([`you can add up to ${MAX_CLIPS} clips.`]);
+    try {
+      const picked = await pickNativeClips(room);
+      if (picked.length) await addFiles(picked);
+    } catch {
+      setSkipped(["we couldn’t open your photos. check viralowner is allowed to use them in settings, then try again."]);
+    }
   }
 
   async function retry(item: Item) {
@@ -397,6 +430,8 @@ export function ClipsManager({
     if (selected === item.key) setSelected(null);
     if (item.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
     if (item.thumbUrl?.startsWith("blob:")) URL.revokeObjectURL(item.thumbUrl);
+    const picked = files.current.get(item.key);
+    if (isNativeClip(picked)) releaseNativeClip(picked);
     files.current.delete(item.key);
     thumbs.current.delete(item.key);
     thumbTargets.current.delete(item.key);
@@ -524,6 +559,7 @@ export function ClipsManager({
           accept={VIDEO_ACCEPT}
           multiple
           onFiles={addFiles}
+          onPick={app ? pickInApp : undefined}
           compact={items.length > 0}
           icon={<FilmIcon className="size-5" />}
           title={

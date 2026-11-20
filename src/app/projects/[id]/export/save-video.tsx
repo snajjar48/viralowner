@@ -2,14 +2,16 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { buttonClass } from "@/components/form";
+import { inApp, saveNativeVideo } from "@/lib/native-app";
 
 /** "share": a phone that can hand a video file to other apps (Save Video, TikTok, Instagram…). */
-type Device = "unknown" | "share" | "phone" | "computer";
+type Device = "unknown" | "app" | "share" | "phone" | "computer";
 type Prepared = { percent: number | null } | { file: File } | "failed";
 
 let device: Device | null = null;
 function detectDevice(): Device {
   if (device) return device;
+  if (inApp()) return (device = "app");
   // A computer's share sheet can't post to TikTok or Instagram, so phones only.
   const phone = window.matchMedia("(pointer: coarse)").matches;
   const probe = new File([], "video.mp4", { type: "video/mp4" });
@@ -59,6 +61,25 @@ export function SaveVideo({ fileUrl, fileName }: { fileUrl: string; fileName: st
     return () => controller.abort();
   }, [kind, fileUrl, fileName]);
 
+  const [busy, setBusy] = useState<"save" | "share" | null>(null);
+  /** In the viralowner app: it downloads the video and saves it to Photos, or opens the share sheet. */
+  async function inAppSave(mode: "save" | "share") {
+    setNote(null);
+    setBusy(mode);
+    try {
+      const result = await saveNativeVideo(fileUrl, fileName, mode);
+      if (result === "done" && mode === "save") setNote("saved to your photos.");
+    } catch {
+      setNote(
+        mode === "save"
+          ? "we couldn’t save it. check viralowner can add to your photos in settings, then try again."
+          : "sharing didn’t work. try again.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function shareVideo() {
     if (typeof prepared !== "object" || !("file" in prepared)) return;
     setNote(null);
@@ -85,6 +106,22 @@ export function SaveVideo({ fileUrl, fileName }: { fileUrl: string; fileName: st
         className="mx-auto aspect-[9/16] max-h-[min(60vh,520px)] w-auto rounded-2xl border border-white/10 bg-black"
       />
 
+      {kind === "app" && (
+        <>
+          <button type="button" onClick={() => inAppSave("save")} disabled={!!busy} className={buttonClass}>
+            {busy === "save" ? "saving…" : "save to photos"}
+          </button>
+          <button type="button" onClick={() => inAppSave("share")} disabled={!!busy} className={secondaryClass}>
+            {busy === "share" ? "getting it ready…" : "share to tiktok, instagram…"}
+          </button>
+        </>
+      )}
+      {note && kind === "app" && (
+        <p role="status" className="text-center text-sm text-muted">
+          {note}
+        </p>
+      )}
+
       {sharing && (
         <>
           <button type="button" onClick={shareVideo} disabled={!ready} className={buttonClass}>
@@ -95,12 +132,13 @@ export function SaveVideo({ fileUrl, fileName }: { fileUrl: string; fileName: st
           </p>
         </>
       )}
-      {note && (
+      {note && kind !== "app" && (
         <p role="alert" className="text-center text-sm text-coral">
           {note}
         </p>
       )}
 
+      {kind !== "app" && (
       <a
         href={`${fileUrl}?download=1`}
         download={fileName}
@@ -108,6 +146,7 @@ export function SaveVideo({ fileUrl, fileName }: { fileUrl: string; fileName: st
       >
         download video
       </a>
+      )}
       {phoneWithoutShare && (
         <p className="-mt-1 text-center text-xs text-muted">on iphone: tap download, then the share button → save video.</p>
       )}

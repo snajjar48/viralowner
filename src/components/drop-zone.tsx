@@ -16,6 +16,7 @@ export function DropZone({
   hint,
   icon,
   compact = false,
+  onPick,
 }: {
   accept: string;
   multiple?: boolean;
@@ -25,6 +26,8 @@ export function DropZone({
   hint?: ReactNode;
   icon?: ReactNode;
   compact?: boolean;
+  /** Picks some other way instead of the file input (the viralowner app's own Photos picker). */
+  onPick?: () => void;
 }) {
   const id = useId();
   const [dragging, setDragging] = useState(false);
@@ -32,6 +35,11 @@ export function DropZone({
   return (
     <label
       htmlFor={id}
+      onClick={(e) => {
+        if (!onPick || disabled) return;
+        e.preventDefault();
+        onPick();
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         if (!disabled) setDragging(true);
