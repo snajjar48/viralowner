@@ -63,7 +63,7 @@ export interface InitialClip {
   thumbUrl?: string | null;
 }
 
-type ItemStatus = "queued" | "shrinking" | "uploading" | "verifying" | "uploaded" | "failed";
+type ItemStatus = "queued" | "shrinking" | "fetching" | "uploading" | "verifying" | "uploaded" | "failed";
 interface Item {
   key: string;
   clipId: string | null;
@@ -85,7 +85,8 @@ interface Item {
 const CONCURRENCY = 3;
 type SignedPut = { url: string; headers: Record<string, string> };
 const noSubscribe = () => () => {};
-const inFlight = (s: ItemStatus) => s === "queued" || s === "shrinking" || s === "uploading" || s === "verifying";
+const inFlight = (s: ItemStatus) =>
+  s === "queued" || s === "shrinking" || s === "fetching" || s === "uploading" || s === "verifying";
 
 export function ClipsManager({
   projectId,
@@ -246,7 +247,12 @@ export function ClipsManager({
       let uploadId: string | undefined;
       if (isNativeClip(file)) {
         // In the app: the app sends the original file in one go (it uploads in the background too).
-        await uploadNativeClip(file, upload, onProgress, controller.signal);
+        await uploadNativeClip(
+          file,
+          upload,
+          (percent, phase) => patch(key, { percent, status: phase === "preparing" ? "fetching" : "uploading" }),
+          controller.signal,
+        );
       } else if (multipart) {
         try {
           await uploadInParts(file, multipart, onProgress, controller.signal);
@@ -793,6 +799,8 @@ function ClipTile({
                     ? "waiting…"
                     : item.status === "shrinking"
                       ? "making it quicker to upload…"
+                      : item.status === "fetching"
+                        ? "getting it from your photos…"
                       : item.status === "verifying"
                         ? "checking…"
                         : "uploading"

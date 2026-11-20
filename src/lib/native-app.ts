@@ -7,7 +7,7 @@
 
 type FromApp =
   | { type: "picked"; id: string; files: NativeClip[]; error?: string }
-  | { type: "progress"; ref: string; percent: number }
+  | { type: "progress"; ref: string; percent: number; phase?: "preparing" | "uploading" }
   | { type: "uploaded"; ref: string }
   | { type: "uploadFailed"; ref: string; error: string }
   | { type: "saved"; id: string }
@@ -58,11 +58,14 @@ export function pickNativeClips(limit: number): Promise<NativeClip[]> {
   });
 }
 
-/** Uploads a picked clip's bytes to a signed PUT URL, from the app. */
+/**
+ * Uploads a picked clip's bytes to a signed PUT URL, from the app. First the app gets the video from
+ * Photos ("preparing": a download if it's kept in iCloud), then it uploads it ("uploading").
+ */
 export function uploadNativeClip(
   clip: NativeClip,
   upload: { url: string; headers: Record<string, string> },
-  onProgress: (percent: number) => void,
+  onProgress: (percent: number, phase: "preparing" | "uploading") => void,
   signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -73,7 +76,7 @@ export function uploadNativeClip(
     };
     const stop = listen((msg) => {
       if (!("ref" in msg) || msg.ref !== clip.ref) return;
-      if (msg.type === "progress") onProgress(msg.percent);
+      if (msg.type === "progress") onProgress(msg.percent, msg.phase ?? "uploading");
       else if (msg.type === "uploaded") {
         signal?.removeEventListener("abort", onAbort);
         stop();

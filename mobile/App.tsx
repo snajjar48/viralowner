@@ -3,17 +3,17 @@
 //   2. Save a finished video straight to Photos, or share it to TikTok / Instagram.
 // The site does everything else; it talks to this app through src/lib/native-app.ts.
 import { Directory, File, Paths } from "expo-file-system";
-import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library/legacy";
 import * as Sharing from "expo-sharing";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from "react-native-webview";
 import type { IOSWebViewProps } from "react-native-webview/lib/WebViewTypes";
 import type { ComponentType, RefAttributes } from "react";
+import Native from "./modules/viralowner-native";
 
 // The library's combined iOS + Android + Windows props type comes out as `never` with this TypeScript;
 // this is an iOS-only app, so it's typed with the iOS props.
@@ -23,7 +23,8 @@ const SITE = "https://www.viralowner.com";
 const START = `${SITE}/login`; // signed in: goes straight on to their videos
 const BG = "#0B0B0F";
 const CORAL = "#F63165";
-const APP_VERSION = 1;
+const APP_VERSION = 2;
+const COOKIE_DOMAIN = "viralowner.com";
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -70,10 +71,15 @@ export default function App() {
 
 function Main() {
   const web = useRef<WebView>(null);
-  const picked = useRef(new Map<string, string>()); // ref → the picked file's local uri
-  const uploads = useRef(new Map<string, AbortController>());
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [restored, setRestored] = useState(false);
+
+  useEffect(() => {
+    Native.restoreCookies()
+      .catch(() => 0)
+      .finally(() => setRestored(true));
+  }, []);
 
   const send = useCallback((msg: Record<string, unknown>) => {
     web.current?.injectJavaScript(`window.__voReceive && window.__voReceive(${JSON.stringify(msg)}); true;`);
@@ -84,84 +90,51 @@ function Main() {
     return () => clearTimeout(t);
   }, []);
 
+  // Progress from the native uploads (getting the video from Photos, then uploading it).
+  useEffect(() => {
+    const sub = Native.addListener("onProgress", (e) => send({ type: "progress", ref: e.ref, percent: e.percent, phase: e.phase }));
+    return () => sub.remove();
+  }, [send]);
+
+  // Staying logged in: a copy of the site's login is kept in the Keychain and put back on launch.
+  const saveLogin = useCallback(() => {
+    Native.saveCookies(COOKIE_DOMAIN).catch(() => {});
+  }, []);
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") saveLogin();
+    });
+    return () => sub.remove();
+  }, [saveLogin]);
+
   async function pickClips(id: string, limit: number) {
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted && perm.accessPrivileges !== "limited") {
-        send({ type: "picked", id, files: [], error: "no photos permission" });
-        return;
-      }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["videos"],
-        allowsMultipleSelection: true,
-        selectionLimit: Math.max(1, Math.min(40, limit)),
-        orderedSelection: true,
-        // The file as filmed: no conversion to a "compatible" copy (that's the slow, bigger step on the website).
-        preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
-        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-        shouldDownloadFromNetwork: true, // clips kept in iCloud
-        quality: 1,
+      // Returns as soon as they tap "add": each video is read from Photos only when it uploads.
+      const files = await Native.pickVideos(Math.max(1, Math.min(40, limit)));
+      send({
+        type: "picked",
+        id,
+        files: files.map((f) => ({ ...f, type: videoType(f.name, f.type), durationS: f.durationS ?? null })),
       });
-      if (result.canceled) {
-        send({ type: "picked", id, files: [] });
-        return;
-      }
-      const files = result.assets.map((a, i) => {
-        const ref = `${Date.now().toString(36)}-${i}-${Math.random().toString(36).slice(2, 8)}`;
-        picked.current.set(ref, a.uri);
-        const name = a.fileName || a.uri.split("/").pop() || `clip-${i + 1}.mov`;
-        const size = a.fileSize || new File(a.uri).size;
-        return {
-          ref,
-          name,
-          type: videoType(name, a.mimeType),
-          size,
-          durationS: a.duration != null ? a.duration / 1000 : null,
-        };
-      });
-      send({ type: "picked", id, files });
     } catch (e) {
       send({ type: "picked", id, files: [], error: String(e) });
     }
   }
 
   async function upload(ref: string, url: string, headers: Record<string, string>) {
-    const uri = picked.current.get(ref);
-    if (!uri) return send({ type: "uploadFailed", ref, error: "the clip isn't on this phone any more. pick it again." });
-    const controller = new AbortController();
-    uploads.current.set(ref, controller);
-    let last = -1;
-    const task = new File(uri).createUploadTask(url, {
-      httpMethod: "PUT",
-      headers,
-      sessionType: "background", // keeps going if they switch apps for a bit
-      signal: controller.signal,
-      onProgress: ({ bytesSent, totalBytes }) => {
-        const percent = totalBytes ? Math.min(99, Math.floor((bytesSent / totalBytes) * 100)) : 0;
-        if (percent !== last) {
-          last = percent;
-          send({ type: "progress", ref, percent });
-        }
-      },
-    });
     try {
-      const res = await task.uploadAsync();
-      if (res.status >= 200 && res.status < 300) send({ type: "uploaded", ref });
-      else send({ type: "uploadFailed", ref, error: `the upload didn’t go through (${res.status}).` });
+      await Native.upload(ref, url, headers);
+      send({ type: "uploaded", ref });
     } catch (e) {
-      if (!controller.signal.aborted) send({ type: "uploadFailed", ref, error: "the upload didn’t go through." });
-    } finally {
-      task.release();
-      uploads.current.delete(ref);
+      const text = e instanceof Error ? e.message : String(e);
+      if (/canceled/i.test(text)) return;
+      send({ type: "uploadFailed", ref, error: text || "the upload didn’t go through." });
     }
   }
 
   function release(ref: string) {
-    const uri = picked.current.get(ref);
-    picked.current.delete(ref);
-    uploads.current.get(ref)?.abort();
     try {
-      if (uri) new File(uri).delete(); // the picker's copy in the app's temporary files
+      Native.release(ref);
     } catch {
       // already gone
     }
@@ -211,7 +184,7 @@ function Main() {
     if (!opensInApp(event.nativeEvent.url) || !new URL(event.nativeEvent.url).hostname.endsWith("viralowner.com")) return;
     if (msg.type === "pickClips") void pickClips(msg.id, msg.limit);
     else if (msg.type === "upload") void upload(msg.ref, msg.url, msg.headers);
-    else if (msg.type === "cancel") uploads.current.get(msg.ref)?.abort();
+    else if (msg.type === "cancel") Native.cancel(msg.ref);
     else if (msg.type === "release") release(msg.ref);
     else if (msg.type === "saveVideo") void saveVideo(msg.id, msg.url, msg.fileName, msg.mode);
   }
@@ -241,6 +214,7 @@ function Main() {
           </Pressable>
         </View>
       ) : null}
+      {restored ? (
       <Web
         ref={web}
         source={{ uri: START }}
@@ -252,6 +226,10 @@ function Main() {
         onLoadEnd={() => {
           setLoading(false);
           void SplashScreen.hideAsync();
+          saveLogin();
+        }}
+        onNavigationStateChange={(nav) => {
+          if (!nav.loading) saveLogin(); // logging in or out moves to another page
         }}
         onError={() => setFailed(true)}
         onContentProcessDidTerminate={() => web.current?.reload()}
@@ -272,6 +250,7 @@ function Main() {
         bounces
         originWhitelist={["https://*", "about:*", "blob:*", "data:*"]}
       />
+      ) : null}
       {loading && !failed ? (
         <View style={styles.loading} pointerEvents="none">
           <ActivityIndicator color={CORAL} />
