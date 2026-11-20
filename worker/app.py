@@ -3943,10 +3943,10 @@ def text_look(style: dict, scale: float) -> dict:
     else:
         # Always a stroke, like TikTok's classic text, so the words read over any footage: at least a
         # solid outline, dark around light text and light around dark text.
-        outline = max(max(3, round(size * 0.07)),
+        # (Classic stays a crisp TikTok-style edge: thicker ran the letters and words together.)
+        outline = max(max(3, round(size * 0.05)),
                       {"none": 0, "thin": round(size * 0.05), "thick": round(size * 0.09),
-                       # the outline captions' stroke: 6 on their size of 76
-                       "caption": round(size * 6 / 76)}.get(style.get("outline"), 0))
+                       "caption": round(size * 0.055)}.get(style.get("outline"), 0))
         text_light = luminance(style.get("color", "#FFFFFF")) >= 0.5
         stroke = style.get("outlineColor") or "#000000"
         if (luminance(stroke) >= 0.5) == text_light:
