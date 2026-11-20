@@ -70,6 +70,15 @@ export async function proxy(request: NextRequest) {
     return updateSession(request, false, "/dashboard");
   }
 
+  // Signed-in people opening the log-in page (the iPhone app starts there) go straight on: to where
+  // they were headed (?next=, only this site's own pages), else their dashboard.
+  if (pathname === "/login" && request.cookies.getAll().some((c) => c.name.startsWith("sb-") && c.name.includes("auth-token"))) {
+    const next = request.nextUrl.searchParams.get("next") ?? "";
+    const ok = next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") && !next.startsWith("/login");
+    const to = ok ? next : "/dashboard";
+    return updateSession(request, false, to);
+  }
+
   // The showcase's thumbnails (public/showcase/) and each page's featured image.
   if (PUBLIC_PATHS.has(pathname) || pathname.startsWith("/showcase/") || pathname.endsWith("/opengraph-image")) {
     return NextResponse.next();

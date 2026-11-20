@@ -20,7 +20,7 @@ import Native from "./modules/viralowner-native";
 const Web = WebView as unknown as ComponentType<IOSWebViewProps & RefAttributes<WebView>>;
 
 const SITE = "https://www.viralowner.com";
-const START = `${SITE}/login`; // signed in: goes straight on to their videos
+const START = `${SITE}/dashboard`; // not signed in: the site sends them to log in
 const BG = "#0B0B0F";
 const CORAL = "#F63165";
 const APP_VERSION = 2;
