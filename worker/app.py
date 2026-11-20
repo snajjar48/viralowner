@@ -930,6 +930,22 @@ PREFS_SCHEMA = {
 }
 
 
+_ALWAYS = re.compile(r"\b(always|from now on|every (single )?(video|time)|all (of )?my videos|in (all|every) (future )?videos?|going forward|by default)\b")
+_CASE_PREF = re.compile(r"lower ?case|upper ?case|all caps|capitali[sz]|capital letters|title case")
+
+
+def one_off_text_pref(pref: str, history: list[str]) -> bool:
+    """A learned preference that may only carry over when the user asked for it in every video: text
+    capitals (e.g. all lowercase) or text kept on the whole video. True if it's one of those and no request
+    of theirs asked for it as a standing rule."""
+    low = pref.lower()
+    if _CASE_PREF.search(low):
+        return not any(_ALWAYS.search(h.lower()) and _CASE_PREF.search(h.lower()) for h in history)
+    if asks_text_whole_video(low):
+        return not any(_ALWAYS.search(h.lower()) and asks_text_whole_video(h) for h in history)
+    return False
+
+
 def standing_preferences(history: list) -> str:
     """What this user wants in every video, learned from everything they've asked for before (their
     additional requests and change requests, oldest first). "" if nothing carries over. Cached."""
@@ -938,7 +954,7 @@ def standing_preferences(history: list) -> str:
     items = [" ".join(h.split())[:500] for h in history or [] if isinstance(h, str) and h.strip()][-60:]
     if not items:
         return ""
-    key = hashlib.sha256(json.dumps(items).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps(["v2", items]).encode()).hexdigest()
     try:
         cached = prefs_store.get(key)
         if isinstance(cached, str):
@@ -955,10 +971,14 @@ def standing_preferences(history: list) -> str:
             "asking for or keep removing (if they removed slow motion several times, they don't want slow motion "
             "unless they ask), quality, and anything they had to repeat. Leave out one-offs that only fit one video: "
             "a specific word fix, one clip's length, one shot's text. When a later request contradicts an earlier "
-            "one, the later one wins. Short, concrete instructions, at most 12.",
+            "one, the later one wins. Two things are never standing preferences unless the user said to do them in "
+            "every video (\"always\", \"from now on\", \"in all my videos\"): all-lowercase (or any capitalization) "
+            "for the text, and keeping the text on screen for the whole video. Asked for in one video, they're one-offs. "
+            "Short, concrete instructions, at most 12.",
             [{"type": "text", "text": "\n".join(f"- {h}" for h in items)}],
             PREFS_SCHEMA, "preferences", effort="medium")
         prefs = [p.strip() for p in result["data"].get("preferences") or [] if isinstance(p, str) and p.strip()][:12]
+        prefs = [p for p in prefs if not one_off_text_pref(p, items)]
         text = "\n".join(f"- {p}" for p in prefs)
         print(f"standing preferences (${result['cost_usd']}):\n{text or '(none)'}")
     except Exception as e:  # noqa: BLE001
@@ -1257,7 +1277,77 @@ def start_job(req: dict | None = None) -> None:
     if old:
         shutil.rmtree(old, ignore_errors=True)
     JOB["shot_cache_dir"] = tempfile.mkdtemp(prefix="shots")
+    # Clips downloaded and studied in this job (a fix pass reuses them instead of starting over).
+    old = JOB.get("study_dir")
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+    JOB["study_dir"] = tempfile.mkdtemp(prefix="study")
+    JOB["study_memo"] = {}
     warm_speech()  # most jobs need speech; boot the GPU while the clips download
+
+
+def fetch_clips(fetch, downloads: list[tuple[str, Path]], clip_keys: set[str]) -> None:
+    """Downloads these files (6 at a time). The user's clips are kept for the rest of the job, so a fix
+    pass links them instead of downloading them again (checked unchanged first)."""
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor
+
+    keep_dir = JOB.get("study_dir")
+    kept = JOB.setdefault("study_files", {})
+
+    def one(d: tuple[str, Path]) -> None:
+        key, dest = d
+        if not keep_dir or key not in clip_keys:
+            fetch(key, dest)
+            return
+        keep = Path(keep_dir) / hashlib.sha1(key.encode()).hexdigest()
+        try:
+            st = keep.stat()
+            if kept.get(key) == (st.st_size, st.st_mtime_ns):
+                os.link(keep, dest)
+                return
+        except OSError:
+            pass
+        fetch(key, dest)
+        try:
+            keep.unlink(missing_ok=True)
+            os.link(dest, keep)
+            st = keep.stat()
+            kept[key] = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            kept.pop(key, None)
+
+    with ThreadPoolExecutor(6) as pool:
+        list(pool.map(one, downloads))
+
+
+def study_once(name: str, clips: list[dict], work, params: tuple = ()) -> None:
+    """Runs `work()` (which adds what it learns to each clip) once per job for these clips: a fix pass
+    gets the same results back instead of studying the clips again."""
+    import copy
+
+    memo = JOB.get("study_memo")
+    keys = tuple(c.get("storageKey") for c in clips)
+    key = (name, keys, params)
+    if memo is not None and None not in keys and key in memo:
+        for c, added in zip(clips, memo[key]):
+            c.update(copy.deepcopy(added))
+        print(f"{name}: reused from earlier in this job")
+        return
+    before = [{k: c[k] for k in c} for c in clips]
+    work()
+    if memo is not None and None not in keys:
+        memo[key] = [copy.deepcopy({k: v for k, v in c.items() if k not in b or b[k] is not v}) for c, b in zip(clips, before)]
+
+
+def study_frames_dir(workdir: Path, name: str) -> Path:
+    """Where sampled clip frames go: kept for the whole job when there's a job, so a reused study's
+    frames are still there."""
+    if JOB.get("study_dir"):
+        d = Path(JOB["study_dir"]) / name
+        d.mkdir(exist_ok=True)
+        return d
+    return workdir
 
 
 def job_heads_up() -> list[str]:
@@ -4195,7 +4285,11 @@ _KEEP_WORD = re.compile(r"\b(keep|kept|stay|stays|staying|leave|left|show|shown|
 _SPAN_WORD = re.compile(r"\b(whole|entire|full|throughout|all the way|the whole time|all the time|every (shot|frame|second)"
                         r"|start to (finish|end)|beginning to (the )?end|first (frame|second) to (the )?last|never|nonstop|non-stop)\b")
 _NOT_WHOLE = re.compile(r"\b(don'?t|do not|doesn'?t|shouldn'?t|not)\b.{0,25}\b(keep|stay|whole|entire|throughout|all the way)\b")
-_TIMED = re.compile(r"\b(only (at|for|in|during)|for the first|after (the )?\d|until|then (remove|hide|take)|disappear(s)? (after|when|at))\b")
+_TIMED = re.compile(r"\b(only (at|for|in|during)|for the first|after (the )?\d|until|then (remove|hide|take)|disappear(s)? (after|when|at)"
+                    # "only on the first shot", "first shot only", "remove it from the other shots"
+                    r"|(only|just) (on|over|in) (the )?(first|last|opening|final|start|end|beginning|intro|\d)"
+                    r"|(first|opening|last|final) (shot|clip|scene|part)s? only"
+                    r"|(remove|take|drop|delete|hide|get rid of)\b.{0,25}\b(from|off|on) (all )?(of )?the (other|rest|remaining|later))\b")
 
 
 def asks_text_whole_video(text: str) -> bool:
@@ -6210,8 +6304,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         downloads.append((base["storageKey"], prev_path))
     if sound == "upload" and isinstance(req.get("audio"), dict) and req["audio"].get("storageKey"):
         downloads.append((req["audio"]["storageKey"], own_audio))
-    with ThreadPoolExecutor(6) as pool:
-        list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
+    fetch_clips(fetch, downloads, {c["storageKey"] for c in req["clips"]})
 
     clips = []
     for i, c in enumerate(req["clips"]):
@@ -6273,11 +6366,12 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         if directed:
             print("scratch: the storyboard's plan didn't fit the clips any more, directing again")
         report("analyzing", 8)
-        sample_clip_frames(clips, workdir, limit=SCRATCH_CLIP_FRAMES, per_clip=SCRATCH_FRAMES_PER_CLIP,
-                           cap=SCRATCH_CLIP_FRAMES_CAP)
+        study_once("scratch frames", clips, lambda: sample_clip_frames(
+            clips, study_frames_dir(workdir, "scratch-frames"), limit=SCRATCH_CLIP_FRAMES,
+            per_clip=SCRATCH_FRAMES_PER_CLIP, cap=SCRATCH_CLIP_FRAMES_CAP))
         report("analyzing", 12)
         audio_info_box: list[dict] = []
-        jobs = [lambda: scratch_speech(clips)]
+        jobs = [lambda: study_once("clip speech", clips, lambda: scratch_speech(clips))]
         if has_audio_file:
             jobs.append(lambda: audio_info_box.append(audio_file_info(own_audio)))
         with ThreadPoolExecutor(2) as pool:
@@ -6785,7 +6879,7 @@ HOOK_SCHEMA = {
         "verdict": {"type": "string", "enum": ["strong", "okay", "weak"]},
         "why": {"type": "string", "description": "one or two short sentences, lowercase, talking to the user."},
         "rewrites": {"type": "array", "items": {"type": "string"}, "description": "3 stronger first lines in the user's own voice and topic, each under 18 words."},
-        "title": {"type": "string", "description": "an opening on-screen title for the video, 3-8 words, lowercase unless a name."},
+        "title": {"type": "string", "description": "an opening on-screen title for the video, 3-8 words, in normal sentence case (all lowercase only if the user asked)."},
     },
     "required": ["has", "verdict", "why", "rewrites", "title"],
     "additionalProperties": False,
@@ -6828,7 +6922,7 @@ def hook_check(req: dict, workdir: Path, fetch=r2_fetch) -> dict:
         "of who it's for, a specific result, a question, or a bold claim. Never a greeting or an intro. Judge the user's "
         "first line honestly, then write 3 stronger first lines they could say instead, keeping their topic, facts and "
         "voice (no made-up numbers: use a number only if they said one or it's about their own business), plus a short "
-        "opening on-screen title. Lowercase, plain, no hashtags, no emojis.",
+        "opening on-screen title: plain, normal sentence case (all lowercase only if the user asked for it), no hashtags, no emojis.",
         [{"type": "text", "text": f"{about}\n\ntheir first line: \"{line}\""}], HOOK_SCHEMA, "hook check failed",
         effort="medium")
     data = result["data"]
@@ -6885,8 +6979,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     own_audio = workdir / "own-audio"
     if music == "upload" and isinstance(req.get("audio"), dict) and req["audio"].get("storageKey"):
         downloads.append((req["audio"]["storageKey"], own_audio))
-    with ThreadPoolExecutor(6) as pool:
-        list(pool.map(lambda d: fetch(d[0], d[1]), downloads))
+    fetch_clips(fetch, downloads, {c["storageKey"] for c in req["clips"]})
 
     if check_end_screen:
         # Analyzed before end screens were trimmed: leave out any shots of the app's end screen.
@@ -6905,7 +6998,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     for i, c in enumerate(req["clips"]):
         path = workdir / f"clip{i:02d}"
         try:
-            clips.append({"id": c["id"], "path": path, **probe_clip(path)})
+            clips.append({"id": c["id"], "path": path, "storageKey": c["storageKey"], **probe_clip(path)})
         except Exception as e:  # noqa: BLE001
             print(f"skipping unreadable clip {c['id']}: {e}")
     if not clips:
@@ -7135,7 +7228,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     picked: dict[int, dict] = {}
     if needs_claude:
         report("analyzing", 8)
-        sample_clip_frames(clips, workdir)
+        study_once("clip frames", clips, lambda: sample_clip_frames(clips, study_frames_dir(workdir, "clip-frames")))
 
     if previous:
         # "request a change": Claude edits the current version.
@@ -7273,7 +7366,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         ]
         if sum(c["duration"] for c in clips if c["has_audio"]) <= MAX_CLIP_SPEECH_S:
             report("analyzing", 14)
-            scratch_speech(clips)
+            study_once("clip speech", clips, lambda: scratch_speech(clips))
 
         report("matching", 25)
         result = match_clips(req["inspo"], inspo_frames, clips, fixed, text_mode if text_mode != "set" else "keep",
@@ -7899,7 +7992,7 @@ def check_render_request(req: dict) -> str | None:
 job_resources = dict(image=image, secrets=secrets, cpu=4, memory=4096)
 
 
-@app.function(**job_resources, timeout=900)
+@app.function(**job_resources, timeout=900, nonpreemptible=True)
 def analyze_job(storage_key: str, category: str | None = None) -> dict:
     """Analyzes an uploaded inspo (read from storage by key). `category`: the kind of video the user picked."""
     start_job({"category": category})
@@ -8015,7 +8108,9 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
         ("what they asked for (start from scratch)", ((req.get("scratch") or {}).get("prompt") or "") if isinstance(req.get("scratch"), dict) else ""),
         ("their change request", req.get("request") or ""),
         ("their notes", options.get("notes") or ""),
-        ("their text setting", ((options.get("text") or {}).get("custom") or "") if (options.get("text") or {}).get("mode") == "custom" else ""),
+        ("their own on-screen text, typed in the text setting (it goes on exactly as they typed it, capitals and "
+         "punctuation included, so never count its wording or capitals as a miss, even against a standing preference)",
+         ((options.get("text") or {}).get("custom") or "") if (options.get("text") or {}).get("mode") == "custom" else ""),
         ("their standing preferences", prefs or ""),
     ]
     asks = [(k, str(v).strip()[:2000]) for k, v in asks if str(v or "").strip()]
@@ -8240,7 +8335,7 @@ def made_with_review(req: dict, make) -> dict:
     return out2
 
 
-@app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=1800)
+@app.function(image=image, secrets=secrets, cpu=8, memory=8192, timeout=1800, nonpreemptible=True)  # never cut off mid-video
 def render_job(req: dict) -> dict:
     """Makes one version of the user's video (see render_video)."""
     try:
