@@ -8614,6 +8614,39 @@ def thumb_job(key: str) -> dict:
     return {"ok": True}
 
 
+@app.function(image=image, secrets=secrets, timeout=600, cpu=8)
+def preview_job(key: str) -> dict:
+    """A clip's preview copy (<key>.preview.mp4) for trimming in the editor: small (540p), normal
+    colour, a keyframe every few frames so dragging through it shows each moment at once. Only for
+    looking at: renders always use the original."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # Downloaded first (many connections at once): ffmpeg reading it from the link was 10x slower.
+        url = str(Path(tmp) / "clip")
+        r2_client().download_file(os.environ["R2_BUCKET"], key, url)
+        info = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_type,codec_name,color_transfer",
+                               "-of", "json", url]))
+        streams = info.get("streams", [])
+        video = next((s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in ("mjpeg", "png")), None)
+        if not video:
+            return {"ok": False}
+        # The first sound track ffmpeg can decode (iPhones put an undecodable spatial one first).
+        audio = next((s for s in streams if s.get("codec_type") == "audio" and s.get("codec_name") not in (None, "", "unknown", "none")), None)
+        hdr = video.get("color_transfer") in ("arib-std-b67", "smpte2084")
+        # Down to 30 frames a second first (phones film 60-120), then small, then the colour: the
+        # slow steps only see the frames that are kept.
+        vf = ",".join(["fps=fps=30:round=near", "scale=540:960:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear",
+                       *([tonemap_filter()] if hdr else []), "format=yuv420p"])
+        out = Path(tmp) / "preview.mp4"
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", url, "-map", f"0:{video['index']}",
+               *(["-map", f"0:{audio['index']}", "-c:a", "aac", "-b:a", "64k", "-ac", "2"] if audio else ["-an"]),
+               "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-g", "6", "-keyint_min", "6",
+               "-sc_threshold", "0", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+               "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=540)
+        r2_client().upload_file(str(out), os.environ["R2_BUCKET"], f"{key}.preview.mp4", ExtraArgs={"ContentType": "video/mp4"})
+        return {"ok": True, "bytes": out.stat().st_size}
+
+
 @app.function(image=image, secrets=secrets, timeout=120)
 def ping_job() -> dict:
     """Test job: walks through the stages so the website can follow along."""
@@ -8711,6 +8744,14 @@ def api():
         if not re.match(CLIP_KEY_RE, storage_key) or ".." in storage_key:
             raise HTTPException(status_code=400, detail="invalid storage key")
         return started(thumb_job.spawn(storage_key))
+
+    @web.post("/jobs/preview", dependencies=[Depends(require_token)])
+    def start_preview(storage_key: str = Body(embed=True, alias="storageKey")) -> dict:
+        import re
+
+        if not re.match(CLIP_KEY_RE, storage_key) or ".." in storage_key:
+            raise HTTPException(status_code=400, detail="invalid storage key")
+        return started(preview_job.spawn(storage_key))
 
     @web.post("/jobs/hook", dependencies=[Depends(require_token)])
     def start_hook(req: dict = Body(...)) -> dict:

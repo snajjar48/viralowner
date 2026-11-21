@@ -95,6 +95,10 @@ function Player({
 }: Props & { size: "small" | "big"; onOpen?: () => void; wantStrip: boolean; onWantStrip: () => void }) {
   const big = size === "big";
   const video = useRef<HTMLVideoElement>(null);
+  /** A jump asked for while the last is still landing. */
+  const pending = useRef<number | null>(null);
+  /** Whether it has played yet (phones draw no frames before). */
+  const primed = useRef(false);
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(start ?? 0);
   const [loaded, setLoaded] = useState(big);
@@ -119,6 +123,7 @@ function Player({
     const v = video.current;
     if (!big || !v) return;
     v.currentTime = a;
+    primed.current = true;
     void v.play().catch(() => setPlaying(false));
     // Only when it opens: later trim changes don't restart it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -128,6 +133,7 @@ function Player({
     const v = video.current;
     if (!v) return;
     setLoaded(true);
+    primed.current = true;
     if (v.paused) {
       if (v.currentTime < a - 0.05 || v.currentTime >= b - 0.05) v.currentTime = a;
       void v.play().catch(() => setPlaying(false));
@@ -136,14 +142,49 @@ function Player({
     }
   }
 
+  // While dragging: one jump at a time (each new one would cancel the last before it shows), going
+  // to the latest place asked for when the last one lands.
+  useEffect(() => {
+    const v = video.current;
+    if (!v) return;
+    const landed = () => {
+      const next = pending.current;
+      pending.current = null;
+      if (next !== null && Math.abs(v.currentTime - next) > 0.01) v.currentTime = next;
+    };
+    v.addEventListener("seeked", landed);
+    return () => v.removeEventListener("seeked", landed);
+  }, []);
+
   /** Shows this moment (paused), as the handles or the strip are dragged. */
   function seek(to: number) {
     const v = video.current;
     setT(to);
     if (!v) return;
     setLoaded(true);
+    if (!primed.current) {
+      // Phones only draw a video's frames once it has played: a muted start-and-stop, the first time.
+      primed.current = true;
+      const muted = v.muted;
+      v.muted = true;
+      v.preload = "auto";
+      void v
+        .play()
+        .then(() => {
+          v.pause();
+          v.muted = muted;
+          v.currentTime = pending.current ?? to;
+          pending.current = null;
+        })
+        .catch(() => {
+          v.muted = muted;
+        });
+      pending.current = to;
+      return;
+    }
     v.pause();
-    v.currentTime = to;
+    if (v.seeking) pending.current = to;
+    else v.currentTime = to;
   }
 
   const picture = (

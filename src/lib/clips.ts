@@ -32,6 +32,30 @@ export const thumbKeyFor = (clipKey: string) => `${clipKey}.jpg`;
 /** A clip's still, to show instead of loading the video itself. The page falls back to the video if it's missing. */
 export const clipThumbUrl = (clipKey: string) => createDownloadUrl(thumbKeyFor(clipKey), { expiresIn: 6 * 3600 });
 
+/** A clip's small preview copy (the worker makes it): what the editor plays and trims on. */
+export const previewKeyFor = (clipKey: string) => `${clipKey}.preview.mp4`;
+
+/** Asks the worker to make a clip's preview copy (takes it a few seconds; nothing waits for it). */
+export async function requestPreview(clipKey: string) {
+  try {
+    await workerFetch("/jobs/preview", { method: "POST", body: { storageKey: clipKey }, timeoutMs: 15_000 });
+  } catch (error) {
+    console.error("Requesting a clip preview failed:", error);
+  }
+}
+
+/**
+ * Where the editor plays a clip from: its preview copy when it's made (small, quick to drag
+ * through), else the original, and asks for the copy so it's there next time.
+ */
+export async function clipPreviewUrl(clipKey: string) {
+  if (await headObject(previewKeyFor(clipKey)).catch(() => null)) {
+    return createDownloadUrl(previewKeyFor(clipKey), { expiresIn: 6 * 3600 });
+  }
+  void requestPreview(clipKey);
+  return createDownloadUrl(clipKey, { expiresIn: 6 * 3600 });
+}
+
 /**
  * Validates a clip's details, records it, and returns where to upload it: one URL, plus, for big
  * files, a URL per part so they upload several parts at once (much faster). Also where to put its still.
@@ -121,7 +145,7 @@ export async function completeClip(projectId: string, clipId: string, uploadId?:
 
   const rounded = Math.round(durationS * 100) / 100;
   await markClipUploaded(clip.id, rounded, head.sizeBytes);
-  if (!hasThumb) await requestThumb(clip.storageKey);
+  await Promise.all([hasThumb ? null : requestThumb(clip.storageKey), requestPreview(clip.storageKey)]);
   return {
     status: 200,
     body: {
