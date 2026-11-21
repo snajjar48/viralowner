@@ -2963,8 +2963,9 @@ def avoid_reused_footage(plan: list[dict], clips: list[dict], pinned: list[bool]
 
 
 def tonemap_filter() -> str:
-    """HDR (HLG/PQ) to normal video, so iPhone footage doesn't look washed out."""
-    return ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+    """HDR (HLG/PQ) to normal video that looks like the iPhone's own camera roll. npl=350 was fitted to a
+    camera-roll screenshot of the same frame (off by ~5 levels; npl=100 was 42 too bright and warm)."""
+    return ("zscale=t=linear:npl=350,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
             "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
 
 
