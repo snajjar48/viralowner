@@ -102,9 +102,47 @@ function Player({
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(start ?? 0);
   const [loaded, setLoaded] = useState(big);
-  const a = Math.max(0, start ?? 0);
-  const b = Math.min(durationS, end ?? durationS);
+  // While a handle is held, the trim lives here (so only the trimmer redraws as the finger moves);
+  // the page gets it when the finger lets go.
+  const [draft, setDraftState] = useState<{ a: number; b: number } | null>(null);
+  const draftRef = useRef<{ a: number; b: number } | null>(null);
+  const savedA = Math.max(0, start ?? 0);
+  const savedB = Math.min(durationS, end ?? durationS);
+  const a = draft ? draft.a : savedA;
+  const b = draft ? draft.b : savedB;
   const frames = useFilmstrip(src, durationS, wantStrip);
+  /** The bigger picture above the strip while dragging (small player only). */
+  const bubble = useRef<HTMLCanvasElement | null>(null);
+
+  function setDraft(d: { a: number; b: number } | null) {
+    draftRef.current = d;
+    setDraftState(d);
+  }
+
+  function commit() {
+    const d = draftRef.current;
+    if (!d) return;
+    setDraft(null);
+    if (d.a !== savedA) onSetStart(d.a);
+    if (d.b !== savedB) onSetEnd(d.b);
+  }
+
+  /** Copies the frame showing into the bubble (a cross-site video can still be drawn, just not read). */
+  function drawBubble() {
+    const v = video.current;
+    const c = bubble.current;
+    if (!v || !c || !v.videoWidth || !v.videoHeight) return;
+    const ctx = c.getContext("2d");
+    if (!ctx) return;
+    const scale = Math.max(c.width / v.videoWidth, c.height / v.videoHeight);
+    const dw = v.videoWidth * scale;
+    const dh = v.videoHeight * scale;
+    try {
+      ctx.drawImage(v, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+    } catch {
+      // no frame yet
+    }
+  }
 
   // Keep playback inside the shot: loop back to its start at its end.
   useEffect(() => {
@@ -148,6 +186,7 @@ function Player({
     const v = video.current;
     if (!v) return;
     const landed = () => {
+      drawBubble();
       const next = pending.current;
       pending.current = null;
       if (next !== null && Math.abs(v.currentTime - next) > 0.01) v.currentTime = next;
@@ -211,7 +250,7 @@ function Player({
     </>
   );
 
-  const trimmed = start !== null || end !== null;
+  const trimmed = draft !== null || start !== null || end !== null;
   const trimmer = (
     <div className="flex min-w-0 flex-1 flex-col justify-center gap-2" onPointerDownCapture={onWantStrip}>
       <Trimmer
@@ -225,13 +264,22 @@ function Player({
         tall={big}
         onScrub={seek}
         onStart={(x) => {
-          onSetStart(x);
+          setDraft({ a: x, b: draftRef.current?.b ?? b });
           seek(x);
         }}
         onEnd={(x) => {
-          onSetEnd(x);
+          setDraft({ a: draftRef.current?.a ?? a, b: x });
           seek(x);
         }}
+        onRelease={commit}
+        bubbleRef={
+          big
+            ? undefined
+            : (el) => {
+                bubble.current = el;
+                if (el) drawBubble();
+              }
+        }
       />
       <div className="flex items-center gap-2 text-xs">
         <span className="mr-auto text-muted tabular-nums">
@@ -308,6 +356,8 @@ function Trimmer({
   onScrub,
   onStart,
   onEnd,
+  onRelease,
+  bubbleRef,
 }: {
   label: string;
   durationS: number;
@@ -320,11 +370,18 @@ function Trimmer({
   onScrub: (t: number) => void;
   onStart: (t: number) => void;
   onEnd: (t: number) => void;
+  /** A drag (or key press) is over: keep the trim. */
+  onRelease: () => void;
+  /** Where the small player draws the frame showing, above the strip while dragging. */
+  bubbleRef?: (el: HTMLCanvasElement | null) => void;
 }) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<"start" | "end" | "scrub" | null>(null);
   /** Where on a handle it was grabbed (so it doesn't jump to the finger). */
   const grab = useRef(0);
+  /** The finger's latest place, applied once per screen refresh. */
+  const latestX = useRef(0);
+  const frame = useRef(0);
   const [dragging, setDragging] = useState<"start" | "end" | "scrub" | null>(null);
   const dur = Math.max(durationS, 0.1);
   const pct = (x: number) => `${(100 * Math.min(Math.max(x, 0), dur)) / dur}%`;
@@ -353,14 +410,29 @@ function Trimmer({
     if (kind === "scrub") move(kind, at);
   }
 
+  function apply() {
+    frame.current = 0;
+    if (drag.current) move(drag.current, timeAt(latestX.current) + grab.current);
+  }
+
   function onMove(e: ReactPointerEvent<HTMLElement>) {
-    if (drag.current) move(drag.current, timeAt(e.clientX) + grab.current);
+    if (!drag.current) return;
+    latestX.current = e.clientX;
+    if (!frame.current) frame.current = requestAnimationFrame(apply);
   }
 
   function up() {
+    if (frame.current) {
+      cancelAnimationFrame(frame.current);
+      apply(); // the last place the finger was
+    }
+    const was = drag.current;
     drag.current = null;
     setDragging(null);
+    if (was === "start" || was === "end") onRelease();
   }
+
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   function key(kind: "start" | "end") {
     return (e: KeyboardEvent) => {
@@ -370,14 +442,36 @@ function Trimmer({
       else if (e.key === "ArrowRight" || e.key === "ArrowUp") move(kind, at + step);
       else return;
       e.preventDefault();
+      onRelease();
     };
   }
 
   const tiles = frames ?? Array.from({ length: FRAMES }, () => poster);
   const h = tall ? "h-14" : "h-11";
+  // Where the bubble points: the handle being dragged, or the line.
+  const at = dragging === "start" ? a : dragging === "end" ? b : t;
 
   return (
     <div className={`relative ${h} touch-none select-none px-3.5`}>
+      {dragging && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-full z-30 mb-2 flex w-[4.5rem] -translate-x-1/2 flex-col items-center gap-1"
+          style={{ left: `clamp(2.25rem, calc(0.875rem + (100% - 1.75rem) * ${Math.min(Math.max(at, 0), dur) / dur}), calc(100% - 2.25rem))` }}
+        >
+          {bubbleRef && (
+            <canvas
+              ref={bubbleRef}
+              width={144}
+              height={256}
+              className="h-32 w-[4.5rem] rounded-lg border-2 border-white bg-black shadow-[0_4px_16px_rgba(0,0,0,0.6)]"
+            />
+          )}
+          <span className="rounded-full bg-black/85 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white">
+            {(Math.round(at * 100) / 100).toFixed(2)}s
+          </span>
+        </div>
+      )}
       {/* The strip (inset by the handles' width, so the handles sit on its ends at 0 and the end). */}
       <div
         ref={track}
