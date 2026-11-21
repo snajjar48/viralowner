@@ -571,7 +571,7 @@ export async function assignClip(projectId: string, clipId: string, shotIndex: n
         ? sql`
           UPDATE clips SET shot_indexes = ARRAY(
             SELECT DISTINCT unnest(array_append(shot_indexes, ${shotIndex}::int)) ORDER BY 1)
-          WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`
+          WHERE id = ${clipId} AND project_id = ${projectId} AND status IN ('uploading', 'uploaded')`
         : sql`
           UPDATE clips SET shot_indexes = array_remove(shot_indexes, ${shotIndex}::int)
           WHERE id = ${clipId} AND project_id = ${projectId}`,
@@ -588,7 +588,7 @@ export async function assignClip(projectId: string, clipId: string, shotIndex: n
     }
     await sql.transaction([
       sql`UPDATE clips SET shot_index = NULL WHERE project_id = ${projectId} AND shot_index = ${shotIndex}`,
-      sql`UPDATE clips SET shot_index = ${shotIndex} WHERE id = ${clipId} AND project_id = ${projectId} AND status = 'uploaded'`,
+      sql`UPDATE clips SET shot_index = ${shotIndex} WHERE id = ${clipId} AND project_id = ${projectId} AND status IN ('uploading', 'uploaded')`,
     ]);
   }
 }

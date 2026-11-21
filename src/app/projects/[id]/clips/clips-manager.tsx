@@ -106,7 +106,7 @@ export function ClipsManager({
 
   /** Puts a clip on a shot, or takes it off. One clip can fill several shots (a different part of it each). */
   async function assign(item: Item, shotIndex: number, on: boolean) {
-    if (!item.clipId || item.status !== "uploaded") return;
+    if (!item.clipId || !(item.status === "uploaded" || inFlight(item.status))) return;
     const before = items;
     setItems((list) =>
       list.map((i) =>
@@ -184,11 +184,15 @@ export function ClipsManager({
 
   const uploaded = items.filter((i) => i.status === "uploaded");
   const busy = items.some((i) => inFlight(i.status));
+  // Clips still uploading count too: they keep going on the next step, which waits for them.
+  const canContinue = uploaded.length > 0 || busy;
+  /** Clips that can go on shots: uploaded, or uploading and already saved. */
+  const placeable = items.filter((i) => i.clipId && (i.status === "uploaded" || inFlight(i.status)));
   const progress = uploadProgress(items);
   useEffect(() => {
     onStatus?.({ uploaded: uploaded.length, busy });
   }, [onStatus, uploaded.length, busy]);
-  const covered = new Set(uploaded.flatMap((i) => i.shotIndexes));
+  const covered = new Set(placeable.flatMap((i) => i.shotIndexes));
   const missing = shots.length - covered.size;
   const selectedItem = items.find((i) => i.key === selected) ?? null;
 
@@ -354,9 +358,7 @@ export function ClipsManager({
           <p className="text-center text-sm text-muted">
             {freeform
               ? "your clips keep uploading while you fill in the rest."
-              : uploaded.length
-                ? `${progress.left} still uploading (${progress.percent}%). you can continue: they keep uploading on the next step.`
-                : "your first clip is almost there…"}
+              : `${progress.left} still uploading (${progress.percent}%). you can continue: they keep uploading on the next step.`}
           </p>
         )}
         {error && (
@@ -369,7 +371,7 @@ export function ClipsManager({
           <button
             type="button"
             onClick={onContinue}
-            disabled={!uploaded.length || !confirmed || continuing}
+            disabled={!canContinue || !confirmed || continuing}
             className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
           >
             {continuing ? "saving…" : "continue to options"}
@@ -425,7 +427,8 @@ function ClipTile({
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: item.key,
   });
-  const ready = item.status === "uploaded";
+  // Uploaded, or uploading and saved: it can go on shots already.
+  const ready = item.status === "uploaded" || (!!item.clipId && inFlight(item.status));
 
   return (
     <li

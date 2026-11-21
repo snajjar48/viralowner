@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { ClipThumb } from "@/components/clip-thumb";
@@ -144,10 +145,21 @@ export function OptionsForm({
   }
 
   const problem = optionsProblem(options, !!uploadedAudio);
+  // No clip in yet and none uploading in this tab (e.g. the page was reopened mid-upload).
+  const nothingToMake = clips.length === 0 && uploads.left === 0;
 
   return (
     <div className="flex flex-col gap-4">
       <UploadsStatus projectId={projectId} />
+      {nothingToMake && uploads.failed === 0 && (
+        <p role="alert" className="rounded-2xl border border-coral/30 bg-coral/[0.06] p-3 text-center text-sm">
+          your clips aren’t uploaded yet.{" "}
+          <Link href={`/projects/${projectId}/clips`} className="underline">
+            add them
+          </Link>{" "}
+          to make your video.
+        </p>
+      )}
       <OptionsFields value={options} onChange={setOptions} uploadedAudio={uploadedAudio} />
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
@@ -233,7 +245,7 @@ export function OptionsForm({
         <button
           type="button"
           onClick={make}
-          disabled={making || !!problem}
+          disabled={making || !!problem || nothingToMake}
           className={`${buttonClass} flex h-14 items-center justify-center gap-2 text-lg disabled:cursor-not-allowed disabled:opacity-50`}
         >
           <SparkleIcon className="size-5" />{" "}

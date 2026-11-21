@@ -37,7 +37,8 @@ async function Options({ id }: { id: string }) {
   const [inspo, clips] = await Promise.all([getInspiration(userId, id), listClips(userId, id)]);
   if (!inspo?.breakdown) redirect(`/projects/${id}/breakdown`);
   const uploaded = clips.filter((c) => c.status === "uploaded");
-  if (!uploaded.length || !project.clipsRightsConfirmedAt) redirect(`/projects/${id}/clips`);
+  // Clips can still be uploading from the clips step (this page waits for them before making).
+  if (!project.clipsRightsConfirmedAt) redirect(`/projects/${id}/clips`);
 
   const optionClips = await Promise.all(
     uploaded.map(async (c) => ({
