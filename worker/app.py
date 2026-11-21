@@ -5532,6 +5532,37 @@ def plan_effects(words: str, effects: dict, shots: list[dict]) -> tuple[dict, st
     return new, d["summary"].strip(), result["cost_usd"]
 
 
+def drop_undecodable_streams(path: Path) -> None:
+    """Originals from newer iPhones carry an extra spatial-audio track (APAC) and metadata tracks
+    ffmpeg can't decode; with the spatial one first, every audio step fails. Rewrites the file with just
+    the video and the sound tracks it can decode: stream copies, nothing re-encoded (same quality, same
+    rotation, color and HDR info)."""
+    try:
+        info = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "stream=index,codec_type,codec_name",
+                               "-of", "json", str(path)]))
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return  # probe() says what's wrong with it later
+    streams = info.get("streams", [])
+    bad = [s for s in streams if s.get("codec_type") == "audio" and s.get("codec_name") in (None, "", "unknown", "none")]
+    if not bad:
+        return
+    good_audio = [s["index"] for s in streams if s.get("codec_type") == "audio" and s not in bad]
+    videos = [s["index"] for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in ("mjpeg", "png")]
+    if not videos:
+        return
+    out = path.with_name(path.name + ".clean.mov")
+    cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", f"0:{videos[0]}",
+           *[x for i in good_audio for x in ("-map", f"0:{i}")],
+           "-c", "copy", "-map_metadata", "0", "-strict", "unofficial", "-f", "mov", str(out)]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+        os.replace(out, path)
+        print(f"dropped {len(bad)} undecodable audio track(s) from {path.name}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        out.unlink(missing_ok=True)
+        print(f"couldn't drop undecodable tracks from {path.name}: {e}")
+
+
 def r2_fetch(key: str, dest: Path) -> None:
     """Downloads `key` to `dest`. Uploads never change, so within a job each is downloaded once (a fix
     pass reuses it); finished versions (renders/) are always fetched fresh."""
@@ -5541,6 +5572,8 @@ def r2_fetch(key: str, dest: Path) -> None:
         shutil.copyfile(keep, dest)
         return
     r2_client().download_file(os.environ["R2_BUCKET"], key, str(dest))
+    if "/renders/" not in key:
+        drop_undecodable_streams(dest)
     if keep:
         try:
             shutil.copyfile(dest, keep)
@@ -8001,6 +8034,7 @@ def analyze_job(storage_key: str, category: str | None = None) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "inspo"
             r2_client().download_file(os.environ["R2_BUCKET"], storage_key, str(path))
+            drop_undecodable_streams(path)
             breakdown = analyze_path(path)
             report("reading the editing style", 97)
             return add_style(path, breakdown)
