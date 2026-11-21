@@ -23,7 +23,7 @@ const SITE = "https://www.viralowner.com";
 const START = `${SITE}/dashboard`; // not signed in: the site sends them to log in
 const BG = "#0B0B0F";
 const CORAL = "#F63165";
-const APP_VERSION = 2;
+const APP_VERSION = 3; // 3: prepare (with shrinking) + uploads in parts
 const COOKIE_DOMAIN = "viralowner.com";
 
 void SplashScreen.preventAutoHideAsync();
@@ -34,6 +34,8 @@ const BEFORE_LOAD = `window.__VIRALOWNER_APP__ = { version: ${APP_VERSION}, plat
 type FromSite =
   | { type: "pickClips"; id: string; limit: number }
   | { type: "upload"; ref: string; url: string; headers: Record<string, string> }
+  | { type: "prepare"; ref: string; shrink: boolean }
+  | { type: "uploadParts"; ref: string; urls: string[]; partBytes: number }
   | { type: "cancel"; ref: string }
   | { type: "release"; ref: string }
   | { type: "saveVideo"; id: string; url: string; fileName: string; mode: "save" | "share" };
@@ -132,6 +134,27 @@ function Main() {
     }
   }
 
+  async function prepare(ref: string, shrink: boolean) {
+    try {
+      const ready = await Native.prepare(ref, shrink);
+      send({ type: "prepared", ref, size: ready.size, fileType: ready.type, shrunk: ready.shrunk });
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      send({ type: "prepareFailed", ref, error: text || "we couldn’t get that video from your photos." });
+    }
+  }
+
+  async function uploadParts(ref: string, urls: string[], partBytes: number) {
+    try {
+      await Native.uploadParts(ref, urls, partBytes);
+      send({ type: "uploaded", ref });
+    } catch (e) {
+      const text = e instanceof Error ? e.message : String(e);
+      if (/canceled/i.test(text)) return;
+      send({ type: "uploadFailed", ref, error: text || "the upload didn’t go through." });
+    }
+  }
+
   function release(ref: string) {
     try {
       Native.release(ref);
@@ -184,6 +207,8 @@ function Main() {
     if (!opensInApp(event.nativeEvent.url) || !new URL(event.nativeEvent.url).hostname.endsWith("viralowner.com")) return;
     if (msg.type === "pickClips") void pickClips(msg.id, msg.limit);
     else if (msg.type === "upload") void upload(msg.ref, msg.url, msg.headers);
+    else if (msg.type === "prepare") void prepare(msg.ref, msg.shrink);
+    else if (msg.type === "uploadParts") void uploadParts(msg.ref, msg.urls, msg.partBytes);
     else if (msg.type === "cancel") Native.cancel(msg.ref);
     else if (msg.type === "release") release(msg.ref);
     else if (msg.type === "saveVideo") void saveVideo(msg.id, msg.url, msg.fileName, msg.mode);

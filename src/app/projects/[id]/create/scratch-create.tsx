@@ -13,6 +13,7 @@ import { PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
 import { ClipsManager, type InitialClip } from "../clips/clips-manager";
 import { HookCheck } from "@/components/hook-check";
 import { Storyboard } from "../options/storyboard";
+import { waitForUploads } from "../clips/upload-engine";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -44,6 +45,8 @@ export function ScratchCreate({
   const [confirmed, setConfirmed] = useState(rightsConfirmed);
   const [save, setSave] = useState<SaveState>("idle");
   const [making, setMaking] = useState(false);
+  /** "make my video" was tapped while clips upload: their progress, until they're in. */
+  const [waiting, setWaiting] = useState<number | null>(null);
   const [error, setError] = useState("");
   const first = useRef(true);
   // A storyboard made from this exact prompt, options and clips: "make my video" makes that plan.
@@ -97,6 +100,17 @@ export function ScratchCreate({
     setMaking(true);
     setError("");
     try {
+      // Clips still uploading: wait for them (with their progress on the button), then go.
+      if (clips.busy) {
+        setWaiting(0);
+        const { failed } = await waitForUploads(projectId, (p) => setWaiting(p.percent));
+        setWaiting(null);
+        if (failed > 0) {
+          setError(`${failed === 1 ? "a clip" : `${failed} clips`} didn’t upload. retry or remove ${failed === 1 ? "it" : "them"} above, then tap again.`);
+          setMaking(false);
+          return;
+        }
+      }
       await prepare();
       const usePlan = plan && plan.madeFrom === madeFrom ? plan.jobId : undefined;
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
@@ -110,16 +124,15 @@ export function ScratchCreate({
       if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
       setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
       setMaking(false);
+      setWaiting(null);
     }
   }
 
   const problem = !prompt.trim()
     ? "describe the video you want."
-    : !clips.uploaded
+    : !clips.uploaded && !clips.busy
       ? "add at least one clip."
-      : clips.busy
-        ? "hang tight while your clips finish uploading."
-        : !confirmed
+      : !confirmed
           ? "confirm you have permission to use your clips."
           : optionsProblem(options, !!audio);
 
@@ -194,7 +207,7 @@ export function ScratchCreate({
           options={options}
           madeFrom={madeFrom}
           stale={!!plan && plan.madeFrom !== madeFrom}
-          disabled={making || !!problem}
+          disabled={making || !!problem || clips.busy}
           onPlan={setPlan}
           prepare={prepare}
         />
@@ -214,7 +227,8 @@ export function ScratchCreate({
             disabled={making || !!problem}
             className={`${buttonClass} flex h-14 items-center justify-center gap-2 text-lg disabled:cursor-not-allowed disabled:opacity-50`}
           >
-            <SparkleIcon className="size-5" /> {making ? "starting…" : "make my video"}
+            <SparkleIcon className="size-5" />{" "}
+            {waiting !== null ? `finishing your uploads · ${waiting}%` : making ? "starting…" : "make my video"}
           </button>
         </div>
       </div>

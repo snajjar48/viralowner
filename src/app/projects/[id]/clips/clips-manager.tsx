@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { ClipThumb } from "@/components/clip-thumb";
 import { ConsentCheckbox } from "@/components/consent-checkbox";
 import { DropZone } from "@/components/drop-zone";
@@ -29,64 +29,14 @@ import { AlertIcon, CameraIcon, FilmIcon, GripIcon, RefreshIcon, XIcon } from "@
 import { ProgressBar } from "@/components/progress-bar";
 import { ROLE_LABELS, ShotList } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
-import {
-  makeVideoThumbnail,
-  postJson,
-  readVideoDuration,
-  uploadInParts,
-  uploadSpeed,
-  uploadToSignedUrl,
-  UploadError,
-} from "@/lib/upload-client";
-import {
-  inApp,
-  isNativeClip,
-  pickNativeClips,
-  releaseNativeClip,
-  uploadNativeClip,
-  type NativeClip,
-} from "@/lib/native-app";
-import { planShrink, shrinkClip, worthShrinking, type ShrinkPlan } from "@/lib/shrink-clip";
-import { checkClip, MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
+import { postJson, UploadError } from "@/lib/upload-client";
+import { inApp, pickNativeClips, type NativeClip } from "@/lib/native-app";
+import { MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
+import { inFlight, uploadEngine, uploadProgress, type InitialClip, type Item } from "./upload-engine";
 
-export interface InitialClip {
-  id: string;
-  fileName: string | null;
-  durationS: number | null;
-  /** The shots it's on (one long clip can fill several). */
-  shotIndexes: number[];
-  /** "Start from scratch": cut it into several shots. */
-  multiUse?: boolean;
-  status: "uploading" | "uploaded" | "failed";
-  previewUrl: string | null;
-  /** The clip's saved still, if it has one. */
-  thumbUrl?: string | null;
-}
+export type { InitialClip } from "./upload-engine";
 
-type ItemStatus = "queued" | "shrinking" | "fetching" | "uploading" | "verifying" | "uploaded" | "failed";
-interface Item {
-  key: string;
-  clipId: string | null;
-  fileName: string;
-  durationS: number | null;
-  previewUrl: string | null;
-  /** A still of the clip: made in this browser when it's picked, or the saved one. */
-  thumbUrl: string | null;
-  shotIndexes: number[];
-  multiUse: boolean;
-  status: ItemStatus;
-  percent: number;
-  error: string | null;
-  /** False when the file isn't in this browser any more (e.g. after a refresh). */
-  canRetry: boolean;
-}
-
-// Clips uploading at once. Big clips upload several parts at once too (uploadInParts).
-const CONCURRENCY = 3;
-type SignedPut = { url: string; headers: Record<string, string> };
 const noSubscribe = () => () => {};
-const inFlight = (s: ItemStatus) =>
-  s === "queued" || s === "shrinking" || s === "fetching" || s === "uploading" || s === "verifying";
 
 export function ClipsManager({
   projectId,
@@ -116,22 +66,10 @@ export function ClipsManager({
   const oneTake = takeMode || freeform; // neither has shots to assign clips to
   const router = useRouter();
   const dndId = useId(); // stable ids for dnd-kit's accessibility attributes (avoids a hydration mismatch)
-  const [items, setItems] = useState<Item[]>(() =>
-    initialClips.map((c) => ({
-      key: c.id,
-      clipId: c.id,
-      fileName: c.fileName ?? "clip",
-      durationS: c.durationS,
-      previewUrl: c.previewUrl,
-      thumbUrl: c.thumbUrl ?? null,
-      shotIndexes: c.shotIndexes,
-      multiUse: !!c.multiUse,
-      status: c.status === "uploaded" ? "uploaded" : "failed",
-      percent: c.status === "uploaded" ? 100 : 0,
-      error: c.status === "uploaded" ? null : "this upload didn’t finish.",
-      canRetry: false,
-    })),
-  );
+  // The uploads live outside this page (they keep going after "continue").
+  const [engine] = useState(() => uploadEngine(projectId, initialClips));
+  const items = useSyncExternalStore(engine.subscribe, engine.get, engine.get);
+  const setItems = engine.set;
   const [skipped, setSkipped] = useState<string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(rightsConfirmed);
@@ -140,276 +78,13 @@ export function ClipsManager({
   // Inside the viralowner app (its own Photos picker uploads the original files).
   const app = useSyncExternalStore(noSubscribe, inApp, () => false);
 
-  // The picked files. In the viralowner app, the app keeps the video and this is a stand-in for it.
-  const files = useRef(new Map<string, File | NativeClip>());
-  // Each clip's still is saved next to it once both the still and its upload URL are ready.
-  const thumbs = useRef(new Map<string, Blob>());
-  const thumbTargets = useRef(new Map<string, SignedPut>());
-  const aborts = useRef(new Map<string, AbortController>());
-  const queue = useRef<string[]>([]);
-  const active = useRef(0);
-  // Big vertical clips that could be made smaller first, on a slow connection (lib/shrink-clip.ts).
-  const plans = useRef(new Map<string, ShrinkPlan>());
-  const planning = useRef(new Map<string, Promise<ShrinkPlan | null>>());
-  // Uploads sending bytes right now (their progress measures this device's upload speed).
-  const sending = useRef(0);
-  // One clip is shrunk at a time (each takes the phone's video encoder).
-  const shrinking = useRef<Promise<unknown>>(Promise.resolve());
-  const itemsRef = useRef(items);
-  useEffect(() => {
-    itemsRef.current = items;
-  }, [items]);
-  useEffect(() => {
-    const controllers = aborts.current;
-    return () => controllers.forEach((c) => c.abort());
-  }, []);
-
-  const patch = (key: string, change: Partial<Item>) =>
-    setItems((list) => list.map((it) => (it.key === key ? { ...it, ...change } : it)));
-
-  /**
-   * On a slow connection, a big vertical clip is made smaller before it uploads, when that's
-   * quicker overall (lib/shrink-clip.ts). Returns the file to upload: the smaller one, or the
-   * original whenever shrinking isn't worth it or doesn't work.
-   */
-  async function maybeShrink(key: string, file: File, signal: AbortSignal): Promise<File> {
-    const plan = plans.current.get(key);
-    if (!plan) return file;
-    // No speed measured yet: while other clips upload, wait a few seconds for one.
-    for (let waited = 0; !uploadSpeed() && sending.current > 0 && waited < 12; waited++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      if (signal.aborted) return file;
-    }
-    const speed = uploadSpeed();
-    if (!speed || !worthShrinking(file, plan, speed)) return file;
-    let release = () => {};
-    const turn = shrinking.current;
-    shrinking.current = new Promise<void>((r) => (release = r));
-    try {
-      await turn;
-      if (signal.aborted) return file;
-      patch(key, { status: "shrinking", percent: 0 });
-      const smaller = await shrinkClip(file, plan, speed, (percent) => patch(key, { percent }), signal);
-      plans.current.delete(key);
-      files.current.set(key, smaller); // (a retry uploads the smaller one too)
-      return smaller;
-    } catch {
-      plans.current.delete(key);
-      return file;
-    } finally {
-      release();
-    }
-  }
-
-  async function uploadOne(key: string) {
-    let file = files.current.get(key);
-    const item = itemsRef.current.find((i) => i.key === key);
-    if (!file || !item) return;
-    const controller = new AbortController();
-    aborts.current.set(key, controller);
-    let counted = false;
-    try {
-      // Whether it could be made smaller (worked out when it was picked; never waited on for long).
-      const pending = planning.current.get(key);
-      if (pending) {
-        planning.current.delete(key);
-        const plan = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), 4000))]);
-        if (plan) plans.current.set(key, plan);
-      }
-      // Nothing has measured the upload speed yet: this one goes as is and measures it for the rest.
-      if (plans.current.has(key) && !uploadSpeed() && sending.current === 0) plans.current.delete(key);
-      if (!plans.current.has(key)) {
-        sending.current++;
-        counted = true;
-      }
-      if (!isNativeClip(file)) file = await maybeShrink(key, file, controller.signal);
-      if (controller.signal.aborted) return;
-      if (!counted) {
-        sending.current++;
-        counted = true;
-      }
-      patch(key, { status: "uploading", percent: 0, error: null });
-      const { clip, upload, multipart, thumb } = await postJson<{
-        clip: { id: string };
-        upload: SignedPut;
-        multipart: { uploadId: string; partBytes: number; urls: string[] } | null;
-        thumb: SignedPut;
-      }>(`/api/projects/${projectId}/clips`, {
-        fileName: file.name,
-        contentType: file.type,
-        sizeBytes: file.size,
-        durationS: item.durationS,
-      });
-      patch(key, { clipId: clip.id });
-      thumbTargets.current.set(key, thumb);
-      saveThumb(key);
-      const onProgress = (percent: number) => patch(key, { percent });
-      let uploadId: string | undefined;
-      if (isNativeClip(file)) {
-        // In the app: the app sends the original file in one go (it uploads in the background too).
-        await uploadNativeClip(
-          file,
-          upload,
-          (percent, phase) => patch(key, { percent, status: phase === "preparing" ? "fetching" : "uploading" }),
-          controller.signal,
-        );
-      } else if (multipart) {
-        try {
-          await uploadInParts(file, multipart, onProgress, controller.signal);
-          uploadId = multipart.uploadId;
-        } catch (e) {
-          if (controller.signal.aborted) throw e;
-          // Parts didn't work on this connection: send it in one go instead.
-          onProgress(0);
-          await uploadToSignedUrl(file as File, upload, onProgress, controller.signal);
-        }
-      } else {
-        await uploadToSignedUrl(file, upload, onProgress, controller.signal);
-      }
-      patch(key, { status: "verifying" });
-      // Without a still made here, the server has one made from the uploaded file.
-      const hasThumb = () => !!itemsRef.current.find((i) => i.key === key)?.thumbUrl || thumbs.current.has(key);
-      const complete = (id?: string) =>
-        postJson<{ clip: { durationS: number }; thumbUrl?: string }>(
-          `/api/projects/${projectId}/clips/${clip.id}/complete`,
-          { ...(id ? { uploadId: id } : {}), hasThumb: hasThumb() },
-        );
-      let done;
-      try {
-        done = await complete(uploadId);
-      } catch (e) {
-        if (!uploadId) throw e;
-        // The parts couldn't be joined: send it in one go instead.
-        patch(key, { status: "uploading", percent: 0 });
-        await uploadToSignedUrl(file as File, upload, onProgress, controller.signal);
-        patch(key, { status: "verifying" });
-        done = await complete();
-      }
-      patch(key, { status: "uploaded", percent: 100, durationS: done.clip.durationS });
-      if (isNativeClip(file)) {
-        releaseNativeClip(file); // the app's copy isn't needed any more
-        files.current.delete(key);
-      }
-      if (!hasThumb() && done.thumbUrl) void waitForThumb(key, done.thumbUrl);
-    } catch (e) {
-      if (controller.signal.aborted) return; // removed by the user
-      patch(key, {
-        status: "failed",
-        error: e instanceof UploadError ? e.message : "the upload didn’t go through.",
-      });
-    } finally {
-      if (counted) sending.current--;
-      aborts.current.delete(key);
-    }
-  }
-
-  /** Saves a clip's still to storage once both it and the clip's upload URL are ready (best effort). */
-  function saveThumb(key: string) {
-    const blob = thumbs.current.get(key);
-    const target = thumbTargets.current.get(key);
-    if (!blob || !target) return;
-    thumbs.current.delete(key);
-    void fetch(target.url, { method: "PUT", headers: target.headers, body: blob }).catch(() => {});
-  }
-
-  /** Makes stills for newly picked clips, one at a time (each decodes a bit of video). */
-  async function makeThumbs(keys: string[]) {
-    const missed: string[] = [];
-    const make = async (key: string, timeoutMs: number) => {
-      const file = files.current.get(key);
-      if (!file || isNativeClip(file)) return true; // the app's clips get their still from the server
-      const blob = await makeVideoThumbnail(file, 360, timeoutMs);
-      if (!blob || !files.current.has(key)) return false;
-      thumbs.current.set(key, blob);
-      patch(key, { thumbUrl: URL.createObjectURL(blob) });
-      saveThumb(key);
-      return true;
-    };
-    for (const key of keys) if (!(await make(key, 8_000))) missed.push(key);
-    // A second try for any that didn't work (the first often loses out to everything starting at once).
-    for (const key of missed) await make(key, 15_000);
-  }
-
-  /** Shows the still the server is making once it's ready (checks every couple of seconds for a while). */
-  async function waitForThumb(key: string, url: string) {
-    for (let attempt = 0; attempt < 20; attempt++) {
-      await new Promise((r) => setTimeout(r, attempt ? 2500 : 1500));
-      if (!itemsRef.current.some((i) => i.key === key) || itemsRef.current.find((i) => i.key === key)?.thumbUrl) return;
-      const ok = await new Promise<boolean>((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve(true);
-        img.onerror = () => resolve(false);
-        img.src = url; // (a signed link: adding anything to it would break the signature)
-      });
-      if (ok) return patch(key, { thumbUrl: url });
-    }
-  }
-
-  function pump() {
-    while (active.current < CONCURRENCY && queue.current.length) {
-      const key = queue.current.shift()!;
-      active.current++;
-      void uploadOne(key).finally(() => {
-        active.current--;
-        pump();
-      });
-    }
-  }
-
   async function addFiles(picked: (File | NativeClip)[]) {
-    const room = MAX_CLIPS - itemsRef.current.filter((i) => i.status !== "failed").length;
-    const problems: string[] = [];
-    if (picked.length > room) {
-      problems.push(`you can add up to ${MAX_CLIPS} clips, so we skipped ${picked.length - Math.max(0, room)}.`);
-      picked = picked.slice(0, Math.max(0, room));
-    }
-    const added: Item[] = [];
-    // Read every picked file's length at once (one at a time made picking 20 clips slow). A clip
-    // this browser can't read doesn't hold the others up for long: the server reads it anyway.
-    const durations = await Promise.all(
-      picked.map((f) => (isNativeClip(f) ? f.durationS : checkClip(f, null) ? null : readVideoDuration(f, 3_000))),
-    );
-    for (const [i, file] of picked.entries()) {
-      const durationS = durations[i];
-      const problem = checkClip(file, durationS);
-      if (problem) {
-        problems.push(`${file.name}: ${problem}`);
-        continue;
-      }
-      const key = `local-${crypto.randomUUID()}`;
-      files.current.set(key, file);
-      added.push({
-        key,
-        clipId: null,
-        fileName: file.name,
-        durationS,
-        previewUrl: isNativeClip(file) ? null : URL.createObjectURL(file),
-        thumbUrl: null,
-        shotIndexes: [],
-        multiUse: false,
-        status: "queued",
-        percent: 0,
-        error: null,
-        canRetry: true,
-      });
-    }
-    setSkipped(problems);
-    if (!added.length) return;
-    setItems((list) => [...list, ...added]);
-    itemsRef.current = [...itemsRef.current, ...added];
-    // Big vertical clips: could they be made smaller (only used on a slow connection)?
-    for (const a of added) {
-      const f = files.current.get(a.key);
-      if (f && !isNativeClip(f) && f.size > 40 * 1024 * 1024) planning.current.set(a.key, planShrink(f));
-    }
-    queue.current.push(...added.map((a) => a.key));
-    pump();
-    void makeThumbs(added.map((a) => a.key));
+    setSkipped(await engine.addFiles(picked));
   }
 
   /** In the viralowner app: its own Photos picker, which hands over the original files. */
   async function pickInApp() {
-    const room = MAX_CLIPS - itemsRef.current.filter((i) => i.status !== "failed").length;
+    const room = MAX_CLIPS - engine.items.filter((i) => i.status !== "failed").length;
     if (room <= 0) return setSkipped([`you can add up to ${MAX_CLIPS} clips.`]);
     try {
       const picked = await pickNativeClips(room);
@@ -419,32 +94,13 @@ export function ClipsManager({
     }
   }
 
-  async function retry(item: Item) {
-    if (item.clipId) {
-      // Start fresh: the failed clip row and any partial file go away.
-      void fetch(`/api/projects/${projectId}/clips/${item.clipId}`, { method: "DELETE" });
-    }
-    patch(item.key, { clipId: null, status: "queued", percent: 0, error: null });
-    queue.current.push(item.key);
-    pump();
+  function retry(item: Item) {
+    engine.retry(item);
   }
 
   async function remove(item: Item) {
-    aborts.current.get(item.key)?.abort();
-    queue.current = queue.current.filter((k) => k !== item.key);
-    setItems((list) => list.filter((i) => i.key !== item.key));
     if (selected === item.key) setSelected(null);
-    if (item.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
-    if (item.thumbUrl?.startsWith("blob:")) URL.revokeObjectURL(item.thumbUrl);
-    const picked = files.current.get(item.key);
-    if (isNativeClip(picked)) releaseNativeClip(picked);
-    files.current.delete(item.key);
-    thumbs.current.delete(item.key);
-    thumbTargets.current.delete(item.key);
-    if (item.clipId) {
-      const res = await fetch(`/api/projects/${projectId}/clips/${item.clipId}`, { method: "DELETE" }).catch(() => null);
-      if (!res?.ok && res?.status !== 404) setError("couldn’t remove that clip. refresh and try again.");
-    }
+    if (!(await engine.remove(item))) setError("couldn’t remove that clip. refresh and try again.");
   }
 
   /** Puts a clip on a shot, or takes it off. One clip can fill several shots (a different part of it each). */
@@ -527,6 +183,7 @@ export function ClipsManager({
 
   const uploaded = items.filter((i) => i.status === "uploaded");
   const busy = items.some((i) => inFlight(i.status));
+  const progress = uploadProgress(items);
   useEffect(() => {
     onStatus?.({ uploaded: uploaded.length, busy });
   }, [onStatus, uploaded.length, busy]);
@@ -690,7 +347,15 @@ export function ClipsManager({
             add more.
           </p>
         )}
-        {busy && <p className="text-center text-sm text-muted">hang tight while your clips finish uploading.</p>}
+        {busy && (
+          <p className="text-center text-sm text-muted">
+            {freeform
+              ? "your clips keep uploading while you fill in the rest."
+              : uploaded.length
+                ? `${progress.left} still uploading (${progress.percent}%). you can continue: they keep uploading on the next step.`
+                : "your first clip is almost there…"}
+          </p>
+        )}
         {error && (
           <p role="alert" className="text-center text-sm text-coral">
             {error}
@@ -701,7 +366,7 @@ export function ClipsManager({
           <button
             type="button"
             onClick={onContinue}
-            disabled={!uploaded.length || !confirmed || busy || continuing}
+            disabled={!uploaded.length || !confirmed || continuing}
             className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
           >
             {continuing ? "saving…" : "continue to options"}

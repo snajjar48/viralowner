@@ -7,11 +7,16 @@
 
 type FromApp =
   | { type: "picked"; id: string; files: NativeClip[]; error?: string }
-  | { type: "progress"; ref: string; percent: number; phase?: "preparing" | "uploading" }
+  | { type: "progress"; ref: string; percent: number; phase?: NativePhase }
+  | { type: "prepared"; ref: string; size: number; fileType: string; shrunk: boolean }
+  | { type: "prepareFailed"; ref: string; error: string }
   | { type: "uploaded"; ref: string }
   | { type: "uploadFailed"; ref: string; error: string }
   | { type: "saved"; id: string }
   | { type: "saveFailed"; id: string; error: string; canceled?: boolean };
+
+/** What the app is doing with a clip: getting it from Photos, making it smaller, or uploading it. */
+export type NativePhase = "preparing" | "shrinking" | "uploading";
 
 /** A video picked in the app: the file stays in the app, the site only knows about it. */
 export type NativeClip = { native: true; ref: string; name: string; type: string; size: number; durationS: number | null };
@@ -27,6 +32,11 @@ declare global {
 /** Whether the site is running inside the viralowner app. */
 export function inApp(): boolean {
   return typeof window !== "undefined" && !!window.__VIRALOWNER_APP__ && !!window.ReactNativeWebView;
+}
+
+/** The app's version (0 outside it). 3+: clips are prepared first (made smaller if big) and upload in parts. */
+export function appVersion(): number {
+  return (inApp() && window.__VIRALOWNER_APP__?.version) || 0;
 }
 
 export const isNativeClip = (f: unknown): f is NativeClip => !!f && typeof f === "object" && (f as NativeClip).native === true;
@@ -65,7 +75,7 @@ export function pickNativeClips(limit: number): Promise<NativeClip[]> {
 export function uploadNativeClip(
   clip: NativeClip,
   upload: { url: string; headers: Record<string, string> },
-  onProgress: (percent: number, phase: "preparing" | "uploading") => void,
+  onProgress: (percent: number, phase: NativePhase) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -90,6 +100,72 @@ export function uploadNativeClip(
     if (signal?.aborted) return onAbort();
     signal?.addEventListener("abort", onAbort, { once: true });
     post({ type: "upload", ref: clip.ref, url: upload.url, headers: upload.headers });
+  });
+}
+
+/**
+ * Gets a picked clip ready in the app (from Photos; made smaller first when `shrink` and it's a big
+ * vertical clip). Resolves with the file's final size and type, which its upload URLs are made for.
+ */
+export function prepareNativeClip(
+  clip: NativeClip,
+  shrink: boolean,
+  onProgress: (percent: number, phase: NativePhase) => void,
+  signal?: AbortSignal,
+): Promise<{ size: number; type: string; shrunk: boolean }> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      stop();
+      reject(new DOMException("canceled", "AbortError"));
+    };
+    const stop = listen((msg) => {
+      if (!("ref" in msg) || msg.ref !== clip.ref) return;
+      if (msg.type === "progress") onProgress(msg.percent, msg.phase ?? "preparing");
+      else if (msg.type === "prepared") {
+        signal?.removeEventListener("abort", onAbort);
+        stop();
+        resolve({ size: msg.size, type: msg.fileType, shrunk: msg.shrunk });
+      } else if (msg.type === "prepareFailed") {
+        signal?.removeEventListener("abort", onAbort);
+        stop();
+        reject(new Error(msg.error));
+      }
+    });
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    post({ type: "prepare", ref: clip.ref, shrink });
+  });
+}
+
+/** Uploads a prepared clip from the app in parts, several at once (to URLs signed per part). */
+export function uploadNativeClipParts(
+  clip: NativeClip,
+  multipart: { partBytes: number; urls: string[] },
+  onProgress: (percent: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      post({ type: "cancel", ref: clip.ref });
+      stop();
+      reject(new DOMException("canceled", "AbortError"));
+    };
+    const stop = listen((msg) => {
+      if (!("ref" in msg) || msg.ref !== clip.ref) return;
+      if (msg.type === "progress") onProgress(msg.percent);
+      else if (msg.type === "uploaded") {
+        signal?.removeEventListener("abort", onAbort);
+        stop();
+        resolve();
+      } else if (msg.type === "uploadFailed") {
+        signal?.removeEventListener("abort", onAbort);
+        stop();
+        reject(new Error(msg.error));
+      }
+    });
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    post({ type: "uploadParts", ref: clip.ref, urls: multipart.urls, partBytes: multipart.partBytes });
   });
 }
 

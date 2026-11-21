@@ -13,6 +13,8 @@ import type { VideoOptions } from "@/lib/video-options";
 import { HookCheck } from "@/components/hook-check";
 import { NOTES_MAX } from "@/lib/video-options";
 import { Storyboard } from "./storyboard";
+import { UploadsStatus, useUploads } from "../clips/uploads-status";
+import { waitForUploads } from "../clips/upload-engine";
 
 export interface OptionClip {
   id: string;
@@ -46,6 +48,14 @@ export function OptionsForm({
   const router = useRouter();
   const [options, setOptions] = useState(initialOptions);
   const [clips, setClips] = useState(initialClips);
+  // Clips that finish uploading after this page opened (it refreshes then): add them to the list.
+  const [seenClips, setSeenClips] = useState(initialClips);
+  if (seenClips !== initialClips) {
+    setSeenClips(initialClips);
+    setClips((list) => [...list, ...initialClips.filter((c) => !list.some((x) => x.id === c.id))]);
+  }
+  const uploads = useUploads(projectId);
+  const [waiting, setWaiting] = useState<number | null>(null);
   const [save, setSave] = useState<SaveState>("idle");
   const [making, setMaking] = useState(false);
   const [error, setError] = useState("");
@@ -105,6 +115,17 @@ export function OptionsForm({
     setMaking(true);
     setError("");
     try {
+      // Clips still uploading from the clips step: wait for them (with their progress on the button).
+      if (uploads.left > 0) {
+        setWaiting(uploads.percent);
+        const { failed } = await waitForUploads(projectId, (p) => setWaiting(p.percent));
+        setWaiting(null);
+        if (failed > 0) {
+          setError(`${failed === 1 ? "a clip" : `${failed} clips`} didn’t upload. go back to retry, or tap again to make it without ${failed === 1 ? "it" : "them"}.`);
+          setMaking(false);
+          return;
+        }
+      }
       const usePlan = plan && plan.madeFrom === madeFrom ? plan.jobId : undefined;
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
         mode: "new",
@@ -118,6 +139,7 @@ export function OptionsForm({
       if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
       setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
       setMaking(false);
+      setWaiting(null);
     }
   }
 
@@ -125,6 +147,7 @@ export function OptionsForm({
 
   return (
     <div className="flex flex-col gap-4">
+      <UploadsStatus projectId={projectId} />
       <OptionsFields value={options} onChange={setOptions} uploadedAudio={uploadedAudio} />
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
@@ -194,7 +217,7 @@ export function OptionsForm({
         options={options}
         madeFrom={madeFrom}
         stale={!!plan && plan.madeFrom !== madeFrom}
-        disabled={making || !!problem}
+        disabled={making || !!problem || uploads.left > 0}
         onPlan={setPlan}
       />
 
@@ -213,7 +236,8 @@ export function OptionsForm({
           disabled={making || !!problem}
           className={`${buttonClass} flex h-14 items-center justify-center gap-2 text-lg disabled:cursor-not-allowed disabled:opacity-50`}
         >
-          <SparkleIcon className="size-5" /> {making ? "starting…" : "make my video"}
+          <SparkleIcon className="size-5" />{" "}
+          {waiting !== null ? `finishing your uploads · ${waiting}%` : making ? "starting…" : "make my video"}
         </button>
       </div>
     </div>
