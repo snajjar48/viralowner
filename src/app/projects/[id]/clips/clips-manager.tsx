@@ -32,6 +32,7 @@ import type { Shot } from "@/lib/processing/types";
 import { postJson, UploadError } from "@/lib/upload-client";
 import { inApp, pickNativeClips, type NativeClip } from "@/lib/native-app";
 import { MAX_CLIPS, VIDEO_ACCEPT } from "@/lib/video-files";
+import { UploadTips } from "./upload-tips";
 import { inFlight, uploadEngine, uploadProgress, type InitialClip, type Item } from "./upload-engine";
 
 export type { InitialClip } from "./upload-engine";
@@ -270,6 +271,8 @@ export function ClipsManager({
             tip: film pours, drizzles and cheese pulls in slo-mo or at 60fps for smooth slow motion.
           </p>
         )}
+
+        <UploadTips />
 
         {(takeMode || freeform) && (
           <details className="group rounded-xl border border-white/10 px-3 py-2 text-xs text-muted">
