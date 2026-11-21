@@ -23,7 +23,7 @@ const SITE = "https://www.viralowner.com";
 const START = `${SITE}/dashboard`; // not signed in: the site sends them to log in
 const BG = "#0B0B0F";
 const CORAL = "#F63165";
-const APP_VERSION = 3; // 3: prepare (with shrinking) + uploads in parts
+const APP_VERSION = 4; // 3: prepare (with shrinking) + uploads in parts; 4: shrinking that keeps the quality
 const COOKIE_DOMAIN = "viralowner.com";
 
 void SplashScreen.preventAutoHideAsync();

@@ -11,6 +11,7 @@ import Photos
 import PhotosUI
 import Security
 import UniformTypeIdentifiers
+import VideoToolbox
 import WebKit
 
 final class PickedClip {
@@ -255,77 +256,196 @@ final class Uploader: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
   }
 }
 
-/// Makes a big vertical clip smaller before it uploads: 4K down to 1440p (the finished videos are
-/// 1080p, so nothing is lost), same frame rate (slow motion needs every frame), HDR kept. Returns
-/// nil to upload the original (not big, sideways, or the copy didn't work or wasn't much smaller).
+/// Makes a big vertical clip 1440p on the phone before upload, keeping its detail: the same frames and
+/// timing (so slow-mo keeps every frame), HDR stays HDR, and the quality is set from the original's
+/// (AVAssetExportSession picks its own and came out far too low, smearing fine detail).
 enum Shrinker {
   static let target: CGFloat = 1440
+
+  /// What both writer loops share.
+  private final class Run {
+    let lock = NSLock()
+    var failed = false
+    var last = -1
+    func fail() {
+      lock.lock(); failed = true; lock.unlock()
+    }
+  }
 
   static func shrink(_ src: URL, ref: String, progress: @escaping (Int) -> Void) async -> URL? {
     let asset = AVURLAsset(url: src)
     guard let found = try? await asset.loadTracks(withMediaType: .video), let track = found.first,
-          let props = try? await track.load(.naturalSize, .preferredTransform, .minFrameDuration, .formatDescriptions)
+          let props = try? await track.load(.naturalSize, .preferredTransform, .formatDescriptions, .estimatedDataRate, .nominalFrameRate),
+          let timeScale = try? await track.load(.naturalTimeScale),
+          let duration = try? await asset.load(.duration), duration.seconds > 0
     else { return nil }
-    let (natural, transform, minFrame, formats) = props
+    let (natural, transform, formats, dataRate, fps) = props
     let oriented = natural.applying(transform)
     let w = abs(oriented.width)
     let h = abs(oriented.height)
     let short = min(w, h)
     // Only tall (vertical) clips bigger than 1440p: sideways ones get cropped to vertical later and
     // need all their pixels.
-    guard h > w, short > target + 60 else { return nil }
+    guard h > w, short > target + 60, natural.width > 0, natural.height > 0 else { return nil }
     let scale = target / short
-    let size = CGSize(width: (w * scale / 2).rounded() * 2, height: (h * scale / 2).rounded() * 2)
+    // The stored (unturned) picture made smaller; the turn stays a tag, as in the original.
+    let outW = Int((natural.width * scale / 2).rounded()) * 2
+    let outH = Int((natural.height * scale / 2).rounded()) * 2
 
-    let composition = AVMutableVideoComposition(asset: asset) { request in
-      let image = request.sourceImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-      request.finish(with: image, context: nil)
-    }
-    composition.renderSize = size
-    if minFrame.isValid && minFrame.seconds > 0 {
-      composition.frameDuration = minFrame
-    }
-    // HDR stays HDR (the editor makes it look right for every phone).
-    if let format = formats.first,
-       let transfer = CMFormatDescriptionGetExtension(format, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String {
-      if transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String) {
-        composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
-        composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_2100_HLG
-        composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
-      } else if transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String) {
-        composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_2020
-        composition.colorTransferFunction = AVVideoTransferFunction_SMPTE_ST_2084_PQ
-        composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_2020
-      }
-    }
+    // Quality: the original's bitrate for the smaller picture. A smaller picture packs more detail into
+    // each pixel, so it scales by pixels^0.75 rather than pixels (about 55% of 4K's for 1440p).
+    let before = (try? FileManager.default.attributesOfItem(atPath: src.path)[.size] as? NSNumber)?.doubleValue ?? 0
+    var sourceRate = Double(dataRate)
+    if sourceRate <= 0 { sourceRate = before * 8 / duration.seconds }
+    guard sourceRate > 0, before > 0 else { return nil }
+    let pixels = Double(outW * outH) / Double(natural.width * natural.height)
+    let bitrate = Int(sourceRate * pow(pixels, 0.75))
 
-    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHEVCHighestQuality) else { return nil }
+    let transfer = formats.first.flatMap {
+      CMFormatDescriptionGetExtension($0, extensionKey: kCMFormatDescriptionExtension_TransferFunction) as? String
+    }
+    let hlg = transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+    let pq = transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ as String)
+    let hdr = hlg || pq
+    let pixelFormat = hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    let color: [String: Any] = hdr
+      ? [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_2020,
+         AVVideoTransferFunctionKey: hlg ? AVVideoTransferFunction_ITU_R_2100_HLG : AVVideoTransferFunction_SMPTE_ST_2084_PQ,
+         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020]
+      : [AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+         AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2]
+
     let dest = FileManager.default.temporaryDirectory.appendingPathComponent("clips/\(ref)-small.mov")
     try? FileManager.default.removeItem(at: dest)
-    export.outputURL = dest
-    export.outputFileType = .mov
-    export.videoComposition = composition
-    export.shouldOptimizeForNetworkUse = false
+    guard let reader = try? AVAssetReader(asset: asset),
+          let writer = try? AVAssetWriter(outputURL: dest, fileType: .mov)
+    else { return nil }
 
-    let timer = DispatchSource.makeTimerSource(queue: .global())
-    timer.schedule(deadline: .now() + 0.3, repeating: 0.3)
-    var last = -1
-    timer.setEventHandler {
-      let p = min(99, Int(export.progress * 100))
-      if p != last {
-        last = p
-        progress(p)
+    let videoOut = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat])
+    videoOut.alwaysCopiesSampleData = false
+    let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
+      AVVideoCodecKey: AVVideoCodecType.hevc,
+      AVVideoWidthKey: outW,
+      AVVideoHeightKey: outH,
+      AVVideoColorPropertiesKey: color,
+      AVVideoCompressionPropertiesKey: [
+        AVVideoAverageBitRateKey: bitrate,
+        AVVideoExpectedSourceFrameRateKey: max(1, Int(fps.rounded())),
+        AVVideoProfileLevelKey: (hdr ? kVTProfileLevel_HEVC_Main10_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel) as String,
+      ] as [String: Any],
+    ])
+    videoIn.transform = transform
+    if timeScale > 0 { videoIn.mediaTimeScale = timeScale } // frame times as precise as the original's
+    videoIn.expectsMediaDataInRealTime = false
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoIn, sourcePixelBufferAttributes: [
+      kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+      kCVPixelBufferWidthKey as String: outW,
+      kCVPixelBufferHeightKey as String: outH,
+      kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+    ])
+    guard reader.canAdd(videoOut), writer.canAdd(videoIn) else { return nil }
+    reader.add(videoOut)
+    writer.add(videoIn)
+
+    // Sound copied as it is. Only the kinds every tool reads: iPhone's spatial audio (APAC) is
+    // dropped later anyway, and its stereo AAC track is always there too.
+    var audio: [(AVAssetReaderTrackOutput, AVAssetWriterInput)] = []
+    let readable: Set<FourCharCode> = [kAudioFormatMPEG4AAC, kAudioFormatLinearPCM, kAudioFormatAppleLossless]
+    for a in (try? await asset.loadTracks(withMediaType: .audio)) ?? [] {
+      guard let hint = (try? await a.load(.formatDescriptions))?.first,
+            readable.contains(CMFormatDescriptionGetMediaSubType(hint)) else { continue }
+      let out = AVAssetReaderTrackOutput(track: a, outputSettings: nil)
+      let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: hint)
+      input.expectsMediaDataInRealTime = false
+      if reader.canAdd(out), writer.canAdd(input) {
+        reader.add(out)
+        writer.add(input)
+        audio.append((out, input))
       }
     }
-    timer.resume()
-    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-      export.exportAsynchronously { done.resume() }
-    }
-    timer.cancel()
+    writer.metadata = (try? await asset.load(.metadata)) ?? [] // where and when it was filmed, the phone
 
-    let before = (try? FileManager.default.attributesOfItem(atPath: src.path)[.size] as? NSNumber)?.int64Value ?? 0
-    let after = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.int64Value ?? 0
-    guard export.status == .completed, after > 0, before > 0, Double(after) < Double(before) * 0.8 else {
+    var made: VTPixelTransferSession?
+    VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &made)
+    guard let resizer = made else { return nil }
+    VTSessionSetProperty(resizer, key: kVTPixelTransferPropertyKey_ScalingMode, value: kVTScalingMode_Normal)
+    VTSessionSetProperty(resizer, key: kVTPixelTransferPropertyKey_DownsamplingMode, value: kVTDownsamplingMode_Average)
+
+    guard reader.startReading(), writer.startWriting() else {
+      reader.cancelReading()
+      writer.cancelWriting()
+      try? FileManager.default.removeItem(at: dest)
+      return nil
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    let run = Run()
+    let total = duration.seconds
+    let ok: Bool = await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
+      let group = DispatchGroup()
+
+      group.enter()
+      videoIn.requestMediaDataWhenReady(on: DispatchQueue(label: "com.viralowner.app.shrink.video")) {
+        while videoIn.isReadyForMoreMediaData {
+          guard !run.failed, let sample = videoOut.copyNextSampleBuffer() else {
+            videoIn.markAsFinished()
+            group.leave()
+            return
+          }
+          guard let frame = CMSampleBufferGetImageBuffer(sample) else { continue }
+          var small: CVPixelBuffer?
+          if let pool = adaptor.pixelBufferPool {
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &small)
+          }
+          let time = CMSampleBufferGetPresentationTimeStamp(sample)
+          guard let out = small,
+                VTPixelTransferSessionTransferImage(resizer, from: frame, to: out) == noErr
+          else {
+            run.fail()
+            continue
+          }
+          CVBufferPropagateAttachments(frame, out) // the colour (HDR) tags
+          if !adaptor.append(out, withPresentationTime: time) {
+            run.fail()
+            continue
+          }
+          let p = min(99, max(0, Int(time.seconds / total * 100)))
+          if p != run.last {
+            run.last = p
+            progress(p)
+          }
+        }
+      }
+
+      for (out, input) in audio {
+        group.enter()
+        input.requestMediaDataWhenReady(on: DispatchQueue(label: "com.viralowner.app.shrink.audio")) {
+          while input.isReadyForMoreMediaData {
+            guard !run.failed, let sample = out.copyNextSampleBuffer() else {
+              input.markAsFinished()
+              group.leave()
+              return
+            }
+            if !input.append(sample) { run.fail() }
+          }
+        }
+      }
+
+      group.notify(queue: .global()) {
+        if run.failed || reader.status == .failed || writer.status == .failed {
+          reader.cancelReading()
+          writer.cancelWriting()
+          done.resume(returning: false)
+        } else {
+          writer.finishWriting { done.resume(returning: writer.status == .completed) }
+        }
+      }
+    }
+    VTPixelTransferSessionInvalidate(resizer)
+
+    let after = (try? FileManager.default.attributesOfItem(atPath: dest.path)[.size] as? NSNumber)?.doubleValue ?? 0
+    guard ok, after > 0, after < before * 0.8 else {
       try? FileManager.default.removeItem(at: dest)
       return nil
     }

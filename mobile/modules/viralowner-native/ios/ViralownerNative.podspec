@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.swift_version  = '5.9'
 
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'Photos', 'PhotosUI', 'WebKit', 'Security', 'AVFoundation'
+  s.frameworks = 'Photos', 'PhotosUI', 'WebKit', 'Security', 'AVFoundation', 'VideoToolbox'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

@@ -188,12 +188,11 @@ export class UploadEngine {
       if (isNativeClip(file) && appVersion() >= 3) {
         const clipFile = file;
         this.patch(key, { status: "fetching", percent: 0, error: null });
-        // Not made smaller for now: the phone's 1440p copy (AVAssetExportSession, which picks its own
-        // bitrate) came out at a third of the original's quality per pixel and visibly smeared fine
-        // detail. Parts upload still makes it fast.
+        // Made 1440p on the phone only by app 4+, which keeps the original's quality (about half the
+        // size). App 3's copy (AVAssetExportSession, which picks its own bitrate) smeared fine detail.
         const ready = await prepareNativeClip(
           clipFile,
-          false,
+          appVersion() >= 4,
           (percent, phase) => this.patch(key, { percent, status: phase === "shrinking" ? "shrinking" : "fetching" }),
           controller.signal,
         );
