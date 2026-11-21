@@ -453,28 +453,6 @@ export function PreviewEditor({
                       onSetEnd={(t) => setShot(shot.index, { trimEndS: t })}
                     />
                   )}
-                  {clip && (
-                    <fieldset className="flex items-end gap-2">
-                      <legend className="sr-only">trim shot {shot.index + 1}</legend>
-                      <TrimInput
-                        id={`start-${shot.index}`}
-                        label="start (s)"
-                        value={edit.trimStartS}
-                        placeholder="0"
-                        max={clip.durationS}
-                        onChange={(v) => setShot(shot.index, { trimStartS: v })}
-                      />
-                      <TrimInput
-                        id={`end-${shot.index}`}
-                        label="end (s)"
-                        value={edit.trimEndS}
-                        placeholder={clip.durationS.toFixed(1)}
-                        max={clip.durationS}
-                        onChange={(v) => setShot(shot.index, { trimEndS: v })}
-                      />
-                      <span className="pb-3 text-xs text-muted">of {formatDuration(clip.durationS)}</span>
-                    </fieldset>
-                  )}
                 </li>
               );
             })}
@@ -538,42 +516,6 @@ function ChangesLeft({ changes }: { changes: { left: number | null; subscribed: 
           </Link>
         </>
       )}
-    </div>
-  );
-}
-
-function TrimInput({
-  id,
-  label,
-  value,
-  placeholder,
-  max,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  value: number | null;
-  placeholder: string;
-  max: number;
-  onChange: (v: number | null) => void;
-}) {
-  return (
-    <div className="flex flex-1 flex-col gap-1">
-      <label htmlFor={id} className="text-xs text-muted">
-        {label}
-      </label>
-      <input
-        id={id}
-        type="number"
-        inputMode="decimal"
-        step={0.1}
-        min={0}
-        max={max}
-        value={value ?? ""}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
-        className={`${inputClass} h-10 px-3 text-sm`}
-      />
     </div>
   );
 }
