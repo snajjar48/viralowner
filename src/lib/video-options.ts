@@ -31,6 +31,9 @@ export interface TextLook {
 export interface OptionTextItem extends TextLook {
   /** The words; blank: left out of the video (the box stays, showing its hint). */
   text: string;
+  /** The user gave it its own look (color, font, look, animation): it keeps it when a style is picked
+   * for the whole video. Without it, the piece's look is the original's and the picked style replaces it. */
+  ownLook?: boolean;
   /** Greyed-out words shown in an empty box: what the original (or our plan) has there. */
   hint?: string;
   /** Shown on these shots only (the original's shot numbers, 0-based). */
@@ -52,7 +55,9 @@ export interface VideoOptions {
     timelineS?: number;
     /** On this page only: the text the preview was planned with, when the pieces are its text, edited
      * (each piece keeps its time, so the plan still holds and its words are swapped for these). */
-    planBasis?: { mode: TextMode; custom: string };
+    planBasis?: { mode: TextMode; custom: string; fromEdit?: boolean };
+    /** The original's text blocks exactly where it has them, even under the app's buttons (normally moved clear). */
+    keepPlace?: boolean;
   };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
@@ -165,6 +170,7 @@ function optionTextItems(input: unknown): OptionTextItem[] {
     out.push({
       text,
       ...(hint ? { hint } : {}),
+      ...(raw.ownLook === true ? { ownLook: true } : {}),
       shots: shots.length ? shots : null,
       start: timed ? Math.round(start * 100) / 100 : null,
       end: timed ? Math.round(end * 100) / 100 : null,
@@ -232,6 +238,7 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
       align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
       style: TEXT_STYLE_IDS.includes(text.style as TextStyleId) ? (text.style as TextStyleId) : "auto",
       ...(items.length ? { items } : {}),
+      ...(text.keepPlace === true ? { keepPlace: true } : {}),
       ...(items.length && typeof text.timelineS === "number" && text.timelineS >= 1 && text.timelineS <= 600
         ? { timelineS: Math.round(text.timelineS * 100) / 100 }
         : {}),
@@ -281,7 +288,8 @@ export function planKey(o: VideoOptions) {
   const basis = o.text.planBasis;
   return {
     ...o,
-    text: { mode: basis?.mode ?? o.text.mode, custom: basis ? basis.custom : o.text.custom, align: o.text.align, style: o.text.style },
+    text: { mode: basis?.mode ?? o.text.mode, custom: basis ? basis.custom : o.text.custom, align: o.text.align, style: o.text.style,
+      ...(o.text.keepPlace ? { keepPlace: true } : {}) },
   };
 }
 

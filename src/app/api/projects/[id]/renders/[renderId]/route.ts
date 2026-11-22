@@ -10,7 +10,7 @@ export async function GET(_request: Request, ctx: RouteContext<"/api/projects/[i
     if (!render) return notFound();
     const r = await syncRender(project.id, render);
     return Response.json(
-      { version: r.version, status: r.status, stage: r.stage, progress: r.progress, error: r.error },
+      { version: r.version, status: r.status, stage: r.stage, progress: r.progress, error: r.error, note: "note" in r ? r.note : undefined },
       { headers: { "cache-control": "no-store" } },
     );
   });

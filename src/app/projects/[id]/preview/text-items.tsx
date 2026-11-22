@@ -96,15 +96,31 @@ function outlineShadow(width: number, color: string, shadow: boolean) {
 }
 
 /** The text on the video at time `t`, drawn as the finished video will draw it (font, size, wrapping, place). */
-export function TextPreview({ items: saved, t, context, show = true }: { items: TextItem[]; t: number; context?: TextContext; show?: boolean }) {
+export function TextPreview({
+  items: saved,
+  t,
+  context,
+  show = true,
+  highlight = null,
+}: {
+  items: TextItem[];
+  t: number;
+  context?: TextContext;
+  show?: boolean;
+  /** The text being edited (places in the list): outlined. Unchanged text is only outlined (the video already shows it). */
+  highlight?: number[] | null;
+}) {
   const dragged = useDragItems();
-  const items = dragged ?? (show ? saved : []);
-  const showing = items.filter((it) => it.text.trim() && t >= it.start && t < it.end);
-  const { measure, ready } = useMeasure(showing.map((it) => it.font ?? context?.style?.font ?? "clean_sans"));
+  const drawn = !!dragged || show;
+  const lit = new Set(dragged ? [] : (highlight ?? []));
+  const showing = (dragged ?? saved)
+    .map((it, k) => ({ it, lit: lit.has(k) }))
+    .filter(({ it, lit }) => it.text.trim() && t >= it.start && t < it.end && (drawn || lit));
+  const { measure, ready } = useMeasure(showing.map(({ it }) => it.font ?? context?.style?.font ?? "clean_sans"));
   if (!ready) return null;
   return (
     <>
-      {showing.map((it, k) => {
+      {showing.map(({ it, lit }, k) => {
         const p = placeItem(it, context ?? {}, measure);
         const font = videoFont(p.look.font);
         const em = FONT_METRICS[p.look.font].em;
@@ -122,14 +138,15 @@ export function TextPreview({ items: saved, t, context, show = true }: { items: 
               fontWeight: font.weight,
               fontSize: fu(p.size * em),
               lineHeight: fu(p.size),
-              color: p.look.color,
+              color: drawn ? p.look.color : "transparent",
+              ...(lit ? { outline: "2px dashed #FF6B5A", outlineOffset: fu(Math.max(6, p.size * 0.15)), borderRadius: 4 } : {}),
             }}
           >
             {p.lines.map((line, j) => (
               <span
                 key={j}
                 style={
-                  !line
+                  !line || !drawn
                     ? undefined // a blank line: space only, nothing drawn
                     : p.look.box
                     ? // libass's box: the line's height and width, grown by the box size on every side.
@@ -194,6 +211,7 @@ export function TextItemsEditor({
   disabled,
   defaults,
   shots,
+  onActive,
 }: {
   items: TextItem[];
   onChange: (items: TextItem[]) => void;
@@ -204,6 +222,8 @@ export function TextItemsEditor({
   defaults?: TextDefaults | null;
   /** This version's shots on its timeline (none for one-take videos). */
   shots: TimelineShot[];
+  /** The text being edited (its copies' places in the list), or none. */
+  onActive?: (idx: number[] | null) => void;
 }) {
   const [open, setOpen] = useState<string | null>(null);
   const end = duration || Math.max(0, ...items.map((i) => i.end), ...shots.map((s) => s.end));
@@ -229,6 +249,9 @@ export function TextItemsEditor({
     if (!spans.length) return;
     const { list, copies } = withSpans(b, spans);
     onChange(list);
+    // The one being retimed is the one being edited (its places in the list may have moved).
+    const now = list.indexOf(copies[0]);
+    onActive?.(blurbsOf(list).find((x) => x.idx.includes(now))?.idx ?? null);
     // Its place in the list may have changed: keep its panel open.
     if (open === b.key) {
       const at = list.indexOf(copies[0]);
@@ -242,6 +265,7 @@ export function TextItemsEditor({
     const next = [...items, item].sort((a, b) => a.start - b.start);
     onChange(next);
     setOpen(`i-${next.indexOf(item)}`);
+    onActive?.([next.indexOf(item)]);
   }
 
   const small = "h-8 cursor-pointer rounded-full bg-white/10 px-3 text-xs font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral";
@@ -270,7 +294,10 @@ export function TextItemsEditor({
                   value={first.text}
                   disabled={disabled}
                   onChange={(e) => patch(b, { text: e.target.value })}
-                  onFocus={() => seek(spans[0][0] + 0.05)}
+                  onFocus={() => {
+                    seek(spans[0][0] + 0.05);
+                    onActive?.(b.idx);
+                  }}
                   rows={Math.min(4, first.text.split("\n").length)}
                   maxLength={300}
                   className="min-h-9 flex-1 resize-y rounded-lg border border-white/15 bg-[#15151b] px-2 py-1.5 text-sm outline-none focus-visible:border-coral"
@@ -279,6 +306,7 @@ export function TextItemsEditor({
                   type="button"
                   onClick={() => {
                     setOpen(null);
+                    onActive?.(null);
                     onChange(items.filter((_, j) => !b.idx.includes(j)));
                   }}
                   disabled={disabled}
@@ -310,10 +338,25 @@ export function TextItemsEditor({
                   {spans.map(([a, z]) => `${fmtS(a)}–${fmtS(z)}`).join(", ")}
                   {spans.length > 1 && " (drag needs one stretch: tap a shot to join them)"}
                 </span>
-                <button type="button" className={`${small} ml-auto`} onClick={() => seek(spans[0][0] + 0.05)}>
+                <button
+                  type="button"
+                  className={`${small} ml-auto`}
+                  onClick={() => {
+                    seek(spans[0][0] + 0.05);
+                    onActive?.(b.idx);
+                  }}
+                >
                   show me
                 </button>
-                <button type="button" className={small} onClick={() => setOpen(expanded ? null : b.key)} aria-expanded={expanded}>
+                <button
+                  type="button"
+                  className={small}
+                  onClick={() => {
+                    setOpen(expanded ? null : b.key);
+                    onActive?.(expanded ? null : b.idx);
+                  }}
+                  aria-expanded={expanded}
+                >
                   {expanded ? "done" : "style & place"}
                 </button>
               </div>

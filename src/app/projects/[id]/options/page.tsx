@@ -57,6 +57,8 @@ async function Options({ id }: { id: string }) {
   const style = inspo.breakdown.style;
   const blocks = style?.textTimeline?.some((b) => b.letterHeight) ? style.textTimeline : null;
   const originalText: OptionTextItem[] = blocks ? originalBlocks(blocks, style!.text) : [];
+  // The same blocks exactly where the original has them ("keep the text exactly where the original has it").
+  const originalExact = blocks ? originalBlocks(blocks, style!.text, true).slice(0, TEXT_ITEMS_MAX) : undefined;
   if (!blocks) inspo.breakdown.shots.forEach((shot, i) => {
     const text = (style?.textLines?.[i] ?? shot.onScreenText ?? "").trim();
     if (!text) return;
@@ -81,6 +83,7 @@ async function Options({ id }: { id: string }) {
         clips={optionClips}
         oneTake={isOneTake(inspo.breakdown)}
         originalText={originalText.slice(0, TEXT_ITEMS_MAX)}
+        originalExact={originalExact}
         uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
       />
     </FlowShell>
@@ -97,7 +100,7 @@ const SAFE_BOTTOM = 0.75;
  * under TikTok's buttons moves as one, just clear of them; if that can't work, the layout is squeezed.
  * Sizes are relative to the size preset the video's text is drawn with (as the worker's are).
  */
-function originalBlocks(blocks: NonNullable<InspoStyle["textTimeline"]>, text: TextStyle): OptionTextItem[] {
+function originalBlocks(blocks: NonNullable<InspoStyle["textTimeline"]>, text: TextStyle, exact = false): OptionTextItem[] {
   const base = LETTER[text.size] ?? LETTER.large;
   const r = (v: number, k = 1000) => Math.round(v * k) / k;
   const items = blocks.map((bl) => {
@@ -113,7 +116,7 @@ function originalBlocks(blocks: NonNullable<InspoStyle["textTimeline"]>, text: T
   });
   const top = (x: (typeof items)[number]) => x.y - x.h / 2;
   const bottom = (x: (typeof items)[number]) => x.y + x.h / 2;
-  if (items.length && (Math.min(...items.map(top)) < SAFE_TOP || Math.max(...items.map(bottom)) > SAFE_BOTTOM)) {
+  if (!exact && items.length && (Math.min(...items.map(top)) < SAFE_TOP || Math.max(...items.map(bottom)) > SAFE_BOTTOM)) {
     const order = [...items].sort((a, b) => a.y - b.y);
     const groups = [[order[0]]];
     for (const x of order.slice(1)) {

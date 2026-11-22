@@ -16,7 +16,7 @@ export const ADMIN_COOKIE = "vo_admin";
 const SESSION_S = 12 * 60 * 60;
 const DEFAULT_PASSWORD_HASH = "075803cf7be5583c3ff821f0c5480b5f:11a50023d027845041c433c1e1175a073dc71657f295e52557e7c2c18af79a53";
 
-function adminEmails(): string[] {
+export function adminEmails(): string[] {
   const raw = process.env.ADMIN_EMAILS || process.env.UNLIMITED_EMAILS || "";
   return raw.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
 }

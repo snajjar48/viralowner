@@ -39,9 +39,12 @@ export function OptionsForm({
   oneTake = false,
   uploadedAudio = null,
   originalText = [],
+  originalExact,
 }: {
   /** The original's on-screen text as pieces ("write my own" can start from it). */
   originalText?: OptionTextItem[];
+  /** The original's text blocks exactly where it has them (when it has blocks). */
+  originalExact?: OptionTextItem[];
   projectId: string;
   initialOptions: VideoOptions;
   shots: Shot[];
@@ -68,6 +71,9 @@ export function OptionsForm({
   const first = useRef(true);
   // A storyboard made from these exact options and clips: "make my video" makes that plan.
   const [plan, setPlan] = useState<StoryboardPlan | null>(null);
+  // "show me the text" in the text section starts the preview below.
+  const startPreview = useRef<(() => void) | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const madeFrom = JSON.stringify([planKey(options), clips.map((c) => [c.id, c.shotIndexes])]);
 
   // Save a moment after each change, so going back or refreshing keeps it.
@@ -180,7 +186,17 @@ export function OptionsForm({
         uploadedAudio={uploadedAudio}
         textPieces={{
           shots: textShots,
-          original: oneTake ? [] : originalText,
+          original: oneTake ? [] : options.text.keepPlace && originalExact ? originalExact : originalText,
+          originalExact: oneTake ? undefined : originalExact,
+          originalMoved: oneTake ? undefined : originalText,
+          onPreview:
+            making || !!problem || uploads.left > 0
+              ? undefined
+              : () => {
+                  startPreview.current?.();
+                  setTimeout(() => document.getElementById("storyboard")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+                },
+          previewing,
           // The text the preview planned (to change before it's made), while the preview still holds.
           written: plan && plan.madeFrom === madeFrom && !oneTake ? piecesFromPreview(plan.frames, plan.textItems, textShots) : [],
         }}
@@ -248,6 +264,7 @@ export function OptionsForm({
         />
       )}
 
+      <div id="storyboard" className="scroll-mt-4">
       <Storyboard
         projectId={projectId}
         options={options}
@@ -255,7 +272,10 @@ export function OptionsForm({
         stale={!!plan && plan.madeFrom !== madeFrom}
         disabled={making || !!problem || uploads.left > 0}
         onPlan={setPlan}
+        startRef={startPreview}
+        onPlanning={setPreviewing}
       />
+      </div>
 
       <p className="min-h-5 text-center text-xs text-muted" aria-live="polite">
         {save === "saving" ? "saving…" : save === "saved" ? "all changes saved" : save === "error" ? "couldn’t save. check your connection." : ""}

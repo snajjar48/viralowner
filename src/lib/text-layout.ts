@@ -63,7 +63,7 @@ export function itemStyle(style: Style, item: TextItem): Style {
   if (item.color) st.color = item.color;
   if (item.align) st.align = item.align;
   if (item.animation) st.animation = item.animation;
-  if (item.look === "box") Object.assign(st, { box: true, boxColor: style.box ? style.boxColor : undefined, outline: "none" });
+  if (item.look === "box") Object.assign(st, { box: true, boxColor: item.boxColor || (style.box ? style.boxColor : undefined), outline: "none" });
   else if (item.look === "outline") Object.assign(st, { box: false, outline: st.outline && st.outline !== "none" ? st.outline : "thick" });
   else if (item.look === "plain") Object.assign(st, { box: false, outline: "none", shadow: true });
   if (st.box) {

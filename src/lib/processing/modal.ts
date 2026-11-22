@@ -33,6 +33,7 @@ interface WorkerJob {
   progress: number;
   output?: unknown;
   error?: string;
+  note?: string;
 }
 
 const ROLES: ShotRole[] = ["hook", "setup", "build", "reveal", "payoff", "b-roll", "cta"];
@@ -138,10 +139,11 @@ function textItemsFrom(raw: unknown): TextItem[] | undefined {
       y: n(x.y, 0, 1),
       x: n(x.x, 0, 1),
       align: x.align === "left" || x.align === "right" || x.align === "center" ? x.align : null,
-      size: n(x.size, 0.4, 2.5) ?? 1,
+      size: n(x.size, 0.25, 3) ?? 1,
       color: typeof x.color === "string" && /^#[0-9a-f]{6}$/i.test(x.color) ? x.color : null,
       font: typeof x.font === "string" ? x.font : null,
       look: x.look === "outline" || x.look === "box" || x.look === "plain" ? x.look : null,
+      ...(typeof x.boxColor === "string" && /^#[0-9a-f]{6}$/i.test(x.boxColor) ? { boxColor: x.boxColor.toUpperCase() } : {}),
       animation: typeof x.animation === "string" ? x.animation : null,
       ...(typeof x.group === "string" && /^[\w-]{1,24}$/.test(x.group) ? { group: x.group } : {}),
     }));
@@ -388,7 +390,7 @@ export const modalEngine: ProcessingEngine = {
       return { state: "done", stage: "finishing", progress: 100, output };
     }
     if (job.state === "failed") return { state: "failed", stage, progress: job.progress, error: job.error };
-    return { state: job.state, stage, progress: job.progress };
+    return { state: job.state, stage, progress: job.progress, ...(job.note ? { note: job.note.slice(0, 200) } : {}) };
   },
 };
 

@@ -47,8 +47,10 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if (project.kind === "scratch" && !canUseScratch(await getMembership(userId))) {
       return Response.json({ error: SCRATCH_PRO_MESSAGE, reason: "pro" }, { status: 402 });
     }
-    // Fixing caption words or adding proof screenshots remakes the same edit: it doesn't use up a change.
+    // Fixing caption words, changing the on-screen text or adding proof screenshots remakes the same
+    // edit: it doesn't use up a change.
     if (body.mode === "captions") return fixCaptions(userId, project, body);
+    if (body.mode === "text") return changeText(userId, project, body);
     if (body.mode === "proof") return addProofs(userId, project, body);
 
     // Counts the video against the trial or plan on its first version, and
@@ -177,6 +179,19 @@ async function fixCaptions(userId: string, project: Project, body: Record<string
   const edit = captionEditFrom(body, from);
   if ("error" in edit) return jsonError(edit.error!, 400);
   return remakeSameEdit(userId, project, from, { captionEdit: edit });
+}
+
+/**
+ * { mode: "text", fromVersion, textItems }: the same version again with the on-screen text as set in
+ * the editor (words, times, places, looks). No new writing or editing, so it's free.
+ */
+async function changeText(userId: string, project: Project, body: Record<string, unknown>) {
+  const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+  if (!from?.plan) return jsonError("we couldn’t find that version.", 404);
+  const items = parseTextItems(body.textItems);
+  if (!items) return jsonError("change the text first.", 400);
+  if ("error" in items) return jsonError(items.error, items.status);
+  return remakeSameEdit(userId, project, from, { textItems: items, textItemsByUser: true });
 }
 
 /**

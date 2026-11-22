@@ -21,7 +21,13 @@ export function textItemsFromShots(plan: RenderPlan | null | undefined, breakdow
     const ls = plan.shots.map((s) => (s.trimStartS !== null && s.trimEndS !== null ? s.trimEndS - s.trimStartS : NaN));
     lengths = ls.every((x) => x > 0) ? ls : null;
   }
-  if (!lengths || lengths.length !== plan.texts.length) return null;
+  if (!lengths || lengths.length !== plan.texts.length) {
+    // The shots' lengths don't line up with the text (older versions): each kept shot's trim instead.
+    const kept = plan.shots.filter((s) => !removed.has(s.shotIndex));
+    const ls = kept.map((s) => (s.trimStartS !== null && s.trimEndS !== null ? s.trimEndS - s.trimStartS : NaN));
+    if (ls.length !== plan.texts.length || !ls.every((x) => x > 0)) return null;
+    lengths = ls;
+  }
   const items: TextItem[] = [];
   let t = 0;
   plan.texts.forEach((raw, i) => {

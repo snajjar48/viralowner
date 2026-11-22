@@ -29,6 +29,19 @@ interface RenderState {
   stage: JobStage | null;
   progress: number;
   error: string | null;
+  /** What's happening right now, when the stage's description doesn't cover it. */
+  note?: string;
+}
+
+/** Time left, from how fast the bar has moved since we started watching (null until it's moved enough to tell). */
+function timeLeft(first: { at: number; progress: number } | null, progress: number, now: number): string | null {
+  if (!first || progress >= 100) return null;
+  const moved = progress - first.progress;
+  const elapsed = (now - first.at) / 1000;
+  if (moved < 8 || elapsed < 20) return null;
+  const left = (elapsed / moved) * (100 - progress);
+  if (left < 50) return "less than a minute left";
+  return `about ${Math.ceil(left / 60)} min left`;
 }
 
 const POLL_MS = 2500;
@@ -50,6 +63,9 @@ export function StatusTracker({
   const [state, setState] = useState(initial);
   const [retrying, setRetrying] = useState(false);
   const [checkError, setCheckError] = useState<"network" | "server" | null>(null);
+  // When we first saw the bar moving (for the time left).
+  const [firstSeen, setFirstSeen] = useState<{ at: number; progress: number } | null>(null);
+  const [now, setNow] = useState(0);
 
   // Poll while the video is being made.
   useEffect(() => {
@@ -64,6 +80,9 @@ export function StatusTracker({
         if (stopped) return;
         setCheckError(null);
         setState(next);
+        const at = Date.now();
+        if (next.status === "processing") setFirstSeen((f) => f ?? { at, progress: next.progress });
+        setNow(at);
         if (next.status === "done") router.replace(`/projects/${projectId}/preview?v=${next.version}`);
       } catch (error) {
         if (!stopped) setCheckError(error instanceof Error && error.message === "network" ? "network" : "server");
@@ -119,12 +138,13 @@ export function StatusTracker({
   }
 
   const activeIndex = state.stage ? JOB_STAGES.indexOf(state.stage) : 0;
+  const left = state.status === "processing" ? timeLeft(firstSeen, state.progress, now) : null;
 
   return (
     <div className="flex flex-col gap-6">
       <PageTitle
         title={state.version > 1 ? `making version ${state.version}...` : "making your video..."}
-        subtitle="this could take up to 5 minutes."
+        subtitle={left ? `${left}.` : "this could take up to 5 minutes."}
       />
       <div className="flex flex-col gap-5 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
         <ProgressBar value={state.status === "queued" ? 0 : state.progress} label={state.status === "queued" ? "waiting to start" : "progress"} />
@@ -156,7 +176,7 @@ export function StatusTracker({
                     {stageCopy[stage].title}
                     {done && <span className="sr-only"> (done)</span>}
                   </span>
-                  <span className="text-xs text-muted">{stageCopy[stage].detail}</span>
+                  <span className="text-xs text-muted">{active && state.note ? state.note : stageCopy[stage].detail}</span>
                 </span>
               </li>
             );

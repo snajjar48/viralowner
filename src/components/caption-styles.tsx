@@ -135,7 +135,7 @@ export function TextStylePicker({
 }) {
   const choices: { id: TextStyleId; name: string }[] = [{ id: "auto", name: autoName }, ...TEXT_STYLES];
   return (
-    <div role="radiogroup" aria-label="text style" className="grid grid-cols-4 gap-1.5">
+    <div role="radiogroup" aria-label="text style" className="grid grid-cols-3 gap-1.5">
       {choices.map((s) => {
         const checked = value === s.id;
         return (

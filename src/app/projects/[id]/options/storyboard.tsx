@@ -30,7 +30,13 @@ export function Storyboard({
   disabled,
   onPlan,
   prepare,
+  startRef,
+  onPlanning,
 }: {
+  /** Set to this preview's start, so something else on the page can start it (the text section). */
+  startRef?: { current: (() => void) | null };
+  /** Whether it's being planned right now. */
+  onPlanning?: (planning: boolean) => void;
   projectId: string;
   options: VideoOptions;
   /** The options and clip choices right now (recorded with the plan). */
@@ -45,6 +51,10 @@ export function Storyboard({
   const [state, setState] = useState<State>({ name: "idle" });
   const alive = useRef(true);
   useEffect(() => () => void (alive.current = false), []);
+  useEffect(() => {
+    if (startRef) startRef.current = disabled ? null : () => void start();
+  });
+  useEffect(() => onPlanning?.(state.name === "planning"), [state.name, onPlanning]);
 
   async function start() {
     const from = madeFrom;

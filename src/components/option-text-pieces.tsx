@@ -17,7 +17,10 @@ export function OptionTextPieces({
   length = null,
   planHint = false,
   fromScratch = false,
+  hintsFromPlan = false,
 }: {
+  /** The grey words are our plan's (the preview's text), not the original's. */
+  hintsFromPlan?: boolean;
   /** "Start from scratch": the shots are the previewed plan's (there's no original). */
   fromScratch?: boolean;
   /** "Start from scratch" with no preview yet: say the preview puts the shots on the strip. */
@@ -30,6 +33,8 @@ export function OptionTextPieces({
   length?: number | null;
 }) {
   const [open, setOpen] = useState<number | null>(null);
+  /** The box whose timing (strip and shot chips) is showing: one at a time keeps the list short. */
+  const [timing, setTiming] = useState<number | null>(null);
   const total = shots.at(-1)?.end ?? length ?? 0;
   const timed = total > 0;
   const filled = items.filter((it) => it.text.trim());
@@ -45,17 +50,17 @@ export function OptionTextPieces({
         add each piece of text separately. new lines inside one piece stay together on screen.
         {shots.length > 0
           ? fromScratch
-            ? " drag the coral handles to set when it shows (like trimming a clip), or pick the shots from your preview it’s on. leave it and we time it."
-            : " drag the coral handles to set when it shows (like trimming a clip), or pick the shots it’s on. leave it and we time it like the original."
+            ? " tap “when it shows” to pick its time or shots from your preview. leave it and we time it."
+            : " tap “when it shows” to pick its time or shots. leave it and we time it like the original."
           : timed
-            ? " drag the coral handles to set when it shows in your video (like trimming a clip). leave it and we time it."
+            ? " tap “when it shows” to pick its time in your video. leave it and we time it."
             : " we time each piece. to set exact times, pick a length for your video above (or drag them in the editor once it’s made)."}
         {planHint && " tip: tap “preview the plan first” (free) and your shots show up here, so you can see exactly where each text goes."}
       </p>
       {items.some((it) => it.hint) && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-muted">
           <span>
-            the grey words show what {fromScratch ? "our plan has" : "the original has"} there. type over them; a box left
+            the grey words show what {fromScratch || hintsFromPlan ? "our plan has" : "the original has"} there. type over them; a box left
             blank stays out of your video.
           </span>
           {blanks > 1 && (
@@ -96,6 +101,7 @@ export function OptionTextPieces({
                     type="button"
                     onClick={() => {
                       setOpen(null);
+                      setTiming(null);
                       onChange(items.filter((_, j) => j !== k));
                     }}
                     aria-label={`delete ${label}`}
@@ -117,7 +123,37 @@ export function OptionTextPieces({
                   </button>
                 </div>
               )}
-              {timed && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted tabular-nums">
+                  {auto
+                    ? "we time it"
+                    : it.shots?.length
+                      ? `on ${it.shots.length === 1 ? "shot" : "shots"} ${it.shots.map((s) => s + 1).join(", ")}`
+                      : `${fmtS(spans[0][0])}–${fmtS(spans[0][1])}`}
+                </span>
+                {ownLook(it) && <span className="rounded-full bg-violet/20 px-2 py-0.5 text-[11px] text-foreground">its own look</span>}
+                <span className="ml-auto flex gap-2">
+                  {timed && (
+                    <button
+                      type="button"
+                      onClick={() => setTiming(timing === k ? null : k)}
+                      aria-expanded={timing === k}
+                      className="h-8 cursor-pointer rounded-full bg-white/10 px-3 font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+                    >
+                      {timing === k ? "done" : "when it shows"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setOpen(open === k ? null : k)}
+                    aria-expanded={open === k}
+                    className="h-8 cursor-pointer rounded-full bg-white/10 px-3 font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+                  >
+                    {open === k ? "done" : "style & place"}
+                  </button>
+                </span>
+              </div>
+              {timed && timing === k && (
                 <>
                   <div className="mt-8">
                     <TextTimeline
@@ -129,24 +165,17 @@ export function OptionTextPieces({
                       onRelease={(a, b) => timeIt(k, a, b)}
                     />
                   </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                    <span className="text-muted tabular-nums">
-                      {auto
-                        ? "we time it (tap the strip to set it yourself)"
-                        : it.shots?.length
-                          ? `on ${it.shots.length === 1 ? "shot" : "shots"} ${it.shots.map((s) => s + 1).join(", ")}`
-                          : `${fmtS(spans[0][0])}–${fmtS(spans[0][1])}`}
-                    </span>
-                    {!auto && (
+                  {!auto && (
+                    <div className="mt-2 flex justify-end">
                       <button
                         type="button"
                         onClick={() => set(k, { shots: null, start: null, end: null })}
-                        className="ml-auto h-8 cursor-pointer rounded-full bg-white/10 px-3 font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+                        className="h-8 cursor-pointer rounded-full bg-white/10 px-3 text-xs font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
                       >
                         let us time it
                       </button>
-                    )}
-                  </div>
+                    </div>
+                  )}
                   <div className="mt-2">
                     <ShotChips
                       shots={shots}
@@ -161,19 +190,13 @@ export function OptionTextPieces({
                   </div>
                 </>
               )}
-              <div className="mt-2 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => setOpen(open === k ? null : k)}
-                  aria-expanded={open === k}
-                  className="h-8 cursor-pointer rounded-full bg-white/10 px-3 text-xs font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
-                >
-                  {open === k ? "done" : "style & place"}
-                </button>
-              </div>
               {open === k && (
                 <div className="mt-3 border-t border-white/10 pt-3">
-                  <TextLookControls value={it} onChange={(p) => set(k, p)} />
+                  <TextLookControls
+                    value={it}
+                    // Styled here by the user: it keeps this look even when a style is picked for the whole video.
+                    onChange={(p) => set(k, { ...p, ...(LOOK_KEYS.some((x) => x in p) ? { ownLook: true } : {}) })}
+                  />
                 </div>
               )}
             </li>
@@ -196,6 +219,10 @@ export function OptionTextPieces({
     </div>
   );
 }
+
+const LOOK_KEYS = ["color", "font", "look", "animation"] as const;
+/** The user gave this piece its own look (it isn't the original's or ours). */
+const ownLook = (it: OptionTextItem) => !!it.ownLook && LOOK_KEYS.some((k) => it[k]);
 
 /** "Write my own" typed before pieces existed: each line its own piece, timed by us (as it was). */
 export function piecesFromText(custom: string): OptionTextItem[] {

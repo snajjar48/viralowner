@@ -6,6 +6,8 @@ import { getRender, isUuid } from "./projects";
 import { syncRender } from "./renders";
 import { siteUrl } from "./site-url";
 import { createAdminClient } from "./supabase/server";
+import { adminEmails } from "./admin-auth";
+import { SERVICE_HICCUP } from "./service-hiccup";
 
 async function recipient(userId: string) {
   const { data } = await createAdminClient()
@@ -44,6 +46,7 @@ export async function emailRenderFinished(projectId: string, renderId: string) {
     WHERE id = ${renderId} AND project_id = ${projectId} AND emailed_at IS NULL
     RETURNING id`;
   if (!claimed.length) return "already_sent";
+  if (render.status === "failed" && render.error === SERVICE_HICCUP) await alertOwnerHiccup();
 
   const to = await recipient(String(owner[0].user_id));
   if (!to) return "no_email";
@@ -54,6 +57,30 @@ export async function emailRenderFinished(projectId: string, renderId: string) {
   );
   if (!ok) await sql`UPDATE renders SET emailed_at = NULL WHERE id = ${renderId}`; // let a later callback retry
   return ok ? "sent" : "send_failed";
+}
+
+/**
+ * Videos are failing because the Anthropic balance ran out: tell the owner (at most once an hour)
+ * so it's topped up before more people hit it.
+ */
+async function alertOwnerHiccup() {
+  const to = adminEmails()[0];
+  if (!to) return;
+  const hour = new Date().toISOString().slice(0, 13);
+  await sendEmail(
+    {
+      to,
+      subject: "videos are failing: the Anthropic balance ran out",
+      preview: "top up or turn on auto-reload, then people can tap try again.",
+      heading: "the Anthropic balance ran out.",
+      body: [
+        "a video just failed because the Anthropic API said the credit balance is too low. every new video and preview will fail until it’s topped up.",
+        "top it up (or turn on auto-reload) in the Anthropic console. people who hit this were told to try again in a little while, and trying again is free.",
+      ],
+      button: { label: "open the Anthropic console", href: "https://console.anthropic.com/settings/billing" },
+    },
+    `hiccup-${hour}`,
+  );
 }
 
 /** A failed version is being tried again: its outcome should be emailed again. */

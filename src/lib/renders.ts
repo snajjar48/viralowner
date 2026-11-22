@@ -337,7 +337,7 @@ async function retryScratchRender(userId: string, project: Project, render: Rend
 }
 
 /** Asks the engine how a render is going and saves the answer. */
-export async function syncRender(projectId: string, render: Render): Promise<Render> {
+export async function syncRender(projectId: string, render: Render): Promise<Render & { note?: string }> {
   if (render.status === "done" || render.status === "failed" || !render.jobId) return render;
   const job = await getJobStatus(render.jobId);
   const status = job.state === "queued" ? "queued" : job.state;
@@ -366,6 +366,7 @@ export async function syncRender(projectId: string, render: Render): Promise<Ren
     postCopy: update.postCopy ?? render.postCopy,
     plan: update.plan ?? render.plan,
     error: update.error ?? null,
+    ...(job.note && status === "processing" ? { note: job.note } : {}),
   };
 }
 
@@ -470,6 +471,7 @@ export function parseTextItems(input: unknown): TextItem[] | undefined | Fail {
       start: Math.round(start * 100) / 100,
       end: Math.round(end * 100) / 100,
       ...textLookFrom(raw ?? {}),
+      ...(typeof raw?.boxColor === "string" && /^#[0-9a-f]{6}$/i.test(raw.boxColor) ? { boxColor: raw.boxColor.toUpperCase() } : {}),
       // Copies of one text shown on separate shots (the editor edits them together).
       ...(typeof raw?.group === "string" && /^[\w-]{1,24}$/.test(raw.group) ? { group: raw.group } : {}),
     });

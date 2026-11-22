@@ -53,6 +53,9 @@ export function ScratchCreate({
   const first = useRef(true);
   // A storyboard made from this exact prompt, options and clips: "make my video" makes that plan.
   const [plan, setPlan] = useState<StoryboardPlan | null>(null);
+  // "show me the text" in the text section starts the preview below.
+  const startPreview = useRef<(() => void) | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const madeFrom = JSON.stringify([prompt.trim(), planKey(options), clips.uploaded]);
   // The previewed plan's shots: text can be timed on them (the video is made from that plan).
   const planShots =
@@ -201,6 +204,14 @@ export function ScratchCreate({
             shots: planShots,
             // The text the preview planned (to change before it's made, or as grey hints for "write my own").
             written: planShots.length && plan ? piecesFromPreview(plan.frames, plan.textItems) : [],
+            onPreview:
+              making || !!problem || clips.busy
+                ? undefined
+                : () => {
+                    startPreview.current?.();
+                    setTimeout(() => document.getElementById("storyboard")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+                  },
+            previewing,
           }}
         />
 
@@ -214,6 +225,7 @@ export function ScratchCreate({
           />
         )}
 
+        <div id="storyboard" className="scroll-mt-4">
         <Storyboard
           projectId={projectId}
           options={options}
@@ -222,7 +234,10 @@ export function ScratchCreate({
           disabled={making || !!problem || clips.busy}
           onPlan={setPlan}
           prepare={prepare}
+          startRef={startPreview}
+          onPlanning={setPreviewing}
         />
+        </div>
 
         <p className="min-h-5 text-center text-xs text-muted" aria-live="polite">
           {save === "saving" ? "saving…" : save === "saved" ? "all changes saved" : save === "error" ? "couldn’t save. check your connection." : ""}

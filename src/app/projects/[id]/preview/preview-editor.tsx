@@ -104,14 +104,15 @@ export function PreviewEditor({
   const textChanged = JSON.stringify(textItems) !== JSON.stringify(current.textItems);
   const videoRef = useRef<HTMLVideoElement>(null);
   const { t, duration } = usePlayhead(videoRef);
-  const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | null>(null);
+  const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | "text" | null>(null);
+  // The text being edited (its copies' places in the list): outlined on the video.
+  const [activeText, setActiveText] = useState<number[] | null>(null);
   const [request, setRequest] = useState("");
   const [error, setError] = useState("");
 
-  const dirty =
-    JSON.stringify(options) !== JSON.stringify(current.settings.options) ||
-    JSON.stringify(shotEdits) !== JSON.stringify(initialShots) ||
-    textChanged;
+  const otherChanges =
+    JSON.stringify(options) !== JSON.stringify(current.settings.options) || JSON.stringify(shotEdits) !== JSON.stringify(initialShots);
+  const dirty = otherChanges || textChanged;
   const trimProblem = shotEdits.find((e) => {
     if (e.removed || !e.clipId || (e.trimStartS === null && e.trimEndS === null)) return false;
     const d = clips.find((c) => c.id === e.clipId)?.durationS ?? 0;
@@ -162,6 +163,25 @@ export function PreviewEditor({
   const setShot = (index: number, patch: Partial<ShotEdit>) =>
     setShotEdits((list) => list.map((e) => (e.shotIndex === index ? { ...e, ...patch } : e)));
 
+  /** Only the on-screen text changed: the same version with the new text, free (no change used). */
+  async function saveText() {
+    setBusy("text");
+    setError("");
+    try {
+      const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
+        mode: "text",
+        fromVersion: current.version,
+        textItems,
+      });
+      router.push(`/projects/${projectId}/status?render=${renderId}`);
+    } catch (e) {
+      const activeId = activeRenderIdFrom(e);
+      if (activeId) return router.push(`/projects/${projectId}/status?render=${activeId}`);
+      setError(e instanceof UploadError ? e.message : "something went wrong. please try again.");
+      setBusy(null);
+    }
+  }
+
   async function run(kind: "apply" | "regenerate" | "repost") {
     setBusy(kind);
     setError("");
@@ -209,7 +229,11 @@ export function PreviewEditor({
           size="fit"
           label={`your video, version ${current.version}`}
           videoRef={videoRef}
-          overlay={textItems ? <TextPreview items={textItems} t={t} context={current.textContext} show={textChanged} /> : undefined}
+          overlay={
+            textItems ? (
+              <TextPreview items={textItems} t={t} context={current.textContext} show={textChanged} highlight={activeText} />
+            ) : undefined
+          }
         />
 
         {versions.length > 1 && (
@@ -336,20 +360,37 @@ export function PreviewEditor({
               videoRef={videoRef}
               t={t}
               duration={duration}
-              disabled={locked}
+              // Text changes are free, so they stay open when the video's changes are used up.
+              disabled={!!inProgress || busy !== null}
               defaults={current.textDefaults}
               shots={textShots}
+              onActive={setActiveText}
             />
           ) : (
             <p className="text-sm text-muted">
-              text editing here works on versions made from now on. ask for any change below (or regenerate) and the next
-              version’s text will be editable piece by piece.
+              we can’t split this version’s text into pieces to edit. ask for a text change below (or regenerate), and the
+              next version’s text will be editable piece by piece.
             </p>
           )}
           {textChanged && (
-            <p className="text-xs text-muted">
-              your text edits show over the video as a preview. apply your changes below to make the new version.
-            </p>
+            <div className="flex flex-col gap-2 rounded-xl border border-coral/30 bg-coral/[0.05] p-3">
+              <p className="text-xs text-muted">
+                your text edits show over the video (the one you’re editing is outlined).
+                {otherChanges || asking
+                  ? " they go in with your other changes when you apply them below."
+                  : " save them and we’ll remake this version with your text. everything else stays the same, and it doesn’t use up a change."}
+              </p>
+              {!otherChanges && !asking && (
+                <button
+                  type="button"
+                  onClick={saveText}
+                  disabled={!!badText || !!inProgress || busy !== null}
+                  className="h-11 cursor-pointer rounded-full bg-linear-to-r from-violet to-coral px-5 text-sm font-medium text-white transition focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {busy === "text" ? "starting…" : "save my text"} <span className="font-normal opacity-80">· free</span>
+                </button>
+              )}
+            </div>
           )}
         </Section>
 

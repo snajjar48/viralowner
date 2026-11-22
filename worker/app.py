@@ -365,14 +365,16 @@ class JobError(Exception):
     """Raise inside a job with a friendly, user-facing message."""
 
 
-def report(stage: str | None, progress: int) -> None:
-    """Called from inside a job to publish how it's going."""
+def report(stage: str | None, progress: int, note: str | None = None) -> None:
+    """Called from inside a job to publish how it's going. `note`: what's happening, for the user, when
+    the stage's usual description doesn't cover it (cleared by the next report without one)."""
     if JOB.get("floor"):
         # The review's fix pass: the bar stays at "finishing" instead of starting over.
         stage, progress = "finishing", max(progress, JOB["floor"])
     job_id = modal.current_function_call_id()
     if job_id:
-        progress_store[job_id] = {"stage": stage, "progress": max(0, min(100, progress)), "updated_at": time.time()}
+        progress_store[job_id] = {"stage": stage, "progress": max(0, min(100, progress)), "updated_at": time.time(),
+                                  **({"note": note} if note else {})}
     t0 = JOB.get("t0")
     if t0:
         print(f"[{time.time() - t0:6.1f}s] {stage} {progress}%")
@@ -1408,6 +1410,19 @@ def claude_busy(e: Exception) -> bool:
     return isinstance(e, anthropic.APIError) and ("overloaded" in text or "rate_limit" in text)
 
 
+# Shown when our side can't go on for a while (the Anthropic balance ran out). The site matches this
+# exact text (lib/service-hiccup.ts) to alert the owner.
+SERVICE_HICCUP = ("we’re having a hiccup on our side. your clips and settings are saved: try again in a little while "
+                  "(it’s free).")
+
+
+def out_of_credits(e: Exception) -> bool:
+    """The Anthropic balance ran out (every request fails until it's topped up)."""
+    import anthropic
+
+    return isinstance(e, anthropic.APIStatusError) and e.status_code in (400, 402, 403) and "credit balance" in str(e).lower()
+
+
 def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: str, effort: str = "high") -> dict:
     """One structured-output request. Returns the parsed JSON plus usage and cost.
     `effort`: how hard Claude thinks. "high" for analysis and planning; "xhigh" where getting
@@ -1442,6 +1457,9 @@ def ask_claude(system: str, content: list[dict], schema: dict, refusal_message: 
                 response = stream.get_final_message()
             break
         except Exception as e:  # noqa: BLE001
+            if out_of_credits(e):
+                print("ANTHROPIC CREDITS: the balance is too low; this job can't go on")
+                raise JobError(SERVICE_HICCUP) from e
             if attempt == BUSY_TRIES - 1 or not claude_busy(e):
                 raise
             wait = min(90.0, 6.0 * 1.6 ** attempt) * (0.75 + 0.5 * random.random())
@@ -2488,6 +2506,11 @@ def _safe(fn, *args):
     """Runs a measuring step; a failure just means less to go on, never a failed analysis."""
     try:
         return fn(*args)
+    except JobError as e:
+        if str(e) == SERVICE_HICCUP:
+            raise  # nothing else can go on either
+        print(f"{fn.__name__} failed: {type(e).__name__}: {e}")
+        return None
     except Exception as e:  # noqa: BLE001
         print(f"{fn.__name__} failed: {type(e).__name__}: {e}")
         return None
@@ -4361,7 +4384,7 @@ TEXT_ITEM_LOOKS = ("outline", "box", "plain")
 
 
 def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: list[float], texts: list[str],
-                     base_letter: float | None = None) -> list[dict]:
+                     base_letter: float | None = None, keep_place: bool = False) -> list[dict]:
     """The inspo's text rhythm with this video's words: each piece pops up at the same moment of the
     same shot (stretched with the shot if its length changed) and leaves when it did, and gets the
     next lines of that shot's text, in order (a piece of 2 lines takes the next 2). Pieces that stay
@@ -4404,7 +4427,8 @@ def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: lis
                         **block_look(p, base_letter),
                         # Its height on screen, roughly (a line is about 1.75 capital letters tall).
                         "_h": n_lines * (p.get("letterHeight") or base_letter or 0.04) * 1.75})
-    out = fit_blocks_to_safe(out)
+    if not keep_place:  # asked for: exactly where the inspo has it, even under the app's buttons
+        out = fit_blocks_to_safe(out)
     for x in out:
         x.pop("_h", None)
     return out
@@ -5103,7 +5127,8 @@ OPTION_LOOK_KEYS = ("y", "x", "align", "color", "font", "look", "animation")
 
 
 def option_text_items(text_opts: dict, inspo_lengths_all: list[float], shot_indexes: list[int], shots: list[dict],
-                      durations: list[float], jump: bool, spots: list | None = None) -> tuple[list[dict] | None, bool]:
+                      durations: list[float], jump: bool, spots: list | None = None,
+                      preset: str | None = None) -> tuple[list[dict] | None, bool]:
     """"Write my own" set up as separate pieces in the options, each with its own timing (certain
     shots, or from/to on the original's timeline) and look, as editor text items on this video's
     timeline. Returns (items, timed_by_user). None when the pieces add nothing to the typed words
@@ -5160,7 +5185,11 @@ def option_text_items(text_opts: dict, inspo_lengths_all: list[float], shot_inde
                 out.append([starts[j], starts[j] + durations[j]])
         return [(a, b) for a, b in out]
 
-    look = lambda x: {k: x.get(k) for k in (*OPTION_LOOK_KEYS, "size") if x.get(k) is not None}  # noqa: E731
+    def look(x: dict) -> dict:
+        # A style picked for the whole video replaces the looks a piece only has from the original
+        # (prefilled); a look the user gave the piece themselves stays.
+        inherited = ("color", "font", "look") if preset and x.get("ownLook") is not True else ()
+        return {k: x.get(k) for k in (*OPTION_LOOK_KEYS, "size") if x.get(k) is not None and k not in inherited}
     out: list[dict] = []
     timed_by_user = False
 
@@ -7377,18 +7406,20 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     new_style = None
     inspo_style = breakdown.get("style")
     if not isinstance(inspo_style, dict) or int(inspo_style.get("version") or 1) < STYLE_VERSION:
-        report("analyzing", 5)
+        report("analyzing", 5, "reading the original’s editing style. only this once, so it takes a little longer")
         try:
             inspo_style, style_cost = analyze_style(inspo_path, shots, workdir, breakdown.get("transcript"))
             cost += style_cost
             new_style = inspo_style
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, JobError) and str(e) == SERVICE_HICCUP:
+                raise
             print(f"style analysis failed: {type(e).__name__}: {e}")
             inspo_style = default_inspo_style(n)
     if (isinstance(inspo_style, dict) and new_style is None and int(inspo_style.get("textTimelineVersion") or 1) < TEXT_TIMELINE_VERSION
             and any((s.get("onScreenText") or "").strip() for s in shots)):
         # Analyzed before each text block's own place, size and color were read: read the text again (once).
-        report("analyzing", 6)
+        report("analyzing", 6, "updating how we read the original’s text. only this once, so it takes a little longer")
         timed = _safe(text_timeline, inspo_path, shots[-1]["startS"] + shots[-1]["durationS"], shots, workdir)
         if timed:
             inspo_style = {**inspo_style, "textTimeline": timed[0], "textTimelineVersion": TEXT_TIMELINE_VERSION}
@@ -7804,7 +7835,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 k = float(req["textTimelineS"]) / sum(timeline_lengths)
                 timeline_lengths = [x * k for x in timeline_lengths]
             text_items_raw, opt_timed = option_text_items(text_opts, timeline_lengths, shot_indexes, shots, durations,
-                                                          bool(jump), spots)
+                                                          bool(jump), spots, preset)
             if text_items_raw is not None:
                 print(f"text pieces from the options: {len(text_items_raw)}; "
                       + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
@@ -7817,7 +7848,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             # own place, size and color): the user's video does the same.
             # Sizes relative to the inspo's main text, so a bigger or smaller text asked for scales them all.
             base_letter = inspo_text.get("letterHeight") or TEXT_SIZES.get(inspo_text.get("size"), TEXT_SIZES["large"])
-            text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts, base_letter)
+            text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts, base_letter,
+                                              text_opts.get("keepPlace") is True)
             for x in text_items_raw:
                 if preset:  # a text look picked in the options wins over the inspo's colors and fonts
                     for k in ("color", "font", "look", "boxColor"):
@@ -9196,7 +9228,7 @@ def api():
         except (TimeoutError, modal.exception.TimeoutError):
             p = progress_store.get(job_id) or {"stage": None, "progress": 0}
             state = "queued" if p["stage"] is None else "processing"
-            return {"state": state, "stage": p["stage"], "progress": p["progress"]}
+            return {"state": state, "stage": p["stage"], "progress": p["progress"], **({"note": p["note"]} if p.get("note") else {})}
         except JobError as e:
             return {"state": "failed", "stage": None, "progress": 0, "error": str(e)}
         except Exception:  # noqa: BLE001 - the job itself crashed

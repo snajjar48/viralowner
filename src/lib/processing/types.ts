@@ -198,6 +198,8 @@ export interface TextItem {
   color?: string | null;
   font?: string | null;
   look?: "outline" | "box" | "plain" | null;
+  /** Its own box color (a text block copied from the original with its own colored box). */
+  boxColor?: string | null;
   animation?: string | null;
   /** The same text shown on separate shots: its copies share this (the editor edits them as one). */
   group?: string | null;
@@ -351,6 +353,8 @@ export interface JobStatus {
   output?: RenderOutput;
   /** Friendly, user-facing message when state is "failed". */
   error?: string;
+  /** What's happening right now, when the stage's usual description doesn't cover it. */
+  note?: string;
 }
 
 export interface ProcessingEngine {
