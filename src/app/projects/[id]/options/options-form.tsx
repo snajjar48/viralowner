@@ -14,7 +14,8 @@ import type { OptionTextItem, VideoOptions } from "@/lib/video-options";
 import { timelineShots, type TimelineShot } from "@/components/text-pieces";
 import { HookCheck } from "@/components/hook-check";
 import { NOTES_MAX, planKey } from "@/lib/video-options";
-import { Storyboard } from "./storyboard";
+import { Storyboard, type StoryboardPlan } from "./storyboard";
+import { piecesFromPreview } from "@/components/option-text-pieces";
 import { UploadsStatus, useUploads } from "../clips/uploads-status";
 import { waitForUploads } from "../clips/upload-engine";
 
@@ -66,7 +67,7 @@ export function OptionsForm({
   const [error, setError] = useState("");
   const first = useRef(true);
   // A storyboard made from these exact options and clips: "make my video" makes that plan.
-  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string } | null>(null);
+  const [plan, setPlan] = useState<StoryboardPlan | null>(null);
   const madeFrom = JSON.stringify([planKey(options), clips.map((c) => [c.id, c.shotIndexes])]);
 
   // Save a moment after each change, so going back or refreshing keeps it.
@@ -177,7 +178,12 @@ export function OptionsForm({
         value={options}
         onChange={setOptions}
         uploadedAudio={uploadedAudio}
-        textPieces={{ shots: textShots, original: oneTake ? [] : originalText }}
+        textPieces={{
+          shots: textShots,
+          original: oneTake ? [] : originalText,
+          // The text the preview planned (to change before it's made), while the preview still holds.
+          written: plan && plan.madeFrom === madeFrom && !oneTake ? piecesFromPreview(plan.frames, plan.textItems, textShots) : [],
+        }}
       />
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>

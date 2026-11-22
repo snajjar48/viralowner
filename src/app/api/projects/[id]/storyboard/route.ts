@@ -44,6 +44,6 @@ export async function GET(request: Request, ctx: RouteContext<"/api/projects/[id
         url: await createDownloadUrl(f.key, { expiresIn: 3600 }),
       })),
     );
-    return Response.json({ state: "done", progress: 100, frames });
+    return Response.json({ state: "done", progress: 100, frames, textItems: job.result.textItems ?? null });
   });
 }

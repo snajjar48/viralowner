@@ -272,6 +272,8 @@ export async function startStoryboardJob(input: RenderInput, storyboardId: strin
 
 export interface StoryboardResult {
   frames: { key: string; durationS: number; text: string }[];
+  /** The text as separate pieces on the planned video's timeline, when it's drawn that way. */
+  textItems?: TextItem[];
   plan: RenderPlan;
   postCopy: PostCopy;
   /** "Start from scratch": the director's plan, passed back to the worker to make it as shown. */
@@ -290,7 +292,7 @@ export async function getStoryboardJob(
     throw error;
   }
   if (job.state !== "done") return { state: job.state, progress: job.progress, error: job.error };
-  const o = job.output as { storyboard?: unknown; plan?: unknown; postCopy?: PostCopy; directed?: unknown } | undefined;
+  const o = job.output as { storyboard?: unknown; textItems?: unknown; plan?: unknown; postCopy?: PostCopy; directed?: unknown } | undefined;
   const plan = parsePlan(o?.plan);
   const frames = Array.isArray(o?.storyboard)
     ? (o.storyboard as { key?: unknown; durationS?: unknown; text?: unknown }[]).filter(
@@ -304,6 +306,7 @@ export async function getStoryboardJob(
     progress: 100,
     result: {
       frames: frames.map((f) => ({ ...f, text: str(f.text) })),
+      ...(Array.isArray(o?.textItems) ? { textItems: textItemsFrom(o.textItems) ?? [] } : {}),
       plan,
       postCopy: o?.postCopy ?? { caption: "", hashtags: [] },
       ...(o?.directed && typeof o.directed === "object" ? { directed: o.directed } : {}),

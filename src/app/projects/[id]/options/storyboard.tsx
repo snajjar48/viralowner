@@ -4,9 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { AlertIcon, RefreshIcon } from "@/components/icons";
 import { ProgressBar } from "@/components/progress-bar";
 import { postJson, UploadError } from "@/lib/upload-client";
+import type { TextItem } from "@/lib/processing/types";
 import type { VideoOptions } from "@/lib/video-options";
 
 export type StoryboardFrame = { index: number; durationS: number; text: string; url: string };
+/** A ready preview: its id, what it was made from, a frame per shot and its text as separate pieces (if drawn so). */
+export type StoryboardPlan = { jobId: string; madeFrom: string; frames: StoryboardFrame[]; textItems: TextItem[] | null };
 type Frame = StoryboardFrame;
 type State =
   | { name: "idle" }
@@ -35,7 +38,7 @@ export function Storyboard({
   /** Something changed since this storyboard was made. */
   stale: boolean;
   disabled: boolean;
-  onPlan: (plan: { jobId: string; madeFrom: string; frames: StoryboardFrame[] } | null) => void;
+  onPlan: (plan: StoryboardPlan | null) => void;
   /** Saves what the plan is made from first (the prompt, for start from scratch). */
   prepare?: () => Promise<void>;
 }) {
@@ -54,10 +57,10 @@ export function Storyboard({
         await new Promise((r) => setTimeout(r, 2500));
         const res = await fetch(`/api/projects/${projectId}/storyboard?job=${encodeURIComponent(jobId)}`).catch(() => null);
         if (!res?.ok) continue;
-        const job = (await res.json()) as { state: string; progress: number; error?: string; frames?: Frame[] };
+        const job = (await res.json()) as { state: string; progress: number; error?: string; frames?: Frame[]; textItems?: TextItem[] | null };
         if (job.state === "done" && job.frames) {
           setState({ name: "ready", jobId, frames: job.frames });
-          onPlan({ jobId, madeFrom: from, frames: job.frames });
+          onPlan({ jobId, madeFrom: from, frames: job.frames, textItems: job.textItems ?? null });
           return;
         }
         if (job.state === "failed") throw new UploadError(job.error ?? "we couldn’t plan it. please try again.");

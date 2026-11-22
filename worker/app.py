@@ -27,6 +27,7 @@ import sys
 import random
 import re
 import shutil
+import threading
 import tempfile
 import time
 from pathlib import Path
@@ -4797,11 +4798,18 @@ def text_defaults(style: dict) -> dict:
             "animation": style.get("animation") if style.get("animation") in TEXT_ANIMATIONS else "none"}
 
 
-def timeline_items(timeline: list[tuple[float, float, str, dict]]) -> list[dict]:
-    """What was drawn, as editor text items (so the editor shows the video's text as it is)."""
-    return [{"text": "\n".join(lay["lines"]) if lay.get("lines") else text, "start": round(a, 2), "end": round(b, 2),
-             "y": round(lay["y"], 3), "x": round(lay["x"], 3), "align": lay.get("align", "center")}
-            for a, b, text, lay in timeline]
+def timeline_items(timeline: list[tuple[float, float, str, dict]], base_size: float | None = None) -> list[dict]:
+    """What was drawn, as editor text items (so the editor shows the video's text as it is, and a small
+    change to one of them leaves the rest as they were). `base_size`: the video's text size (font
+    units), so text drawn smaller to fit keeps its size."""
+    out = []
+    for a, b, text, lay in timeline:
+        it = {"text": "\n".join(lay["lines"]) if lay.get("lines") else text, "start": round(a, 2), "end": round(b, 2),
+              "y": round(lay["y"], 3), "x": round(lay["x"], 3), "align": lay.get("align", "center")}
+        if base_size and lay.get("size"):
+            it["size"] = round(min(3.0, max(0.25, lay["size"] / base_size)), 2)
+        out.append(it)
+    return out
 
 
 def text_events(start: float, end: float, lay: dict, look: dict, animation: str, style_name: str = "Text") -> list[str]:
@@ -7034,7 +7042,11 @@ def emoji_png(emoji: str, workdir: Path) -> Path | None:
                 data = r.read(2_000_000)
             if not data.startswith(b"\x89PNG"):
                 return None
-            dest.write_bytes(data)
+            # Written whole, then moved into place: frames drawn at the same time may want the same emoji,
+            # and must never read a half-written file.
+            part = dest.with_name(f"{dest.stem}.{threading.get_ident()}.part")
+            part.write_bytes(data)
+            os.replace(part, dest)
         except Exception as e:  # noqa: BLE001
             print(f"emoji {emoji!r} unavailable: {e}")
             return None
@@ -7772,6 +7784,49 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     motions = effects["motions"]
     color = effects["colorFilter"]
 
+    def planned_text_items(text_items_raw):
+        """Text drawn as separate pieces, each with its own time, place and look: the user's own pieces
+        from the options, or the inspo's text blocks with this video's words (None: each shot's text
+        over its shot). Returns (raw items, timed by the user). The storyboard shows the same."""
+        opt_timed = False
+        if text_items_raw is None and text_choice == "custom" and isinstance(text_opts.get("items"), list) and text_opts["items"] \
+                and not any(isinstance(x, dict) and str(x.get("text") or "").strip() for x in text_opts["items"]):
+            # "Write my own" with every box left blank: no text at all (blank boxes never go in the video).
+            print("text pieces from the options: all left blank, no on-screen text")
+            return [], True
+        if text_items_raw is None and text_choice == "custom":
+            # "Write my own" set up piece by piece in the options (their own shots, times and looks).
+            timeline_lengths = [float(s0["durationS"]) for s0 in breakdown["shots"]]
+            if req.get("textTimelineS") and sum(timeline_lengths) > 0:
+                # "Start from scratch": the times are on the length picked; the planned video may be a bit off it.
+                k = float(req["textTimelineS"]) / sum(timeline_lengths)
+                timeline_lengths = [x * k for x in timeline_lengths]
+            text_items_raw, opt_timed = option_text_items(text_opts, timeline_lengths, shot_indexes, shots, durations,
+                                                          bool(jump), spots)
+            if text_items_raw is not None:
+                print(f"text pieces from the options: {len(text_items_raw)}; "
+                      + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
+        # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
+        pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
+        kept_inspo = [breakdown["shots"][k] for k in shot_indexes if k < len(breakdown["shots"])]
+        if (text_items_raw is None and pieces and not jump and len(kept_inspo) == len(durations)
+                and (has_text_reveals(pieces, breakdown["shots"]) or has_text_layers(pieces))):
+            # The inspo's text pops up at several moments, or has several blocks up together (each with its
+            # own place, size and color): the user's video does the same.
+            # Sizes relative to the inspo's main text, so a bigger or smaller text asked for scales them all.
+            base_letter = inspo_text.get("letterHeight") or TEXT_SIZES.get(inspo_text.get("size"), TEXT_SIZES["large"])
+            text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts, base_letter)
+            for x in text_items_raw:
+                if preset:  # a text look picked in the options wins over the inspo's colors and fonts
+                    for k in ("color", "font", "look", "boxColor"):
+                        x.pop(k, None)
+                if align_choice:
+                    x.pop("x", None)
+                    x["align"] = align_choice
+            print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
+                  + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
+        return text_items_raw, opt_timed
+
     if req.get("storyboard"):
         if caption_style and guide:
             # What the user said about the captions' place, size and look (the render does the same).
@@ -7784,8 +7839,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
                 layout["captionYs"] = [rules["y"]] * len(layout["captionYs"])
             if "scale" in rules and abs(layout["captionScale"] - 1) < 0.01:
                 layout["captionScale"] = rules["scale"]
+        sb_items = clean_text_items(planned_text_items(text_items_raw)[0], sum(durations))
         return storyboard(req, workdir, store, plan, clips, plan_texts, layout, style, inspo_text, spots, position,
-                          caption_style, keep_lines, effects, post, preset, jump, cost, started)
+                          caption_style, keep_lines, effects, post, preset, jump, cost, started, sb_items)
 
     # ---- editing: cut every shot (with the inspo's motion and color), join them with its transitions
     report("editing", 45)
@@ -7910,38 +7966,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         return cap_ys[i]
 
     report("editing", 85)
-    opt_timed = False
-    if text_items_raw is None and text_choice == "custom":
-        # "Write my own" set up piece by piece in the options (their own shots, times and looks).
-        timeline_lengths = [float(s0["durationS"]) for s0 in breakdown["shots"]]
-        if req.get("textTimelineS") and sum(timeline_lengths) > 0:
-            # "Start from scratch": the times are on the length picked; the planned video may be a bit off it.
-            k = float(req["textTimelineS"]) / sum(timeline_lengths)
-            timeline_lengths = [x * k for x in timeline_lengths]
-        text_items_raw, opt_timed = option_text_items(text_opts, timeline_lengths, shot_indexes, shots, durations,
-                                                      bool(jump), spots)
-        if text_items_raw is not None:
-            print(f"text pieces from the options: {len(text_items_raw)}; "
-                  + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
-    # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
-    pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
-    kept_inspo = [breakdown["shots"][k] for k in shot_indexes if k < len(breakdown["shots"])]
-    if (text_items_raw is None and pieces and not jump and len(kept_inspo) == len(durations)
-            and (has_text_reveals(pieces, breakdown["shots"]) or has_text_layers(pieces))):
-        # The inspo's text pops up at several moments, or has several blocks up together (each with its
-        # own place, size and color): the user's video does the same.
-        # Sizes relative to the inspo's main text, so a bigger or smaller text asked for scales them all.
-        base_letter = inspo_text.get("letterHeight") or TEXT_SIZES.get(inspo_text.get("size"), TEXT_SIZES["large"])
-        text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts, base_letter)
-        for x in text_items_raw:
-            if preset:  # a text look picked in the options wins over the inspo's colors and fonts
-                for k in ("color", "font", "look", "boxColor"):
-                    x.pop(k, None)
-            if align_choice:
-                x.pop("x", None)
-                x["align"] = align_choice
-        print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
-              + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
+    text_items_raw, opt_timed = planned_text_items(text_items_raw)
     text_items = clean_text_items(text_items_raw, sum(durations))
     user_timed = text_set_by_user(req) or opt_timed
     # Timed in the options but not placed: it keeps its times, and still moves off other text and faces.
@@ -8226,7 +8251,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             **({"textItems": text_items} if text_items is not None else {}),
             **({"textItemsByUser": True} if text_items is not None and user_timed else {}),
             # What's on screen and when, for the editor's text list.
-            "textTimeline": timeline_items(base_timeline),
+            "textTimeline": timeline_items(base_timeline, text_look(style, layout["textScale"])["size"]),
             # Each shot's length as finished, so the editor can show where the shots are.
             "shotDurations": [r2(d) for d in durations],
             # How text without a look of its own is drawn (the editor shows it that way).
@@ -8270,7 +8295,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
 def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[dict], plan_texts: list[str],
                layout: dict, style: dict, inspo_text: dict, spots: list, position: str, caption_style: str | None,
                keep_lines: bool, effects: dict, post: dict, preset: str | None, jump: bool, cost: float,
-               started: float) -> dict:
+               started: float, text_items: list[dict] | None = None) -> dict:
     """The planned edit without making the video: one frame per shot with its on-screen text and a
     sample of the captions where they'll sit, plus the plan (the real render can reuse it exactly)."""
     from concurrent.futures import ThreadPoolExecutor
@@ -8280,6 +8305,10 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
         faces = list(pool.map(lambda p: segment_faces(clips[p["clip"]], p["start"], p["take"]), plan))
     lays, cap_ys = place_text(plan, plan_texts, layout, style, inspo_text["align"], spots, position,
                               caption_style, faces, keep_lines)
+    # Text drawn as separate pieces (the inspo's blocks, or the user's own): each frame shows the pieces
+    # up partway into its shot, as the video will.
+    items_tl = items_timeline(text_items, style, layout, position) if text_items is not None else None
+    starts = [sum(p["duration"] for p in plan[:k]) for k in range(len(plan))]
     folder = req["outputKey"].rsplit("/", 1)[0]
     sample = [{"w": w, "s": 0.0, "e": 30.0} for w in "your captions show up here".split()]
     frames = []
@@ -8295,7 +8324,11 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
                         "-frames:v", "1", "-vf", vf, str(raw)], capture_output=True)
         out = workdir / f"sb{i:02d}.jpg"
         text = (plan_texts[i] or "").strip()
-        timeline = [(0.0, 30.0, text, lays[i])] if text and lays[i] else []
+        if items_tl is not None:
+            at = starts[i] + p["duration"] * 0.7
+            timeline = [(0.0, 30.0, tx, lay) for a, b, tx, lay in items_tl if a <= at < b]
+        else:
+            timeline = [(0.0, 30.0, text, lays[i])] if text and lays[i] else []
         timeline, pics = emoji_text_pictures(timeline, style, layout, workdir, f"sb{i:02d}t")
         ass = build_ass(timeline, style, layout, sample if caption_style else [], caption_style,
                         lambda _t, y=cap_ys[i]: y)
@@ -8327,6 +8360,8 @@ def storyboard(req: dict, workdir: Path, store, plan: list[dict], clips: list[di
     print(f"storyboard: {len(plan)} shots, ${round(cost, 4)}, {round(time.time() - started, 1)}s")
     return json.loads(json.dumps({
         "storyboard": frames,
+        # The text as separate pieces on the planned video's timeline (what the editor would show).
+        **({"textItems": text_items} if text_items is not None else {}),
         "postCopy": post,
         "plan": {
             "shots": [{"shotIndex": shot_number(req, i, len(plan)), "clipId": clips[p["clip"]]["id"],
@@ -8812,8 +8847,9 @@ def render_upload(req: dict, files: dict[str, bytes]) -> tuple[dict, bytes]:
 def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", text: str = "match", custom: str = "",
                notes: str = "", music: str = "original", request: str = "", audio: str = "", transitions: str = "",
                sfx: str = "", speeds: str = "", effects: str = "", looks: str = "", breakdown_json: str = "",
-               items: str = ""):
+               items: str = "", storyboard: bool = False, options_json: str = ""):
     """modal run worker/app.py::try_render --inspo a.mp4 --clips b.mp4,c.mp4 --dest out.mp4
+    --storyboard: the free preview instead (dest gets its last frame); --options-json: the options as JSON.
     With --request, also makes a second version with that change (saved as <dest>-changed.mp4).
     To test the edit, override the inspo's: --transitions whip_left,zoom_in (cycled over the cuts),
     --sfx whoosh@1,pop@s2 (at cut 1, in shot 2), --speeds normal,slow_motion, --effects ,zoom_pulse, --looks grain.
@@ -8861,6 +8897,10 @@ def try_render(inspo: str, clips: str, dest: str, captions: str = "bold-pop", te
         "options": {"text": {"mode": text, "custom": custom}, "music": {"mode": music},
                     "captions": {"enabled": captions != "off", "style": captions}, "notes": notes},
     }
+    if options_json:
+        req["options"] = {**req["options"], **json.loads(options_json)}
+    if storyboard:
+        req["storyboard"] = True
     out, video = render_upload.remote(req, files)
     Path(dest).write_bytes(video)
     print(json.dumps(out, indent=2, ensure_ascii=False))

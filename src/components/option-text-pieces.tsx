@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { TextItem } from "@/lib/processing/types";
 import { TEXT_ITEMS_MAX, TEXT_MAX, type OptionTextItem } from "@/lib/video-options";
 import { coveredShots, fmtS, ShotChips, shotSpans, TextLookControls, TextTimeline, type Span, type TimelineShot } from "./text-pieces";
 
@@ -31,7 +32,9 @@ export function OptionTextPieces({
   const [open, setOpen] = useState<number | null>(null);
   const total = shots.at(-1)?.end ?? length ?? 0;
   const timed = total > 0;
-  const used = items.reduce((n, it) => n + it.text.length, 0) + Math.max(0, items.length - 1);
+  const filled = items.filter((it) => it.text.trim());
+  const used = filled.reduce((n, it) => n + it.text.length, 0) + Math.max(0, filled.length - 1);
+  const blanks = items.filter((it) => !it.text.trim() && it.hint).length;
   const set = (k: number, patch: Partial<OptionTextItem>) => onChange(items.map((it, j) => (j === k ? { ...it, ...patch } : it)));
   const timeIt = (k: number, a: number, b: number) =>
     set(k, { shots: null, start: Math.round(a * 100) / 100, end: Math.round(b * 100) / 100 });
@@ -49,6 +52,23 @@ export function OptionTextPieces({
             : " we time each piece. to set exact times, pick a length for your video above (or drag them in the editor once it’s made)."}
         {planHint && " tip: tap “preview the plan first” (free) and your shots show up here, so you can see exactly where each text goes."}
       </p>
+      {items.some((it) => it.hint) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-muted">
+          <span>
+            the grey words show what {fromScratch ? "our plan has" : "the original has"} there. type over them; a box left
+            blank stays out of your video.
+          </span>
+          {blanks > 1 && (
+            <button
+              type="button"
+              onClick={() => onChange(items.map((it) => (!it.text.trim() && it.hint ? { ...it, text: it.hint } : it)))}
+              className="h-8 cursor-pointer rounded-full bg-white/10 px-3 font-medium text-foreground hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+            >
+              fill in all {blanks} as shown
+            </button>
+          )}
+        </div>
+      )}
       <ol className="flex flex-col gap-2">
         {items.map((it, k) => {
           const spans: Span[] = it.shots?.length
@@ -66,10 +86,10 @@ export function OptionTextPieces({
                   aria-label={label}
                   value={it.text}
                   onChange={(e) => set(k, { text: e.target.value })}
-                  rows={Math.max(1, Math.min(4, it.text.split("\n").length))}
+                  rows={Math.max(1, Math.min(4, (it.text || it.hint || "").split("\n").length))}
                   maxLength={TEXT_MAX}
-                  placeholder={k === 0 ? "e.g. pov: you found the best croffles in town" : "your text"}
-                  className="min-h-10 flex-1 resize-y rounded-lg border border-white/15 bg-[#15151b] px-2 py-2 text-sm outline-none focus-visible:border-coral"
+                  placeholder={it.hint || (k === 0 ? "e.g. pov: you found the best croffles in town" : "your text")}
+                  className="min-h-10 flex-1 resize-y rounded-lg border border-white/15 bg-[#15151b] px-2 py-2 text-sm outline-none placeholder:text-white/30 focus-visible:border-coral"
                 />
                 {items.length > 1 && (
                   <button
@@ -85,6 +105,18 @@ export function OptionTextPieces({
                   </button>
                 )}
               </div>
+              {!it.text.trim() && it.hint && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted">
+                  <span>left blank: it won’t be in your video.</span>
+                  <button
+                    type="button"
+                    onClick={() => set(k, { text: it.hint })}
+                    className="cursor-pointer underline underline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-coral"
+                  >
+                    use the grey words
+                  </button>
+                </div>
+              )}
               {timed && (
                 <>
                   <div className="mt-8">
@@ -185,4 +217,70 @@ function TrashIcon(props: React.SVGProps<SVGSVGElement>) {
       <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
     </svg>
   );
+}
+
+/**
+ * The text a free preview planned, as pieces to edit before the video is made: each with its time
+ * (and, when it's drawn as separate pieces, its place and look). The grey hint is the planned words.
+ * `originalShots`: a remake's original shots (times go back onto the original's timeline, which is
+ * what pieces are timed on); none for "start from scratch" (times are the preview's own).
+ */
+export function piecesFromPreview(
+  frames: { durationS: number; text: string }[],
+  textItems: TextItem[] | null | undefined,
+  originalShots?: TimelineShot[],
+): OptionTextItem[] {
+  if (originalShots && originalShots.length !== frames.length) return [];
+  const starts = frames.map((_, i) => frames.slice(0, i).reduce((n, f) => n + f.durationS, 0));
+  const total = frames.reduce((n, f) => n + f.durationS, 0);
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  /** A moment of the planned video on the original's timeline (same shot, same part of it). */
+  const back = (t: number, end: boolean) => {
+    if (!originalShots) return r2(t);
+    let i = frames.findIndex((f, j) => (end ? t > starts[j] + 1e-6 && t <= starts[j] + f.durationS + 1e-6 : t < starts[j] + f.durationS - 1e-6));
+    if (i < 0) i = frames.length - 1;
+    const frac = frames[i].durationS > 0 ? Math.min(1, Math.max(0, (t - starts[i]) / frames[i].durationS)) : 0;
+    const o = originalShots[i];
+    return r2(o.start + frac * (o.end - o.start));
+  };
+  if (textItems) {
+    const pieces = textItems
+      .filter((x) => x.text.trim() && x.end > x.start)
+      .slice(0, TEXT_ITEMS_MAX)
+      .map((x) => ({
+        text: x.text,
+        hint: x.text,
+        start: back(Math.max(0, x.start), false),
+        end: back(Math.min(total, x.end), true),
+        ...(typeof x.y === "number" ? { y: x.y } : {}),
+        ...(typeof x.x === "number" ? { x: x.x } : {}),
+        ...(x.align ? { align: x.align } : {}),
+        ...(typeof x.size === "number" && Math.abs(x.size - 1) > 0.01 ? { size: x.size } : {}),
+        ...(x.color ? { color: x.color } : {}),
+        ...(x.font ? { font: x.font } : {}),
+        ...(x.look ? { look: x.look } : {}),
+        ...(x.animation ? { animation: x.animation } : {}),
+      }));
+    // Top to bottom when every piece has its own place; otherwise in time order.
+    if (pieces.every((x) => typeof x.y === "number")) pieces.sort((a, b) => a.y! - b.y! || a.start - b.start);
+    return pieces;
+  }
+  // Each shot's text over its shot: one piece for each run of shots with the same words.
+  const out: OptionTextItem[] = [];
+  frames.forEach((f, i) => {
+    const text = f.text.trim();
+    if (!text) return;
+    const last = out.at(-1);
+    if (last && last.text === text && (originalShots ? last.shots?.at(-1) === i - 1 : last.end === r2(starts[i]))) {
+      if (originalShots) last.shots!.push(i);
+      else last.end = r2(starts[i] + f.durationS);
+      return;
+    }
+    out.push(
+      originalShots
+        ? { text, hint: text, shots: [i] }
+        : { text, hint: text, start: r2(starts[i]), end: r2(starts[i] + f.durationS) },
+    );
+  });
+  return out.slice(0, TEXT_ITEMS_MAX);
 }

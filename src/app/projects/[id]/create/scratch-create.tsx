@@ -12,7 +12,8 @@ import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { planKey, PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
 import { ClipsManager, type InitialClip } from "../clips/clips-manager";
 import { HookCheck } from "@/components/hook-check";
-import { Storyboard, type StoryboardFrame } from "../options/storyboard";
+import { Storyboard, type StoryboardPlan } from "../options/storyboard";
+import { piecesFromPreview } from "@/components/option-text-pieces";
 import { timelineShots } from "@/components/text-pieces";
 import { waitForUploads } from "../clips/upload-engine";
 
@@ -51,7 +52,7 @@ export function ScratchCreate({
   const [error, setError] = useState("");
   const first = useRef(true);
   // A storyboard made from this exact prompt, options and clips: "make my video" makes that plan.
-  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string; frames: StoryboardFrame[] } | null>(null);
+  const [plan, setPlan] = useState<StoryboardPlan | null>(null);
   const madeFrom = JSON.stringify([prompt.trim(), planKey(options), clips.uploaded]);
   // The previewed plan's shots: text can be timed on them (the video is made from that plan).
   const planShots =
@@ -196,7 +197,11 @@ export function ScratchCreate({
           showNotes={false}
           uploadedAudio={audio}
           variant="scratch"
-          textPieces={{ shots: planShots }}
+          textPieces={{
+            shots: planShots,
+            // The text the preview planned (to change before it's made, or as grey hints for "write my own").
+            written: planShots.length && plan ? piecesFromPreview(plan.frames, plan.textItems) : [],
+          }}
         />
 
         {clips.uploaded > 0 && !clips.busy && (

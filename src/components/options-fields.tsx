@@ -145,9 +145,10 @@ export function OptionsFields({
   variant = "inspo",
   textPieces,
 }: {
-  /** Before the video is made: "write my own" piece by piece, timed on these shots, and the
-   * original's own text as pieces (to start from). Without it: one box for the words. */
-  textPieces?: { shots: TimelineShot[]; original?: OptionTextItem[] };
+  /** Before the video is made: "write my own" piece by piece, timed on these shots. `original`: the
+   * original's own text as pieces (their words greyed out in the empty boxes); `written`: the text a
+   * free preview planned (shown to edit when we write it). Without it: one box for the words. */
+  textPieces?: { shots: TimelineShot[]; original?: OptionTextItem[]; written?: OptionTextItem[] };
   value: VideoOptions;
   onChange: (next: VideoOptions) => void;
   /** "scratch": a "start from scratch" video (no inspo to match or take audio from). */
@@ -162,8 +163,36 @@ export function OptionsFields({
     onChange({ ...value, ...patch });
   // "Start from scratch": the timeline the times are on (the previewed plan's, else the length picked).
   const timelineS = variant === "scratch" ? (textPieces?.shots.at(-1)?.end ?? value.length ?? undefined) : undefined;
-  const setPieces = (items: OptionTextItem[]) =>
-    set({ text: { ...value.text, mode: "custom", items, custom: items.map((it) => it.text).join("\n"), timelineS } });
+  const setPieces = (items: OptionTextItem[], planBasis = value.text.planBasis) =>
+    set({
+      text: {
+        ...value.text,
+        mode: "custom",
+        items,
+        custom: items
+          .map((it) => it.text.trim() && it.text)
+          .filter(Boolean)
+          .join("\n"),
+        timelineS,
+        planBasis,
+      },
+    });
+  // The text a preview planned, when we write it: shown to change before the video is made (the first
+  // change makes it "write my own", every piece keeping its time, so the preview still holds).
+  const written = value.text.mode === "match" || value.text.mode === "adapt" ? (textPieces?.written ?? []) : [];
+  const basisNow = { mode: value.text.mode, custom: value.text.custom };
+  /** "Write my own" picked: a box for each piece of the original's (or the preview's) text, its words greyed out. */
+  function pickCustom() {
+    const fromOriginal = textPieces?.original?.length ? textPieces.original : null;
+    const from = fromOriginal ?? textPieces?.written ?? [];
+    if (!textPieces || value.text.items?.length || value.text.custom.trim() || !from.length) {
+      return set({ text: { ...value.text, mode: "custom", planBasis: undefined } });
+    }
+    setPieces(
+      from.map((it) => ({ ...it, text: "", hint: it.hint ?? it.text })),
+      fromOriginal ? undefined : basisNow,
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -226,25 +255,38 @@ export function OptionsFields({
               key={c.mode}
               name={`${id}-text`}
               checked={value.text.mode === c.mode}
-              onChange={() => set({ text: { ...value.text, mode: c.mode } })}
+              onChange={() => (c.mode === "custom" ? pickCustom() : set({ text: { ...value.text, mode: c.mode, planBasis: undefined } }))}
               title={c.title}
               description={c.description}
             />
           ))}
         </div>
-        {textPieces && value.text.mode !== "custom" && variant === "inspo" && !!textPieces.original?.length && (
-          <button
-            type="button"
-            onClick={() => setPieces(textPieces.original!.map((it) => ({ ...it })))}
-            className="self-start text-left text-xs text-muted underline underline-offset-4 hover:text-foreground"
-          >
-            want to change a line, when it shows or how it looks? start from the original’s text, piece by piece.
-          </button>
+        {textPieces && (!!written.length || (value.text.mode === "custom" && !!value.text.planBasis)) && (
+          <div className="flex flex-col gap-0.5 rounded-xl border border-coral/30 bg-coral/[0.05] px-3 py-2">
+            <p className="text-sm font-medium">
+              {written.length ? "the text we wrote for your preview" : "the text we wrote for your preview, with your changes"}
+            </p>
+            <p className="text-xs text-muted">
+              want to change a word, when it shows, where it sits or how it looks? change it here and it goes in exactly as you
+              set it. your preview still holds.
+            </p>
+          </div>
         )}
-        {value.text.mode === "custom" && textPieces && (
+        {textPieces && !written.length && (value.text.mode === "match" || value.text.mode === "adapt") && (
+          <p className="text-xs text-muted">
+            want to see the text before it’s made, and change any of it? tap “preview the plan first” below (free).
+          </p>
+        )}
+        {textPieces && (value.text.mode === "custom" || !!written.length) && (
           <OptionTextPieces
-            items={value.text.items?.length ? value.text.items : piecesFromText(value.text.custom)}
-            onChange={setPieces}
+            items={
+              value.text.mode === "custom"
+                ? value.text.items?.length
+                  ? value.text.items
+                  : piecesFromText(value.text.custom)
+                : written
+            }
+            onChange={(items) => setPieces(items, value.text.mode === "custom" ? value.text.planBasis : basisNow)}
             shots={textPieces.shots}
             length={variant === "scratch" ? (value.length ?? null) : null}
             planHint={variant === "scratch" && !textPieces.shots.length}

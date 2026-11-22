@@ -29,7 +29,10 @@ export interface TextLook {
 
 /** One piece of the user's own text ("write my own"), set up before the video is made. */
 export interface OptionTextItem extends TextLook {
+  /** The words; blank: left out of the video (the box stays, showing its hint). */
   text: string;
+  /** Greyed-out words shown in an empty box: what the original (or our plan) has there. */
+  hint?: string;
   /** Shown on these shots only (the original's shot numbers, 0-based). */
   shots?: number[] | null;
   /** Or from/to, in seconds of the original video. No shots and no times: we pick when. */
@@ -40,7 +43,17 @@ export interface OptionTextItem extends TextLook {
 export interface VideoOptions {
   /** items: "write my own" as separate pieces, each with its own timing and look (custom is their words, joined). */
   /** timelineS: the length of the timeline the pieces' times were set on ("start from scratch": the preview's or the length picked). */
-  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId; items?: OptionTextItem[]; timelineS?: number };
+  text: {
+    mode: TextMode;
+    custom: string;
+    align: TextAlign;
+    style: TextStyleId;
+    items?: OptionTextItem[];
+    timelineS?: number;
+    /** On this page only: the text the preview was planned with, when the pieces are its text, edited
+     * (each piece keeps its time, so the plan still holds and its words are swapped for these). */
+    planBasis?: { mode: TextMode; custom: string };
+  };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
   /** emojis: emoji pop-ups beside punchy captions. */
@@ -139,7 +152,9 @@ function optionTextItems(input: unknown): OptionTextItem[] {
   for (const v of input.slice(0, TEXT_ITEMS_MAX)) {
     const raw = obj(v);
     const text = typeof raw.text === "string" ? cleanLines(raw.text).slice(0, TEXT_MAX) : "";
-    if (!text) continue;
+    const hint = typeof raw.hint === "string" ? cleanLines(raw.hint).slice(0, TEXT_MAX) : "";
+    // A blank box is kept only to show its hint again (it never goes in the video).
+    if (!text && !hint) continue;
     const shots = Array.isArray(raw.shots)
       ? [...new Set(raw.shots.filter((n): n is number => Number.isInteger(n) && n >= 0 && n < 100))].sort((a, b) => a - b)
       : [];
@@ -148,6 +163,7 @@ function optionTextItems(input: unknown): OptionTextItem[] {
     const timed = !shots.length && start !== null && end !== null && end - start >= 0.1;
     out.push({
       text,
+      ...(hint ? { hint } : {}),
       shots: shots.length ? shots : null,
       start: timed ? Math.round(start * 100) / 100 : null,
       end: timed ? Math.round(end * 100) / 100 : null,
@@ -181,7 +197,10 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   // pieces: the words are the pieces' words, in order.
   const items = optionTextItems(text.items);
   const custom = items.length
-    ? items.map((it) => it.text).join("\n")
+    ? items
+        .map((it) => it.text)
+        .filter(Boolean)
+        .join("\n")
     : typeof text.custom === "string"
       ? cleanLines(text.custom)
       : "";
@@ -206,7 +225,8 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
 
   return {
     text: {
-      mode: textMode === "custom" && !custom ? "match" : textMode,
+      // "Write my own" with every box left blank stays so (no text); typed nothing at all: the original's.
+      mode: textMode === "custom" && !custom && !items.length ? "match" : textMode,
       custom,
       align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
       style: TEXT_STYLE_IDS.includes(text.style as TextStyleId) ? (text.style as TextStyleId) : "auto",
@@ -257,7 +277,11 @@ export function optionsFromJson(json: unknown): VideoOptions {
 
 /** The options as a plan (storyboard) depends on them: when and how each text shows doesn't change the plan. */
 export function planKey(o: VideoOptions) {
-  return { ...o, text: { mode: o.text.mode, custom: o.text.custom, align: o.text.align, style: o.text.style } };
+  const basis = o.text.planBasis;
+  return {
+    ...o,
+    text: { mode: basis?.mode ?? o.text.mode, custom: basis ? basis.custom : o.text.custom, align: o.text.align, style: o.text.style },
+  };
 }
 
 export function formatDuration(seconds: number) {
