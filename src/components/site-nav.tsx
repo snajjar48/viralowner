@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmojiKitSync } from "./emoji-kit-sync";
-import { FilmIcon, TrendIcon, WandIcon } from "./icons";
+import { FilmIcon, PlayIcon, TrendIcon, WandIcon } from "./icons";
 
 type Item = {
   href: string;
@@ -45,6 +45,14 @@ const ITEMS: Item[] = [
     match: (p) => p === "/scratch",
   },
   {
+    href: "/tutorials",
+    label: "tutorials",
+    short: "tutorials",
+    blurb: "step by step, with what to tap on each screen",
+    icon: <PlayIcon className="size-4" />,
+    match: (p) => p === "/tutorials",
+  },
+  {
     href: "/tips",
     label: "tips",
     short: "tips",
@@ -62,7 +70,7 @@ const ITEMS: Item[] = [
   },
 ];
 
-/** The menu on every signed-in page: my videos, the two ways to start a video, tips, the profile, and log out. */
+/** The menu on every signed-in page: my videos, the two ways to start a video, tutorials, tips, the profile, and log out. */
 export function SiteNav() {
   return (
     <>
