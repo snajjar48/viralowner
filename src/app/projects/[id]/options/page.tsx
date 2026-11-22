@@ -7,6 +7,7 @@ import { getInspiration, listClips } from "@/lib/projects";
 import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import { isOneTake } from "@/lib/processing/types";
+import { TEXT_ITEMS_MAX, type OptionTextItem } from "@/lib/video-options";
 import { OptionsForm } from "./options-form";
 
 export const metadata: Metadata = {
@@ -51,6 +52,19 @@ async function Options({ id }: { id: string }) {
     })),
   );
 
+  // The original's on-screen text as pieces (a run of shots showing the same words is one piece), at
+  // its height on screen: "write my own" can start from it.
+  const style = inspo.breakdown.style;
+  const originalText: OptionTextItem[] = [];
+  inspo.breakdown.shots.forEach((shot, i) => {
+    const text = (style?.textLines?.[i] ?? shot.onScreenText ?? "").trim();
+    if (!text) return;
+    const last = originalText.at(-1);
+    if (last && last.text === text && last.shots?.at(-1) === i - 1) return void last.shots.push(i);
+    const y = style?.textSpots?.[i]?.[1];
+    originalText.push({ text, shots: [i], ...(typeof y === "number" ? { y: Math.round(Math.min(0.72, Math.max(0.14, y)) * 1000) / 1000 } : {}) });
+  });
+
   return (
     <FlowShell step={3} projectId={id}>
       <PageTitle title="final touches" subtitle="all optional. the defaults work great, so you can go straight to the button." />
@@ -65,6 +79,7 @@ async function Options({ id }: { id: string }) {
         shots={inspo.breakdown.shots}
         clips={optionClips}
         oneTake={isOneTake(inspo.breakdown)}
+        originalText={originalText.slice(0, TEXT_ITEMS_MAX)}
         uploadedAudio={project.audio?.status === "uploaded" ? { fileName: project.audio.fileName } : null}
       />
     </FlowShell>

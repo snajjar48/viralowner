@@ -143,6 +143,7 @@ function textItemsFrom(raw: unknown): TextItem[] | undefined {
       font: typeof x.font === "string" ? x.font : null,
       look: x.look === "outline" || x.look === "box" || x.look === "plain" ? x.look : null,
       animation: typeof x.animation === "string" ? x.animation : null,
+      ...(typeof x.group === "string" && /^[\w-]{1,24}$/.test(x.group) ? { group: x.group } : {}),
     }));
 }
 
@@ -215,6 +216,9 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
     ...(p.textItemsByUser === true ? { textItemsByUser: true } : {}),
     textTimeline: textItemsFrom(p.textTimeline),
     textDefaults: textDefaultsFrom(p.textDefaults),
+    shotDurations: Array.isArray(p.shotDurations) && p.shotDurations.every((d) => isNum(d) && d > 0)
+      ? (p.shotDurations as number[]).slice(0, 100)
+      : undefined,
     jumpcut: Array.isArray(p.jumpcut)
       ? p.jumpcut.filter((c) => c && typeof c.clipId === "string" && isNum(c.startS) && isNum(c.endS))
       : undefined,

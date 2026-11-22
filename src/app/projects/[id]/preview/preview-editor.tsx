@@ -14,6 +14,7 @@ import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
 import { formatDuration, REQUEST_MAX } from "@/lib/video-options";
 import { ProofPanel } from "./proof-panel";
 import { ShotPreview } from "./shot-preview";
+import { timelineShots, type TimelineShot } from "@/components/text-pieces";
 import { TextItemsEditor, TextPreview, usePlayhead, type TextContext } from "./text-items";
 
 /** "repost with a new hook": what the editor is asked to do (a normal change). */
@@ -66,6 +67,8 @@ export function PreviewEditor({
     textItems: TextItem[] | null;
     /** How this version draws text without a look of its own. */
     textDefaults: TextDefaults | null;
+    /** Each shot's length in this version, in order (null: older versions and one-take videos). */
+    shotDurations: number[] | null;
     /** The version's text style, size and spot (the preview draws text exactly as the next version will). */
     textContext: TextContext;
   };
@@ -116,6 +119,25 @@ export function PreviewEditor({
     const end = e.trimEndS ?? d;
     return start < 0 || end > d + 0.05 || end - start < 0.3;
   });
+  // This version's shots on its timeline, for timing text (older versions: from the trims, fitted to the video).
+  const textShots: TimelineShot[] = (() => {
+    const used = current.shots.filter((e) => !e.removed);
+    if (!used.length) return [];
+    let lengths = current.shotDurations?.length === used.length ? current.shotDurations : null;
+    if (!lengths) {
+      const trims = used.map((e) => (e.trimStartS !== null && e.trimEndS !== null ? e.trimEndS - e.trimStartS : NaN));
+      const sum = trims.reduce((a, b) => a + b, 0);
+      if (!trims.every((x) => x > 0) || !duration) return [];
+      lengths = trims.map((x) => (x * duration) / sum);
+    }
+    return timelineShots(
+      used.map((e, k) => ({
+        durationS: lengths[k],
+        label: `shot ${e.shotIndex + 1}`,
+        thumb: clips.find((c) => c.id === e.clipId)?.thumbUrl ?? null,
+      })),
+    );
+  })();
   const badText = textChanged ? textItems?.find((x) => x.text.trim() && x.end <= x.start) : undefined;
   const problem =
     (badText ? `“${badText.text.slice(0, 30)}”: the end needs to be after the start.` : null) ??
@@ -187,7 +209,7 @@ export function PreviewEditor({
           size="fit"
           label={`your video, version ${current.version}`}
           videoRef={videoRef}
-          overlay={textChanged && textItems ? <TextPreview items={textItems} t={t} context={current.textContext} /> : undefined}
+          overlay={textItems ? <TextPreview items={textItems} t={t} context={current.textContext} show={textChanged} /> : undefined}
         />
 
         {versions.length > 1 && (
@@ -316,6 +338,7 @@ export function PreviewEditor({
               duration={duration}
               disabled={locked}
               defaults={current.textDefaults}
+              shots={textShots}
             />
           ) : (
             <p className="text-sm text-muted">

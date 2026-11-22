@@ -18,7 +18,7 @@ import {
   type Project,
   type Render,
 } from "./projects";
-import { NO_AUDIO_FILE_ERROR, type VideoOptions } from "./video-options";
+import { NO_AUDIO_FILE_ERROR, textLookFrom, type VideoOptions } from "./video-options";
 
 type Fail = { error: string; status: number };
 
@@ -453,9 +453,6 @@ export function carryFrom(from: Render | undefined): Pick<RenderSettings, "carry
   return Object.keys(carry).length ? { carry } : {};
 }
 
-export const TEXT_FONTS = ["clean_sans", "semibold_sans", "heavy_sans", "condensed", "tall_caps", "serif", "typewriter", "marker", "script", "rounded"];
-export const TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"];
-
 /** Validates the editor's on-screen text items. undefined = not sent (keep the version's text). */
 export function parseTextItems(input: unknown): TextItem[] | undefined | Fail {
   if (input === undefined || input === null) return undefined;
@@ -472,14 +469,9 @@ export function parseTextItems(input: unknown): TextItem[] | undefined | Fail {
       text,
       start: Math.round(start * 100) / 100,
       end: Math.round(end * 100) / 100,
-      y: num(raw?.y, 0, 1),
-      x: num(raw?.x, 0, 1),
-      align: raw?.align === "left" || raw?.align === "right" || raw?.align === "center" ? raw.align : null,
-      size: num(raw?.size, 0.4, 2.5) ?? 1,
-      color: typeof raw?.color === "string" && /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toUpperCase() : null,
-      font: typeof raw?.font === "string" && TEXT_FONTS.includes(raw.font) ? raw.font : null,
-      look: raw?.look === "outline" || raw?.look === "box" || raw?.look === "plain" ? raw.look : null,
-      animation: typeof raw?.animation === "string" && TEXT_ANIMATIONS.includes(raw.animation) ? raw.animation : null,
+      ...textLookFrom(raw ?? {}),
+      // Copies of one text shown on separate shots (the editor edits them together).
+      ...(typeof raw?.group === "string" && /^[\w-]{1,24}$/.test(raw.group) ? { group: raw.group } : {}),
     });
   }
   return out;

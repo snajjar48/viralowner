@@ -10,7 +10,8 @@ import { OptionsFields, optionsProblem } from "@/components/options-fields";
 import { ROLE_LABELS } from "@/components/shot-list";
 import type { Shot } from "@/lib/processing/types";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
-import type { VideoOptions } from "@/lib/video-options";
+import type { OptionTextItem, VideoOptions } from "@/lib/video-options";
+import { timelineShots, type TimelineShot } from "@/components/text-pieces";
 import { HookCheck } from "@/components/hook-check";
 import { NOTES_MAX } from "@/lib/video-options";
 import { Storyboard } from "./storyboard";
@@ -36,7 +37,10 @@ export function OptionsForm({
   clips: initialClips,
   oneTake = false,
   uploadedAudio = null,
+  originalText = [],
 }: {
+  /** The original's on-screen text as pieces ("write my own" can start from it). */
+  originalText?: OptionTextItem[];
   projectId: string;
   initialOptions: VideoOptions;
   shots: Shot[];
@@ -145,6 +149,15 @@ export function OptionsForm({
   }
 
   const problem = optionsProblem(options, !!uploadedAudio);
+  // The original's shots, for timing text (a one-take video's shots aren't the original's).
+  const textShots: TimelineShot[] = oneTake
+    ? []
+    : timelineShots(
+        shots.map((s) => {
+          const clip = clips.find((c) => c.shotIndexes.includes(s.index));
+          return { durationS: s.durationS, label: `shot ${s.index + 1}`, thumb: clip?.thumbUrl ?? null };
+        }),
+      );
   // No clip in yet and none uploading in this tab (e.g. the page was reopened mid-upload).
   const nothingToMake = clips.length === 0 && uploads.left === 0;
 
@@ -160,7 +173,12 @@ export function OptionsForm({
           to make your video.
         </p>
       )}
-      <OptionsFields value={options} onChange={setOptions} uploadedAudio={uploadedAudio} />
+      <OptionsFields
+        value={options}
+        onChange={setOptions}
+        uploadedAudio={uploadedAudio}
+        textPieces={{ shots: textShots, original: oneTake ? [] : originalText }}
+      />
 
       <details className={`group rounded-2xl border border-white/10 bg-white/[0.03] ${oneTake ? "hidden" : ""}`}>
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 text-base font-medium focus-visible:outline-2 focus-visible:outline-coral sm:px-5">

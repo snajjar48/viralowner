@@ -187,6 +187,8 @@ export interface TextItem {
   font?: string | null;
   look?: "outline" | "box" | "plain" | null;
   animation?: string | null;
+  /** The same text shown on separate shots: its copies share this (the editor edits them as one). */
+  group?: string | null;
 }
 
 /** How a version draws text that has no look of its own (so the editor shows it as it is). */
@@ -321,6 +323,8 @@ export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   textItemsByUser?: boolean;
   textTimeline?: TextItem[];
   textDefaults?: TextDefaults;
+  /** Each shot's length in the finished video, in order (speed changes included). */
+  shotDurations?: number[];
   /** The caption style this version used, when a request changed it from the one in the options. */
   captionStyle?: CaptionStyleId | "off";
   /** "Start from scratch": what each shot Claude planned is for, to label them in the editor. */

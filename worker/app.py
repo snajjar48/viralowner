@@ -4472,6 +4472,8 @@ def clean_text_items(raw, total: float) -> list[dict] | None:
             "font": x.get("font") if x.get("font") in FONTS else None,
             "look": x.get("look") if x.get("look") in TEXT_ITEM_LOOKS else None,
             "animation": x.get("animation") if x.get("animation") in TEXT_ANIMATIONS else None,
+            # Copies of one text shown on separate shots (the site's editor edits them as one).
+            **({"group": x["group"]} if isinstance(x.get("group"), str) and re.match(r"^[\w-]{1,24}$", x["group"]) else {}),
         })
     return sorted(out, key=lambda t: t["start"])
 
@@ -4844,16 +4846,10 @@ def build_ass(timeline: list[tuple[float, float, str, dict]], style: dict, layou
     ])
 
 
-def spread_lines(custom: str, shots: list[dict]) -> list[str]:
-    """The user's own text, one entry per shot, keeping their lines exactly as typed. Lines go to the
-    shots where the inspo has text, in order (split only between lines). If the inspo has no text,
-    the lines share the video's running time."""
-    lines = [ln.strip() for ln in custom.replace("\r", "").split("\n") if ln.strip()]
+def text_places(shots: list[dict], k: int) -> list[list[int]]:
+    """Where k pieces of the user's own text go: the runs of shots where the inspo has text (a run
+    showing the same words counts once), else k even parts of the video's running time."""
     n = len(shots)
-    out = [""] * n
-    if not lines:
-        return out
-    # Runs of shots showing the same inspo text count as one place for text.
     places: list[list[int]] = []
     for i, s in enumerate(shots):
         t = (s.get("onScreenText") or "").strip()
@@ -4861,26 +4857,138 @@ def spread_lines(custom: str, shots: list[dict]) -> list[str]:
             places[-1].append(i)
         elif t:
             places.append([i])
-    if not places:
+    if not places and k > 0:
         total = sum(s["durationS"] for s in shots) or 1.0
-        k = min(len(lines), n)
+        k = min(k, n)
         places = [[] for _ in range(k)]
         t = 0.0
         for i, s in enumerate(shots):
             places[min(k - 1, int(k * (t + s["durationS"] / 2) / total))].append(i)
             t += s["durationS"]
         places = [p for p in places if p]
-    k = min(len(places), len(lines))
-    # Split the lines into k groups in order, as evenly as possible.
+    return places
+
+
+def split_even(items: list, k: int) -> list[list]:
+    """items split into k groups in order, as evenly as possible."""
     groups, at = [], 0
     for g in range(k):
-        size = len(lines) // k + (1 if g < len(lines) % k else 0)
-        groups.append("\n".join(lines[at:at + size]))
+        size = len(items) // k + (1 if g < len(items) % k else 0)
+        groups.append(items[at:at + size])
         at += size
-    for g, text in enumerate(groups):
+    return groups
+
+
+def spread_lines(custom: str, shots: list[dict]) -> list[str]:
+    """The user's own text, one entry per shot, keeping their lines exactly as typed. Lines go to the
+    shots where the inspo has text, in order (split only between lines). If the inspo has no text,
+    the lines share the video's running time."""
+    lines = [ln.strip() for ln in custom.replace("\r", "").split("\n") if ln.strip()]
+    out = [""] * len(shots)
+    if not lines:
+        return out
+    places = text_places(shots, len(lines))
+    k = min(len(places), len(lines))
+    for g, group in enumerate(split_even(lines, k)):
         for i in places[g]:
-            out[i] = text
+            out[i] = "\n".join(group)
     return out
+
+
+OPTION_LOOK_KEYS = ("y", "x", "align", "color", "font", "look", "animation")
+
+
+def option_text_items(text_opts: dict, inspo_lengths_all: list[float], shot_indexes: list[int], shots: list[dict],
+                      durations: list[float], jump: bool, spots: list | None = None) -> tuple[list[dict] | None, bool]:
+    """"Write my own" set up as separate pieces in the options, each with its own timing (certain
+    shots, or from/to on the original's timeline) and look, as editor text items on this video's
+    timeline. Returns (items, timed_by_user). None when the pieces add nothing to the typed words
+    (no timing, no look: the usual placement is used) or no longer match them (edited since)."""
+    raw = text_opts.get("items")
+    if not isinstance(raw, list) or not raw:
+        return None, False
+    pieces = [x for x in raw[:20] if isinstance(x, dict) and isinstance(x.get("text"), str) and x["text"].strip()]
+    flat = lambda t: [ln.strip() for ln in t.replace("\r", "").split("\n") if ln.strip()]  # noqa: E731
+    if not pieces or flat("\n".join(x["text"] for x in pieces)) != flat(str(text_opts.get("custom") or "")):
+        return None, False
+
+    def timing(x: dict):
+        if jump:
+            return None  # one take: the original's shots aren't this video's
+        if isinstance(x.get("shots"), list) and any(isinstance(k, int) for k in x["shots"]):
+            return ("shots", sorted({k for k in x["shots"] if isinstance(k, int)}))
+        if isinstance(x.get("start"), (int, float)) and isinstance(x.get("end"), (int, float)) and x["end"] - x["start"] >= 0.1:
+            return ("time", (float(x["start"]), float(x["end"])))
+        return None
+
+    styled = lambda x: any(x.get(k) is not None for k in OPTION_LOOK_KEYS) or (  # noqa: E731
+        isinstance(x.get("size"), (int, float)) and abs(x["size"] - 1) > 0.01)
+    if not any(timing(x) or styled(x) for x in pieces):
+        return None, False
+
+    pos = {k: j for j, k in enumerate(shot_indexes)}
+    starts = [sum(durations[:j]) for j in range(len(durations))]
+    # This video's shots (with the inspo's text on them, for where text goes when the user didn't say).
+    now = ([{"onScreenText": s0.get("onScreenText"), "durationS": d} for s0, d in zip(shots, durations)]
+           if len(shots) == len(durations) else [{"durationS": d} for d in durations])
+    total = sum(durations)
+    inspo_starts = [sum(inspo_lengths_all[:k]) for k in range(len(inspo_lengths_all))]
+
+    def at(t: float) -> float:
+        """A moment of the original's timeline, on this video's (same shot, same part of it)."""
+        k = max(0, sum(1 for s0 in inspo_starts if s0 <= t + 1e-6) - 1)
+        if k >= len(inspo_lengths_all):
+            return total
+        frac = min(1.0, max(0.0, (t - inspo_starts[k]) / max(inspo_lengths_all[k], 0.01)))
+        if k in pos:
+            j = pos[k]
+            return starts[j] + frac * durations[j]
+        later = [pos[i] for i in range(k + 1, len(inspo_lengths_all)) if i in pos]
+        return starts[later[0]] if later else total  # a deleted shot: where the next one starts
+
+    def runs(js: list[int]) -> list[tuple[float, float]]:
+        """These shots of this video as time spans (neighbors joined)."""
+        out: list[list[float]] = []
+        for j in sorted(set(js)):
+            if out and abs(out[-1][1] - starts[j]) < 0.02:
+                out[-1][1] = starts[j] + durations[j]
+            else:
+                out.append([starts[j], starts[j] + durations[j]])
+        return [(a, b) for a, b in out]
+
+    look = lambda x: {k: x.get(k) for k in (*OPTION_LOOK_KEYS, "size") if x.get(k) is not None}  # noqa: E731
+    out: list[dict] = []
+    timed_by_user = False
+
+    def add(text: str, x: dict, spans: list[tuple[float, float]], key: str):
+        spans = [(a, b) for a, b in spans if b - a >= 0.1]
+        for a, b in spans:
+            out.append({"text": text, "start": round(a, 2), "end": round(b, 2), **look(x),
+                        **({"group": key} if len(spans) > 1 else {})})
+
+    auto = [x for x in pieces if not timing(x)]
+    for n, x in enumerate(pieces):
+        tm = timing(x)
+        if not tm:
+            continue
+        timed_by_user = True
+        if tm[0] == "shots":
+            add(x["text"].strip(), x, runs([pos[k] for k in tm[1] if k in pos]), f"o{n}")
+        else:
+            add(x["text"].strip(), x, [(at(tm[1][0]), at(tm[1][1]))], f"o{n}")
+    if auto:
+        # The rest: where the user's text would go anyway (the inspo's text spots, in order).
+        places = text_places(now, len(auto))
+        k = min(len(places), len(auto))
+        for g, group in enumerate(split_even(auto, k)):
+            first = dict(group[0])
+            spot = (spots or [None] * len(now))[places[g][0]] if places[g][0] < len(spots or []) else None
+            if first.get("y") is None and isinstance(spot, (list, tuple)) and len(spot) == 2 and isinstance(spot[1], (int, float)):
+                first["y"] = round(min(0.72, max(0.14, float(spot[1]))), 3)  # the inspo's spot, clear of the app's buttons
+            add("\n".join(x["text"].strip() for x in group), first, runs(places[g]), f"a{g}")
+    if any(x.get("y") is not None for x in pieces):
+        timed_by_user = True  # placed by the user: kept where they put it
+    return (sorted(out, key=lambda t: t["start"]) or None), timed_by_user
 
 
 # ---- one take, pauses cut out ("jump cut" inspos)
@@ -7581,6 +7689,14 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         return cap_ys[i]
 
     report("editing", 85)
+    opt_timed = False
+    if text_items_raw is None and text_choice == "custom":
+        # "Write my own" set up piece by piece in the options (their own shots, times and looks).
+        text_items_raw, opt_timed = option_text_items(text_opts, [float(s0["durationS"]) for s0 in breakdown["shots"]],
+                                                      shot_indexes, shots, durations, bool(jump), spots)
+        if text_items_raw is not None:
+            print(f"text pieces from the options: {len(text_items_raw)}; "
+                  + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     # Text with emoji is drawn as pictures (libass can't draw color emoji); the rest as text.
     pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
     kept_inspo = [breakdown["shots"][k] for k in shot_indexes if k < len(breakdown["shots"])]
@@ -7591,7 +7707,10 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))
-    user_timed = text_set_by_user(req)
+    user_timed = text_set_by_user(req) or opt_timed
+    # Timed in the options but not placed: it keeps its times, and still moves off other text and faces.
+    opt_unplaced = opt_timed and not text_set_by_user(req) and not any(
+        isinstance(x, dict) and isinstance(x.get("y"), (int, float)) for x in (text_opts.get("items") or []))
     if text_items and not user_timed:
         text_items = unstack_sequential_text(text_items)
     if text_items and not user_timed:
@@ -7645,7 +7764,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         fill_text_gaps(base_timeline, sum(durations), lambda t: (t[0], t[1]), lambda t, a, b: t.__setitem__(slice(0, 2), [a, b]))
         base_timeline = [tuple(t) for t in base_timeline]
         print("text kept on the whole video (shot text)")
-    if base_timeline and not user_timed:
+    if base_timeline and (not user_timed or opt_unplaced):
         # Text up at the same time never overlaps other text (it moves just below or above, off faces).
         starts = [sum(durations[:k]) for k in range(len(durations))]
 
@@ -7872,6 +7991,8 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             **({"textItemsByUser": True} if text_items is not None and user_timed else {}),
             # What's on screen and when, for the editor's text list.
             "textTimeline": timeline_items(base_timeline),
+            # Each shot's length as finished, so the editor can show where the shots are.
+            "shotDurations": [r2(d) for d in durations],
             # How text without a look of its own is drawn (the editor shows it that way).
             "textDefaults": text_defaults(style),
             "textPosition": position,

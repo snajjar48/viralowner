@@ -12,8 +12,34 @@ export type CaptionStyleId = "bold-pop" | "clean" | "outline" | "bold-outline" |
 /** auto: the inspo's text style (remakes), or ours (start from scratch). Otherwise a fixed look. */
 export type TextStyleId = "auto" | "classic" | "bold-pop" | "boxed" | "dark-box" | "headline" | "handwritten" | "neon";
 
+/** How one piece of on-screen text looks and where it sits (null / missing = the video's own). */
+export interface TextLook {
+  /** Vertical center (0 top, 1 bottom). */
+  y?: number | null;
+  /** Horizontal anchor (see align). */
+  x?: number | null;
+  align?: "left" | "center" | "right" | null;
+  /** 1 = standard size. */
+  size?: number;
+  color?: string | null;
+  font?: string | null;
+  look?: "outline" | "box" | "plain" | null;
+  animation?: string | null;
+}
+
+/** One piece of the user's own text ("write my own"), set up before the video is made. */
+export interface OptionTextItem extends TextLook {
+  text: string;
+  /** Shown on these shots only (the original's shot numbers, 0-based). */
+  shots?: number[] | null;
+  /** Or from/to, in seconds of the original video. No shots and no times: we pick when. */
+  start?: number | null;
+  end?: number | null;
+}
+
 export interface VideoOptions {
-  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId };
+  /** items: "write my own" as separate pieces, each with its own timing and look (custom is their words, joined). */
+  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId; items?: OptionTextItem[] };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
   /** emojis: emoji pop-ups beside punchy captions. */
@@ -71,6 +97,60 @@ export const TEXT_STYLES: { id: Exclude<TextStyleId, "auto">; name: string; desc
 ];
 const TEXT_STYLE_IDS: TextStyleId[] = ["auto", ...TEXT_STYLES.map((s) => s.id)];
 
+export const TEXT_FONTS = ["clean_sans", "semibold_sans", "heavy_sans", "condensed", "tall_caps", "serif", "typewriter", "marker", "script", "rounded"];
+export const TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"];
+export const TEXT_ITEMS_MAX = 20;
+
+const clampNum = (v: unknown, lo: number, hi: number) =>
+  typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null;
+
+/** A piece of text's own look and place, from untrusted input (anything invalid: the video's own). */
+export function textLookFrom(raw: Record<string, unknown>): Required<TextLook> {
+  return {
+    y: clampNum(raw.y, 0, 1),
+    x: clampNum(raw.x, 0, 1),
+    align: raw.align === "left" || raw.align === "right" || raw.align === "center" ? raw.align : null,
+    size: clampNum(raw.size, 0.4, 2.5) ?? 1,
+    color: typeof raw.color === "string" && /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toUpperCase() : null,
+    font: typeof raw.font === "string" && TEXT_FONTS.includes(raw.font) ? raw.font : null,
+    look: raw.look === "outline" || raw.look === "box" || raw.look === "plain" ? raw.look : null,
+    animation: typeof raw.animation === "string" && TEXT_ANIMATIONS.includes(raw.animation) ? raw.animation : null,
+  };
+}
+
+const cleanLines = (s: string) =>
+  s
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .trim();
+
+/** "Write my own" pieces from untrusted input: words kept line for line, timing and look checked. */
+function optionTextItems(input: unknown): OptionTextItem[] {
+  if (!Array.isArray(input)) return [];
+  const out: OptionTextItem[] = [];
+  for (const v of input.slice(0, TEXT_ITEMS_MAX)) {
+    const raw = obj(v);
+    const text = typeof raw.text === "string" ? cleanLines(raw.text).slice(0, TEXT_MAX) : "";
+    if (!text) continue;
+    const shots = Array.isArray(raw.shots)
+      ? [...new Set(raw.shots.filter((n): n is number => Number.isInteger(n) && n >= 0 && n < 100))].sort((a, b) => a - b)
+      : [];
+    const start = clampNum(raw.start, 0, 600);
+    const end = clampNum(raw.end, 0, 600);
+    const timed = !shots.length && start !== null && end !== null && end - start >= 0.1;
+    out.push({
+      text,
+      shots: shots.length ? shots : null,
+      start: timed ? Math.round(start * 100) / 100 : null,
+      end: timed ? Math.round(end * 100) / 100 : null,
+      ...textLookFrom(raw),
+    });
+  }
+  return out;
+}
+
 function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -91,15 +171,13 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   const part = typeof series.part === "number" && Number.isInteger(series.part) ? series.part : null;
   if (part !== null && (part < 1 || part > 999)) return { error: "the series part needs to be a number from 1 to 999." };
 
-  // Keep the user's line breaks: each line they type is its own line on screen.
-  const custom =
-    typeof text.custom === "string"
-      ? text.custom
-          .replace(/\r/g, "")
-          .split("\n")
-          .map((line) => line.trim())
-          .join("\n")
-          .trim()
+  // Keep the user's line breaks: each line they type is its own line on screen. Typed as separate
+  // pieces: the words are the pieces' words, in order.
+  const items = optionTextItems(text.items);
+  const custom = items.length
+    ? items.map((it) => it.text).join("\n")
+    : typeof text.custom === "string"
+      ? cleanLines(text.custom)
       : "";
   if (custom.length > TEXT_MAX) {
     return { error: `on-screen text can be up to ${TEXT_MAX} characters.` };
@@ -122,6 +200,7 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
       custom,
       align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
       style: TEXT_STYLE_IDS.includes(text.style as TextStyleId) ? (text.style as TextStyleId) : "auto",
+      ...(items.length ? { items } : {}),
     },
     music: {
       mode: musicMode,

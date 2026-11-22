@@ -190,6 +190,7 @@ export function ScratchCreate({
           showNotes={false}
           uploadedAudio={audio}
           variant="scratch"
+          textPieces={{ shots: [] }}
         />
 
         {clips.uploaded > 0 && !clips.busy && (

@@ -9,8 +9,11 @@ import {
   type MusicMode,
   type TextAlign,
   type TextMode,
+  type OptionTextItem,
   type VideoOptions,
 } from "@/lib/video-options";
+import { OptionTextPieces, piecesFromText } from "./option-text-pieces";
+import type { TimelineShot } from "./text-pieces";
 import { AudioRightsNotice } from "./audio-rights";
 import { CaptionStylePicker, TextStylePicker, Toggle } from "./caption-styles";
 import { QuickAdd } from "./quick-add";
@@ -138,7 +141,11 @@ export function OptionsFields({
   showNotes = true,
   uploadedAudio = null,
   variant = "inspo",
+  textPieces,
 }: {
+  /** Before the video is made: "write my own" piece by piece, timed on these shots, and the
+   * original's own text as pieces (to start from). Without it: one box for the words. */
+  textPieces?: { shots: TimelineShot[]; original?: OptionTextItem[] };
   value: VideoOptions;
   onChange: (next: VideoOptions) => void;
   /** "scratch": a "start from scratch" video (no inspo to match or take audio from). */
@@ -151,6 +158,8 @@ export function OptionsFields({
   const id = useId();
   const set = (patch: Partial<VideoOptions>) =>
     onChange({ ...value, ...patch });
+  const setPieces = (items: OptionTextItem[]) =>
+    set({ text: { ...value.text, mode: "custom", items, custom: items.map((it) => it.text).join("\n") } });
 
   return (
     <div className="flex flex-col gap-4">
@@ -198,7 +207,23 @@ export function OptionsFields({
             />
           ))}
         </div>
-        {value.text.mode === "custom" && (
+        {textPieces && value.text.mode !== "custom" && variant === "inspo" && !!textPieces.original?.length && (
+          <button
+            type="button"
+            onClick={() => setPieces(textPieces.original!.map((it) => ({ ...it })))}
+            className="self-start text-left text-xs text-muted underline underline-offset-4 hover:text-foreground"
+          >
+            want to change a line, when it shows or how it looks? start from the original’s text, piece by piece.
+          </button>
+        )}
+        {value.text.mode === "custom" && textPieces && (
+          <OptionTextPieces
+            items={value.text.items?.length ? value.text.items : piecesFromText(value.text.custom)}
+            onChange={setPieces}
+            shots={textPieces.shots}
+          />
+        )}
+        {value.text.mode === "custom" && !textPieces && (
           <div className="flex flex-col gap-1.5">
             <label htmlFor={`${id}-custom`} className="text-sm text-muted">
               your text. each line you type shows up as its own line, exactly as you wrote it.
@@ -209,7 +234,8 @@ export function OptionsFields({
               maxLength={TEXT_MAX}
               rows={4}
               placeholder={"e.g.\npov:\nyou found the best croffles in town"}
-              onChange={(e) => set({ text: { ...value.text, mode: "custom", custom: e.target.value } })}
+              // Typed as one box: the pieces set up before (their own times and looks) no longer apply.
+              onChange={(e) => set({ text: { ...value.text, mode: "custom", custom: e.target.value, items: undefined } })}
               className={`${inputClass} h-auto py-3`}
             />
             <span className="self-end text-xs text-muted tabular-nums">

@@ -95,6 +95,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           textItems:
             current.plan?.textItems ?? current.plan?.textTimeline ?? textItemsFromShots(current.plan, scratch ? null : inspo!.breakdown!),
           textDefaults: current.plan?.textDefaults ?? null,
+          shotDurations: current.plan?.jumpcut ? null : (current.plan?.shotDurations ?? null),
           textContext: {
             style: current.plan?.textStyle ?? null,
             textScale: current.plan?.textScale ?? null,
