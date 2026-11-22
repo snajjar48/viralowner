@@ -45,6 +45,14 @@ const ITEMS: Item[] = [
     match: (p) => p === "/scratch",
   },
   {
+    href: "/tips",
+    label: "tips",
+    short: "tips",
+    blurb: "ideas, filming and getting it right the first time",
+    icon: <BulbIcon className="size-4" />,
+    match: (p) => p === "/tips",
+  },
+  {
     href: "/profile",
     label: "your profile",
     short: "profile",
@@ -54,7 +62,7 @@ const ITEMS: Item[] = [
   },
 ];
 
-/** The menu on every signed-in page: my videos, the two ways to start a video, the profile, and log out. */
+/** The menu on every signed-in page: my videos, the two ways to start a video, tips, the profile, and log out. */
 export function SiteNav() {
   return (
     <>
@@ -199,6 +207,23 @@ function MenuIcon({ open, ...props }: React.SVGProps<SVGSVGElement> & { open: bo
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" aria-hidden="true" {...props}>
       {open ? <path d="M6 6l12 12M18 6L6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
+    </svg>
+  );
+}
+
+function BulbIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      {...props}
+    >
+      <path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1.1 1.3 1.1 2.2h5c0-.9.5-1.7 1.1-2.2A6 6 0 0 0 12 3Z" />
     </svg>
   );
 }
