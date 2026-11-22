@@ -5986,8 +5986,10 @@ def plan_from_render(plan: dict, clip_index: dict[str, int]) -> dict | None:
 
 def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | None, text_mode: str,
                 custom_text: str, previous: dict | None, prev_frames: list[Path | None], request: str,
-                fresh: bool, captions: bool, fix: tuple[dict, list[str]] | None = None, prefs: str = "") -> dict:
-    """Claude's plan for the whole video (DIRECTOR_SCHEMA), with usage and cost."""
+                fresh: bool, captions: bool, fix: tuple[dict, list[str]] | None = None, prefs: str = "",
+                length_s: int | None = None) -> dict:
+    """Claude's plan for the whole video (DIRECTOR_SCHEMA), with usage and cost. `length_s`: the length
+    the user picked in the options (first versions)."""
     total_words = sum(len(s.get("words") or []) for c in clips for s in c.get("speech") or [])
     if audio_info:
         total_words += sum(len(s.get("words") or []) for s in audio_info["speech"])
@@ -6036,6 +6038,11 @@ def direct_edit(prompt: str, clips: list[dict], sound: str, audio_info: dict | N
                    "the prompt or request says otherwise):\n" + prefs)
     if text_mode == "custom":
         ask.append("the user's lines: " + json.dumps(custom_text, ensure_ascii=False))
+    if length_s and not previous:
+        ask.append(f"length: the user picked {length_s} seconds for this video in its settings. make the video "
+                   f"{length_s} seconds long (within about a second); this setting wins over any length in the prompt. "
+                   "if the clips can't fill it without repeating footage or padding it with weak "
+                   "moments, make it shorter and say so in the summary.")
     if previous:
         content.append({"type": "text", "text": "\nthe current version's plan:\n" + json.dumps(
             {k: v for k, v in previous.items() if k not in ("captionText", "captionFixes")}, ensure_ascii=False)})
@@ -6430,6 +6437,10 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
     sound = options["music"]["mode"] if options["music"]["mode"] in ("upload", "none") else "original"
     request = (req.get("request") or "").strip()[:1500]
     base = req.get("previous") if isinstance(req.get("previous"), dict) else None
+    # The length picked in the options (before the first version; a change request says its own).
+    length_s = options.get("length") if isinstance(options.get("length"), int) and 5 <= options["length"] <= 180 else None
+    if request and base:
+        length_s = None
     # The plan a storyboard showed: the first version makes exactly that (no second directing).
     directed = sc.get("directed") if isinstance(sc.get("directed"), dict) and not base else None
     cost = 0.0
@@ -6521,6 +6532,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         audio_info = audio_info_box[0] if audio_info_box else None
         if audio_info:
             max_s = min(max_s, audio_info["duration"])
+        if length_s:
+            max_s = min(max_s, length_s + 1.0)  # the length the user picked: never much over it
         prev_frames: list[Path | None] = []
         if previous and request:
             t = 0.0
@@ -6553,7 +6566,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         report("matching", 20)
         result = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                              prev_frames, request, bool(req.get("fresh")), bool((options.get("captions") or {}).get("enabled")),
-                             prefs=director_context)
+                             prefs=director_context, length_s=length_s)
         cost += result["cost_usd"]
         # Checked before clean_director's own fix-up, which can only move or drop shots.
         talking = {i for i, c in enumerate(clips) if sound == "original" and c.get("speech")}
@@ -6567,7 +6580,7 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
             again = direct_edit(prompt, clips, sound, audio_info, text_mode, custom_text, previous if request else None,
                                 prev_frames, request, bool(req.get("fresh")),
                                 bool((options.get("captions") or {}).get("enabled")), fix=(result["data"], problems),
-                                prefs=director_context)
+                                prefs=director_context, length_s=length_s)
             cost += again["cost_usd"]
             result = {**again, "usage": again["usage"]}
         cleaned = clean_director(result["data"], clips, max_s, text_mode, talking)
@@ -6630,6 +6643,8 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
         "speechHint": prompt[:600],
+        # "Write my own" times set in the options are seconds of the length picked there.
+        **({"textTimelineS": float(options["length"])} if isinstance(options.get("length"), int) and options["length"] > 0 else {}),
         "carry": {"captionFixes": caption_fixes, "proofs": clean_proofs(carry.get("proofs")),
                   **({"textItems": text_items} if text_items is not None else {}),
                   "captionGroups": clean_caption_groups(((base or {}).get("plan") or {}).get("captionGroups") if base else None,
@@ -7692,8 +7707,13 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     opt_timed = False
     if text_items_raw is None and text_choice == "custom":
         # "Write my own" set up piece by piece in the options (their own shots, times and looks).
-        text_items_raw, opt_timed = option_text_items(text_opts, [float(s0["durationS"]) for s0 in breakdown["shots"]],
-                                                      shot_indexes, shots, durations, bool(jump), spots)
+        timeline_lengths = [float(s0["durationS"]) for s0 in breakdown["shots"]]
+        if req.get("textTimelineS") and sum(timeline_lengths) > 0:
+            # "Start from scratch": the times are on the length picked; the planned video may be a bit off it.
+            k = float(req["textTimelineS"]) / sum(timeline_lengths)
+            timeline_lengths = [x * k for x in timeline_lengths]
+        text_items_raw, opt_timed = option_text_items(text_opts, timeline_lengths, shot_indexes, shots, durations,
+                                                      bool(jump), spots)
         if text_items_raw is not None:
             print(f"text pieces from the options: {len(text_items_raw)}; "
                   + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))

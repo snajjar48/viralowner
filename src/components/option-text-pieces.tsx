@@ -13,14 +13,18 @@ export function OptionTextPieces({
   items,
   onChange,
   shots,
+  length = null,
 }: {
   items: OptionTextItem[];
   onChange: (items: OptionTextItem[]) => void;
-  /** The original's shots (empty when there are none to time against yet). */
+  /** The original's shots (empty when there are none to time against). */
   shots: TimelineShot[];
+  /** "Start from scratch": the length picked for the video (times are seconds of it); null: not picked. */
+  length?: number | null;
 }) {
   const [open, setOpen] = useState<number | null>(null);
-  const total = shots.at(-1)?.end ?? 0;
+  const total = shots.at(-1)?.end ?? length ?? 0;
+  const timed = total > 0;
   const used = items.reduce((n, it) => n + it.text.length, 0) + Math.max(0, items.length - 1);
   const set = (k: number, patch: Partial<OptionTextItem>) => onChange(items.map((it, j) => (j === k ? { ...it, ...patch } : it)));
   const timeIt = (k: number, a: number, b: number) =>
@@ -32,7 +36,9 @@ export function OptionTextPieces({
         add each piece of text separately. new lines inside one piece stay together on screen.
         {shots.length > 0
           ? " drag the coral handles to set when it shows (like trimming a clip), or pick the shots it’s on. leave it and we time it like the original."
-          : " we time each piece; you can drag exact times in the editor once your video is made."}
+          : timed
+            ? " drag the coral handles to set when it shows in your video (like trimming a clip). leave it and we time it."
+            : " we time each piece. to set exact times, pick a length for your video above (or drag them in the editor once it’s made)."}
       </p>
       <ol className="flex flex-col gap-2">
         {items.map((it, k) => {
@@ -70,7 +76,7 @@ export function OptionTextPieces({
                   </button>
                 )}
               </div>
-              {shots.length > 0 && (
+              {timed && (
                 <>
                   <div className="mt-8">
                     <TextTimeline

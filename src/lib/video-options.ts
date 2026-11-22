@@ -48,7 +48,12 @@ export interface VideoOptions {
   notes: string;
   /** Part of a series: a "part 2" label on the video (and in the post caption). */
   series: { part: number | null };
+  /** "Start from scratch": how long the user wants the video, in seconds (null/missing: we pick). */
+  length?: number | null;
 }
+
+export const LENGTH_MIN = 5;
+export const LENGTH_MAX = 180;
 
 export const TEXT_MAX = 300;
 export const NOTES_MAX = 1500;
@@ -186,6 +191,10 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
   if (notes.length > NOTES_MAX) {
     return { error: `additional requests can be up to ${NOTES_MAX} characters.` };
   }
+  const length =
+    typeof raw.length === "number" && Number.isFinite(raw.length)
+      ? Math.round(Math.min(LENGTH_MAX, Math.max(LENGTH_MIN, raw.length)))
+      : null;
   const textMode = TEXT_MODES.includes(text.mode as TextMode) ? (text.mode as TextMode) : DEFAULT_OPTIONS.text.mode;
 
   const musicMode = MUSIC_MODES.includes(music.mode as MusicMode)
@@ -215,6 +224,7 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
     },
     notes,
     series: { part },
+    ...(length !== null ? { length } : {}),
   };
 }
 

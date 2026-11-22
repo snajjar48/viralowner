@@ -1,8 +1,10 @@
 "use client";
 
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import {
   INSPO_AUDIO_CONFIRM_ERROR,
+  LENGTH_MAX,
+  LENGTH_MIN,
   NO_AUDIO_FILE_ERROR,
   NOTES_MAX,
   TEXT_MAX,
@@ -191,6 +193,27 @@ export function OptionsFields({
         </Section>
       )}
 
+      {variant === "scratch" && textPieces && (
+        <Section title="length" aside={<span className="text-xs text-muted">optional</span>}>
+          <VideoLength
+            value={value.length ?? null}
+            onChange={(length) => {
+              // Text already timed keeps its place in the video (stretched or squeezed with it).
+              const before = value.length ?? null;
+              const items =
+                before && length && value.text.items?.length
+                  ? value.text.items.map((it) =>
+                      it.start !== null && it.start !== undefined && it.end !== null && it.end !== undefined
+                        ? { ...it, start: Math.round(((it.start * length) / before) * 100) / 100, end: Math.round(((it.end * length) / before) * 100) / 100 }
+                        : it,
+                    )
+                  : value.text.items;
+              set({ length, text: { ...value.text, items } });
+            }}
+          />
+        </Section>
+      )}
+
       <Section
         title="on-screen text"
         icon={<TextIcon className="size-4 text-muted" />}
@@ -221,6 +244,7 @@ export function OptionsFields({
             items={value.text.items?.length ? value.text.items : piecesFromText(value.text.custom)}
             onChange={setPieces}
             shots={textPieces.shots}
+            length={variant === "scratch" ? (value.length ?? null) : null}
           />
         )}
         {value.text.mode === "custom" && !textPieces && (
@@ -373,6 +397,55 @@ export function OptionsFields({
           caption. leave it empty if it’s a one-off.
         </p>
       </Section>
+    </div>
+  );
+}
+
+const LENGTH_CHOICES = [10, 15, 30, 60];
+
+/** "Start from scratch": how long the video should be (we pick, a common length, or any number of seconds). */
+function VideoLength({ value, onChange }: { value: number | null; onChange: (length: number | null) => void }) {
+  const [typed, setTyped] = useState(value !== null && !LENGTH_CHOICES.includes(value) ? String(value) : "");
+  const chip = (on: boolean) =>
+    `h-10 cursor-pointer rounded-full px-4 text-sm transition focus-visible:outline-2 focus-visible:outline-coral ${
+      on ? "bg-linear-to-r from-violet to-coral font-medium text-white" : "border border-white/15 text-muted hover:text-foreground"
+    }`;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="button" aria-pressed={value === null} onClick={() => (setTyped(""), onChange(null))} className={chip(value === null)}>
+          we pick
+        </button>
+        {LENGTH_CHOICES.map((s) => (
+          <button key={s} type="button" aria-pressed={value === s} onClick={() => (setTyped(""), onChange(s))} className={chip(value === s)}>
+            {s}s
+          </button>
+        ))}
+        <label className="flex items-center gap-1.5 text-sm text-muted">
+          or
+          <input
+            type="number"
+            inputMode="numeric"
+            min={LENGTH_MIN}
+            max={LENGTH_MAX}
+            value={typed}
+            placeholder="—"
+            aria-label="video length in seconds"
+            onChange={(e) => {
+              setTyped(e.target.value);
+              const n = Number.parseInt(e.target.value, 10);
+              if (Number.isInteger(n) && n >= LENGTH_MIN && n <= LENGTH_MAX) onChange(n);
+            }}
+            className="h-10 w-16 rounded-lg border border-white/15 bg-[#15151b] px-2 text-center text-foreground outline-none focus-visible:border-coral"
+          />
+          seconds
+        </label>
+      </div>
+      <p className="text-xs text-muted">
+        {value === null
+          ? "we make it as long as your clips and prompt need (usually 7–40 seconds)."
+          : `we aim for ${value} seconds. if your clips run out first, it’ll be shorter and we’ll tell you.`}
+      </p>
     </div>
   );
 }
