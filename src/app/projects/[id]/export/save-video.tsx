@@ -112,7 +112,7 @@ export function SaveVideo({ fileUrl, fileName }: { fileUrl: string; fileName: st
             {busy === "save" ? "saving…" : "save to photos"}
           </button>
           <button type="button" onClick={() => inAppSave("share")} disabled={!!busy} className={secondaryClass}>
-            {busy === "share" ? "getting it ready…" : "share to tiktok, instagram…"}
+            {busy === "share" ? "getting it ready…" : "share directly to your social medias"}
           </button>
         </>
       )}
