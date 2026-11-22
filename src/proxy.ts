@@ -37,7 +37,7 @@ const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
 const PASSWORD_PATHS = SIGNUPS_OPEN ? [] : ["/signup", "/api/auth/signup"];
 
 // Pages that need a signed-in account.
-const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/scratch", "/projects", "/plans", "/business", "/profile", "/admin", "/reset-password"];
+const ACCOUNT_PREFIXES = ["/dashboard", "/new", "/scratch", "/projects", "/plans", "/business", "/profile", "/tips", "/admin", "/reset-password"];
 
 function needsAccount(pathname: string) {
   return ACCOUNT_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
