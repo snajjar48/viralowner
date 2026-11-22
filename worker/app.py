@@ -207,6 +207,33 @@ FONT_FILES = {
     "LilitaOne-Regular.ttf": "ofl/lilitaone/LilitaOne-Regular.ttf",
 }
 EXTRA_FONT_DIR = "/usr/share/fonts/truetype/viralowner"
+# TikTok's own font (what text typed in the TikTok app is drawn with), as a variable font. libass
+# draws a variable font at its default weight, so a fixed SemiBold copy is made from it.
+TIKTOK_SANS_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/tiktoksans/TikTokSans%5Bopsz%2Cslnt%2Cwdth%2Cwght%5D.ttf"
+SOCIAL_FAMILY = "Social Text SemiBold"
+
+
+def _make_social_font() -> None:
+    import urllib.request
+
+    from fontTools.ttLib import TTFont
+    from fontTools.varLib import instancer
+
+    src = "/tmp/tiktoksans.ttf"
+    urllib.request.urlretrieve(TIKTOK_SANS_URL, src)
+    font = TTFont(src)
+    axes = {a.axisTag: a.defaultValue for a in font["fvar"].axes}
+    axes.update(wght=600, slnt=0, wdth=100)
+    static = instancer.instantiateVariableFont(font, axes)
+    name = static["name"]
+    for rec in list(name.names):
+        if rec.nameID in (16, 17, 21, 22, 25):
+            name.removeNames(nameID=rec.nameID)
+    for nid, val in ((1, SOCIAL_FAMILY), (2, "Regular"), (3, "SocialText-SemiBold"), (4, SOCIAL_FAMILY), (6, "SocialText-SemiBold")):
+        name.setName(val, nid, 3, 1, 0x409)
+        name.setName(val, nid, 1, 0, 0)
+    static.save(f"{EXTRA_FONT_DIR}/SocialText-SemiBold.ttf")
+    subprocess.run(["fc-cache", "-f"], check=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -217,6 +244,8 @@ image = (
           for name, src in FONT_FILES.items()],
         "fc-cache -f",
     )
+    .uv_pip_install("fonttools>=4.50")
+    .run_function(_make_social_font)
     .uv_pip_install("fastapi[standard]", "boto3", "anthropic", "scenedetect", "opencv-python<5", "opencv-python-headless<5", "faster-whisper>=1.1", "pillow", "librosa==0.11.0")
     .run_function(_download_whisper)  # bake the speech model into the image (no download per job)
     # The sound-effect recognizer (CLAP), CPU-only.
@@ -1712,6 +1741,8 @@ FONTS = {
     "marker": ("Permanent Marker", False, 0.60),
     "script": ("Pacifico", False, 0.58),
     "rounded": ("Lilita One", False, 0.52),
+    # TikTok's own text font (text typed in the TikTok app).
+    "social_sans": (SOCIAL_FAMILY, False, 0.56),
 }
 TEXT_ALIGNS = ["left", "center", "right"]
 # Height of a capital letter, as a fraction of the frame height, for each size name.
@@ -1758,7 +1789,7 @@ And for the whole video:
 - looks: overall looks applied to everything (usually none):
 """ + catalog(LOOK_INFO) + """
 - color_filter: an obvious grade on the whole video, otherwise 'none'.
-- text: the overlaid text (titles, labels, hooks), not burned-in speech captions. pick the closest font: clean_sans (geometric sans like tiktok's classic), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact/anton), tall_caps (thin tall capitals, like bebas), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful). colors as #RRGGBB. box = the text sits on a solid shape. size: small (a label), medium, large (a headline), xl (fills the width). animation: how text appears (pop = scales up, typewriter = letter by letter, word_by_word, fade, slide_up), 'none' if it's just there. if the video has no overlaid text, describe a clean default (clean_sans, white, thick black outline, centered, large, none).
+- text: the overlaid text (titles, labels, hooks), not burned-in speech captions. pick the closest font: social_sans (tiktok's own text font: plain text typed in the tiktok app, semibold, slightly narrow, like proxima nova), clean_sans (wider geometric sans, like montserrat), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact/anton), tall_caps (thin tall capitals, like bebas), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful). colors as #RRGGBB. box = the text sits on a solid shape. size: small (a label), medium, large (a headline), xl (fills the width). animation: how text appears (pop = scales up, typewriter = letter by letter, word_by_word, fade, slide_up), 'none' if it's just there. if the video has no overlaid text, describe a clean default (clean_sans, white, thick black outline, centered, large, none).
 - text_x / text_y per shot: where that shot's overlaid text sits, as fractions of the frame (0 = left/top, 1 = right/bottom). text_x is the left edge for left-aligned text, the center for centered text, the right edge for right-aligned text; text_y is the vertical center of the whole text block. -1 for both when the shot has no overlaid text."""
 
 COLOR_RE = r"^#[0-9A-Fa-f]{6}$"
@@ -2263,17 +2294,31 @@ def analyze_style(path: Path, shots: list[dict], workdir: Path, transcript: dict
     timed = _safe(text_timeline, path, duration, shots, workdir)
     if timed:
         style["textTimeline"], cost = timed[0], timed[1]
+        style["textTimelineVersion"] = TEXT_TIMELINE_VERSION
         result["cost_usd"] = round(result["cost_usd"] + cost, 4)
     print(f"style: transitions={style['transitions']} motions={style['motions']} speeds={style['speeds']} "
           f"effects={style['shotEffects']} looks={style['looks']} sfx={[(e['name'], e['anchor'], e['index']) for e in style['sfx']]}")
     return style, result["cost_usd"]
 
 
-TEXT_TIMELINE_SYSTEM = """You map exactly when on-screen text appears in a short-form video, so the same text rhythm can be rebuilt with someone else's footage.
+TEXT_TIMELINE_SYSTEM = """You map exactly what on-screen text a short-form video has, where, how it looks and when it's up, so the same text layout and rhythm can be rebuilt with someone else's footage.
 
-You get frames from the whole video, 4 a second, each labeled with its time, plus the text known to be on each shot. List every piece of overlaid text: each time new text pops up on screen, that's a new piece. If lines appear one after another and stay stacked (line 1, then line 2 appears under it while line 1 stays), each line or group that pops in together is its own piece, with its own start and its own end (when it leaves the screen). A piece that stays up across several shots is one piece. For each piece: the words exactly as shown, with its line breaks (\n); when it first appears and when it disappears (seconds, from the labels); the vertical center of the piece (0 top, 1 bottom); its alignment.
+You get frames from the whole video, 4 a second, each labeled with its time, then a sharper frame from each shot that has text, plus the text known to be on each shot. List every block of overlaid text.
 
-Leave out: captions that just transcribe what's being said, the app's own buttons, usernames, watermarks, logos, a comment bubble someone replied to, and end screens. If the video has no overlaid text, return no pieces."""
+What's one block: text that looks the same (same size, color, font and style) and sits together as one tight group of lines. Text that looks different is its own block, even when it's on screen at the same moment: a video often has a location line, a title, a big price, a line of small print and so on, all up together, each with its own size, color and place. List every one of those separately, top to bottom (a video can easily have 6 to 12 blocks). Text that pops up later is its own block too: if lines appear one after another and stay stacked, each line or group that pops in together is its own block, with its own start and end. A block that stays up across several shots is one block.
+
+For each block:
+- text: the words exactly as shown (same spelling, casing, punctuation and emoji, like 📍), with its line breaks (\n).
+- appears_s / disappears_s: when it first shows and when it leaves (seconds, from the labels).
+- y: the vertical center of the block (0 top, 1 bottom). x: its horizontal anchor (0 left edge, 1 right edge): the left edge of left-aligned text, the center of centered text, the right edge of right-aligned text. Measure on the sharper frames.
+- letter_height: the height of one capital letter as a fraction of the frame's height (small print is around 0.015-0.02, normal text 0.025-0.035, a big headline or price 0.045-0.08). Compare the blocks to each other: a bigger block must get a bigger number.
+- color: the letters' fill color as #RRGGBB (pure white #FFFFFF, a gold/yellow like #F5C542...). For a color gradient, its middle color.
+- style: "outline" (a dark or light stroke around the letters), "box" (a solid background box behind the text), or "plain" (no stroke or box, maybe a soft shadow). box_color: the box's color when style is "box", else "".
+- widest_left / widest_right: where the widest line of the block starts and ends (0 left edge of the frame, 1 right edge), measured on the sharper frame, letters only (not the outline or shadow). These set the block's exact size, so measure them carefully.
+- font: the closest one: social_sans (tiktok's own text font, what text typed in the tiktok app looks like: semibold, a little narrow, like proxima nova), clean_sans (wider, bolder geometric sans, like montserrat bold), semibold_sans (wide geometric semibold), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact), tall_caps (thin tall capitals, like bebas), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful).
+- align: how its lines line up.
+
+Leave out: captions that just transcribe what's being said, the app's own buttons, usernames, watermarks, logos, a comment bubble someone replied to, and end screens. If the video has no overlaid text, return no blocks."""
 
 TEXT_TIMELINE_SCHEMA = {
     "type": "object",
@@ -2284,14 +2329,25 @@ TEXT_TIMELINE_SCHEMA = {
             "appears_s": {"type": "number"},
             "disappears_s": {"type": "number"},
             "y": {"type": "number", "description": "vertical center, 0 (top) to 1 (bottom)."},
+            "x": {"type": "number", "description": "horizontal anchor (see align), 0 (left) to 1 (right)."},
             "align": {"type": "string", "enum": TEXT_ALIGNS},
+            "letter_height": {"type": "number", "description": "height of a capital letter, as a fraction of the frame height."},
+            "color": {"type": "string", "description": "the letters' fill color, #RRGGBB."},
+            "style": {"type": "string", "enum": ["outline", "box", "plain"]},
+            "box_color": {"type": "string", "description": "#RRGGBB when style is box, else empty."},
+            "widest_left": {"type": "number"},
+            "widest_right": {"type": "number"},
+            "font": {"type": "string", "enum": list(FONTS)},
         },
-        "required": ["text", "appears_s", "disappears_s", "y", "align"],
+        "required": ["text", "appears_s", "disappears_s", "y", "x", "align", "letter_height", "color", "style", "box_color",
+                     "widest_left", "widest_right", "font"],
         "additionalProperties": False,
     }}},
     "required": ["pieces"],
     "additionalProperties": False,
 }
+# Text timelines older than this don't have each block's own look; they're read again on the next render.
+TEXT_TIMELINE_VERSION = 3
 
 
 def text_timeline(path: Path, duration: float, shots: list[dict], workdir: Path) -> tuple[list[dict], float]:
@@ -2323,7 +2379,18 @@ def text_timeline(path: Path, duration: float, shots: list[dict], workdir: Path)
         dest = workdir / f"text_sheet{k // per:02d}.jpg"
         sheet.save(dest, quality=82)
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(dest)}})
-    content.append({"type": "text", "text": f"the video is {duration:.2f}s long. list every piece of overlaid text."})
+    # A sharper frame near the end of each shot with text (most of its text is up by then), to judge
+    # each block's size, color and place.
+    with_text = [i for i, s in enumerate(shots) if (s.get("onScreenText") or "").strip()][:12]
+    for i in with_text:
+        s = shots[i]
+        t = max(s["startS"], s["startS"] + s["durationS"] - min(0.25, s["durationS"] / 3))
+        sharp = grab_frame(path, t, workdir / f"text_sharp{i:02d}.jpg", 720)
+        if sharp:
+            content.append({"type": "text", "text": f"sharper frame, shot {i + 1} at {t:.2f}s:"})
+            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64(sharp)}})
+    content.append({"type": "text", "text": f"the video is {duration:.2f}s long. list every block of overlaid text, "
+                                            "each with its own place, size, color and style."})
     result = ask_claude(TEXT_TIMELINE_SYSTEM, content, TEXT_TIMELINE_SCHEMA, "couldn't read the text timing.", effort="high")
 
     pieces = []
@@ -2346,11 +2413,65 @@ def text_timeline(path: Path, duration: float, shots: list[dict], workdir: Path)
         except Exception as e:  # noqa: BLE001
             print(f"text timing refine failed: {e}")
         pieces.append({"text": text, "start": round(a, 2), "end": round(max(b, a + 0.2), 2), "y": round(y, 3),
-                       "align": p.get("align") if p.get("align") in TEXT_ALIGNS else "center"})
+                       "align": p.get("align") if p.get("align") in TEXT_ALIGNS else "center", **piece_look(p)})
     pieces.sort(key=lambda x: (x["start"], x["y"]))
     print(f"text timeline: {len(pieces)} pieces " + "; ".join(f"{x['start']}-{x['end']} {x['text'][:30]!r}" for x in pieces)
           + f", ${result['cost_usd']}")
     return pieces, result["cost_usd"]
+
+
+def piece_look(p: dict) -> dict:
+    """One block's own place and look from the text timeline (only what was read cleanly)."""
+    import re
+
+    out: dict = {}
+    x = p.get("x")
+    if isinstance(x, (int, float)) and 0 <= x <= 1:
+        out["x"] = round(float(x), 3)
+    h = p.get("letter_height")
+    if isinstance(h, (int, float)) and 0.008 <= h <= 0.2:
+        out["letterHeight"] = round(float(h), 4)
+    if isinstance(p.get("color"), str) and re.match(COLOR_RE, p["color"]):
+        out["color"] = p["color"].upper()
+    if p.get("style") in TEXT_ITEM_LOOKS:
+        out["look"] = p["style"]
+    if out.get("look") == "box" and isinstance(p.get("box_color"), str) and re.match(COLOR_RE, p["box_color"]):
+        out["boxColor"] = p["box_color"].upper()
+    if p.get("font") in FONTS:
+        out["font"] = p["font"]
+    # The size from the widest line's measured width, with the real font: more exact than a letter height.
+    lw, rw = p.get("widest_left"), p.get("widest_right")
+    if isinstance(lw, (int, float)) and isinstance(rw, (int, float)) and 0 <= lw < rw <= 1 and rw - lw >= 0.04:
+        try:
+            out.update(letter_from_width(p.get("text") or "", out.get("font") or "clean_sans", rw - lw, out.get("letterHeight")))
+        except Exception as e:  # noqa: BLE001  (no font here: the letter height read off the frame stays)
+            print(f"text size from width failed: {e}")
+    return out
+
+
+def letter_from_width(text: str, font: str, width: float, read: float | None) -> dict:
+    """A block's capital-letter height from how wide its widest line is (the font measured for real)."""
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    if not lines:
+        return {}
+    look = text_look({"font": font, "letterHeight": 0.03}, 1.0)
+    unit = max(line_width(ln, look, look["size"]) for ln in lines)
+    if unit <= 0:
+        return {}
+    h = 0.03 * width / unit
+    if read and not 0.5 <= h / read <= 2.0:
+        return {}  # far off what was read off the frame: one of them is wrong, keep the reading
+    return {"letterHeight": round(min(0.2, max(0.008, h)), 4)}
+
+
+def has_text_layers(pieces: list[dict]) -> bool:
+    """Whether several blocks of text are up together in their own places (a location, a title, a price,
+    small print...), so each keeps its own place and look instead of being one stack in one style."""
+    for k, a in enumerate(pieces):
+        for b in pieces[k + 1:]:
+            if min(a["end"], b["end"]) - max(a["start"], b["start"]) >= 0.3 and abs(a["y"] - b["y"]) >= 0.03:
+                return True
+    return False
 
 
 def has_text_reveals(pieces: list[dict], shots: list[dict]) -> bool:
@@ -4236,7 +4357,8 @@ def overlay_timeline(plan: list[dict], texts: list[str], lays: list, join_same: 
 TEXT_ITEM_LOOKS = ("outline", "box", "plain")
 
 
-def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: list[float], texts: list[str]) -> list[dict]:
+def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: list[float], texts: list[str],
+                     base_letter: float | None = None) -> list[dict]:
     """The inspo's text rhythm with this video's words: each piece pops up at the same moment of the
     same shot (stretched with the shot if its length changed) and leaves when it did, and gets the
     next lines of that shot's text, in order (a piece of 2 lines takes the next 2). Pieces that stay
@@ -4274,8 +4396,79 @@ def timed_text_items(pieces: list[dict], inspo_shots: list[dict], durations: lis
             continue
         a, b = round(to_video(p["start"], False), 2), round(to_video(p["end"], True), 2)
         if b - a >= 0.15:
-            out.append({"text": words[k], "start": a, "end": b, "y": p["y"], "align": p.get("align")})
+            n_lines = max(1, len([ln for ln in words[k].split("\n") if ln.strip()]))
+            out.append({"text": words[k], "start": a, "end": b, "y": p["y"], "align": p.get("align"),
+                        **block_look(p, base_letter),
+                        # Its height on screen, roughly (a line is about 1.75 capital letters tall).
+                        "_h": n_lines * (p.get("letterHeight") or base_letter or 0.04) * 1.75})
+    out = fit_blocks_to_safe(out)
+    for x in out:
+        x.pop("_h", None)
     return out
+
+
+def block_look(p: dict, base_letter: float | None) -> dict:
+    """A text block's own look from the inspo, as text item fields (size relative to the video's text)."""
+    out = {k: p[k] for k in ("color", "font", "look") if p.get(k)}
+    if p.get("boxColor"):
+        out["boxColor"] = p["boxColor"]
+    if p.get("letterHeight") and base_letter:
+        out["size"] = round(min(3.0, max(0.25, p["letterHeight"] / base_letter)), 2)
+    x = p.get("x")
+    if isinstance(x, (int, float)):
+        align = p.get("align") or "center"
+        if align == "center":
+            out["x"] = CENTER_X if abs(x - 0.5) < 0.08 else round(min(0.8, max(0.15, x)), 3)
+        elif align == "left":
+            out["x"] = round(min(0.5, max(SAFE["left"], x)), 3)
+        else:
+            out["x"] = round(min(SAFE["right"], max(0.5, x)), 3)
+    return out
+
+
+def fit_blocks_to_safe(items: list[dict]) -> list[dict]:
+    """Inspo text laid out past TikTok's and Instagram's buttons (a price near the bottom, a line at the
+    very top). Groups of text that sit together are moved as one, just enough to clear the buttons, so
+    every block keeps its size and its place in its group, and the rest stays exactly where it was.
+    When that can't work (groups would run into each other), the whole layout is squeezed instead."""
+    placed = [x for x in items if isinstance(x.get("y"), (int, float))]
+    if not placed:
+        return items
+    lo, hi = SAFE["top"] + 0.01, SAFE["bottom"]
+    h = lambda x: x.get("_h") or 0.05  # noqa: E731
+    top = lambda x: x["y"] - h(x) / 2  # noqa: E731
+    bottom = lambda x: x["y"] + h(x) / 2  # noqa: E731
+    if min(map(top, placed)) >= lo and max(map(bottom, placed)) <= hi:
+        return items
+    order = sorted(placed, key=lambda x: x["y"])
+    groups: list[list[dict]] = [[order[0]]]
+    for x in order[1:]:
+        if top(x) - max(map(bottom, groups[-1])) < 0.06:
+            groups[-1].append(x)
+        else:
+            groups.append([x])
+    shifts = []
+    for g in groups:
+        g0, g1 = min(map(top, g)), max(map(bottom, g))
+        shifts.append(lo - g0 if g0 < lo else (hi - g1 if g1 > hi else 0.0))
+    spans = [(min(map(top, g)) + d, max(map(bottom, g)) + d) for g, d in zip(groups, shifts)]
+    fits = all(b - a <= hi - lo + 1e-6 for a, b in spans) and all(
+        spans[i][1] + 0.01 <= spans[i + 1][0] for i in range(len(spans) - 1))
+    if fits:
+        for g, d in zip(groups, shifts):
+            for x in g:
+                x["y"] = round(x["y"] + d, 3)
+        print(f"inspo text moved clear of the app's buttons: {[round(d, 3) for d in shifts]}")
+        return items
+    y0, y1 = min(map(top, placed)), max(map(bottom, placed))
+    a, b = min(y0, lo), max(y1, hi)
+    k = (hi - lo) / max(1e-6, b - a)
+    for x in placed:
+        x["y"] = round(lo + (x["y"] - a) * k, 3)
+        if k < 0.95:
+            x["size"] = round(max(0.25, (x.get("size") or 1.0) * max(0.75, k)), 2)
+    print(f"inspo text layout squeezed into the safe area ({y0:.2f}-{y1:.2f} → {lo:.2f}-{hi:.2f})")
+    return items
 
 
 # ---- "keep the text on the whole video": done by the code, not left to the model
@@ -4467,10 +4660,11 @@ def clean_text_items(raw, total: float) -> list[dict] | None:
             "text": x["text"].strip()[:300], "start": round(a, 2), "end": round(b, 2),
             "y": num("y", 0.0, 1.0), "x": num("x", 0.0, 1.0),
             "align": x.get("align") if x.get("align") in TEXT_ALIGNS else None,
-            "size": num("size", 0.4, 2.5) or 1.0,
+            "size": num("size", 0.25, 3.0) or 1.0,
             "color": x["color"].upper() if isinstance(x.get("color"), str) and re.match(COLOR_RE, x["color"]) else None,
             "font": x.get("font") if x.get("font") in FONTS else None,
             "look": x.get("look") if x.get("look") in TEXT_ITEM_LOOKS else None,
+            **({"boxColor": x["boxColor"].upper()} if isinstance(x.get("boxColor"), str) and re.match(COLOR_RE, x["boxColor"]) else {}),
             "animation": x.get("animation") if x.get("animation") in TEXT_ANIMATIONS else None,
             # Copies of one text shown on separate shots (the site's editor edits them as one).
             **({"group": x["group"]} if isinstance(x.get("group"), str) and re.match(r"^[\w-]{1,24}$", x["group"]) else {}),
@@ -4555,7 +4749,7 @@ def item_style(style: dict, item: dict) -> dict:
         st["animation"] = item["animation"]
     lk = item.get("look")
     if lk == "box":
-        st.update(box=True, boxColor=st.get("boxColor") if style.get("box") else None, outline="none")
+        st.update(box=True, boxColor=item.get("boxColor") or (st.get("boxColor") if style.get("box") else None), outline="none")
     elif lk == "outline":
         st.update(box=False, outline=st.get("outline") if st.get("outline") not in (None, "none") else "thick")
     elif lk == "plain":
@@ -5791,7 +5985,7 @@ Looks over the whole video (usually none):
 Color filters: """ + ", ".join(COLOR_FILTERS) + """
 Sound effects:
 """ + catalog(SFX_INFO) + """
-Fonts: clean_sans (geometric sans, tiktok's classic), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact), tall_caps (thin tall capitals), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful).
+Fonts: social_sans (tiktok's own text font, semibold), clean_sans (wider geometric sans), heavy_sans (very heavy wide sans), condensed (tall narrow bold, like impact), tall_caps (thin tall capitals), serif, typewriter, marker (handwritten marker), script (cursive), rounded (rounded bold, playful).
 Text looks: outline (colored text with a dark outline), box (text on a solid box), plain (no outline, soft shadow).
 Text sizes: small (a label), medium, large (a headline), xl (fills the width).
 Text animations: none, pop (scales up), fade, typewriter (letter by letter), word_by_word, slide_up."""
@@ -7177,12 +7371,21 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
         except Exception as e:  # noqa: BLE001
             print(f"style analysis failed: {type(e).__name__}: {e}")
             inspo_style = default_inspo_style(n)
+    if (isinstance(inspo_style, dict) and new_style is None and int(inspo_style.get("textTimelineVersion") or 1) < TEXT_TIMELINE_VERSION
+            and any((s.get("onScreenText") or "").strip() for s in shots)):
+        # Analyzed before each text block's own place, size and color were read: read the text again (once).
+        report("analyzing", 6)
+        timed = _safe(text_timeline, inspo_path, shots[-1]["startS"] + shots[-1]["durationS"], shots, workdir)
+        if timed:
+            inspo_style = {**inspo_style, "textTimeline": timed[0], "textTimelineVersion": TEXT_TIMELINE_VERSION}
+            cost += timed[1]
+            new_style = inspo_style
     base = default_inspo_style(n)
     inspo_style = {**base, **{k: v for k, v in inspo_style.items() if v is not None}}
     spots = (list(inspo_style.get("textSpots") or []) + [None] * n)[:n]
     inspo_lines = [edit_text(t) for t in (list(inspo_style.get("textLines") or []) + [None] * n)[:n]]
     text_pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
-    reveals = bool(text_pieces) and has_text_reveals(text_pieces, shots)
+    reveals = bool(text_pieces) and (has_text_reveals(text_pieces, shots) or has_text_layers(text_pieces))
     if reveals:
         # Text that pops up at several moments: each shot's text is one line per piece that pops up in
         # it, in order, so the words written for it (or copied) go back onto the same moments.
@@ -7724,9 +7927,19 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     pieces = inspo_style.get("textTimeline") if isinstance(inspo_style.get("textTimeline"), list) else []
     kept_inspo = [breakdown["shots"][k] for k in shot_indexes if k < len(breakdown["shots"])]
     if (text_items_raw is None and pieces and not jump and len(kept_inspo) == len(durations)
-            and has_text_reveals(pieces, breakdown["shots"])):
-        # The inspo's text pops up at several moments: the user's video does the same.
-        text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts)
+            and (has_text_reveals(pieces, breakdown["shots"]) or has_text_layers(pieces))):
+        # The inspo's text pops up at several moments, or has several blocks up together (each with its
+        # own place, size and color): the user's video does the same.
+        # Sizes relative to the inspo's main text, so a bigger or smaller text asked for scales them all.
+        base_letter = inspo_text.get("letterHeight") or TEXT_SIZES.get(inspo_text.get("size"), TEXT_SIZES["large"])
+        text_items_raw = timed_text_items(pieces, kept_inspo, durations, plan_texts, base_letter)
+        for x in text_items_raw:
+            if preset:  # a text look picked in the options wins over the inspo's colors and fonts
+                for k in ("color", "font", "look", "boxColor"):
+                    x.pop(k, None)
+            if align_choice:
+                x.pop("x", None)
+                x["align"] = align_choice
         print(f"text rhythm from the inspo: {len(text_items_raw)} pieces "
               + "; ".join(f"{x['start']}-{x['end']} {x['text'][:24]!r}" for x in text_items_raw))
     text_items = clean_text_items(text_items_raw, sum(durations))

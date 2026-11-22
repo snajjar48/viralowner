@@ -11,6 +11,7 @@ import type { TextLook } from "@/lib/video-options";
 
 export const TEXT_FONT_CHOICES: { id: string; name: string }[] = [
   { id: "clean_sans", name: "clean (bold)" },
+  { id: "social_sans", name: "social" },
   { id: "semibold_sans", name: "classic" },
   { id: "heavy_sans", name: "heavy" },
   { id: "condensed", name: "condensed" },
@@ -96,8 +97,8 @@ export function TextLookControls({
         <span className="text-muted">size ({Math.round((value.size ?? 1) * 100)}%)</span>
         <input
           type="range"
-          min={0.5}
-          max={2}
+          min={0.25}
+          max={3}
           step={0.05}
           value={value.size ?? 1}
           disabled={disabled}

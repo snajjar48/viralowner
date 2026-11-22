@@ -73,7 +73,19 @@ export interface InspoStyle {
   /** The inspo's own speech captions: where they sit (vertical center) and our closest caption style. */
   captions?: { y: number | null; look: CaptionStyleId | null } | null;
   /** When each piece of overlaid text pops up and goes (seconds of the inspo), e.g. lines stacking up. */
-  textTimeline?: { text: string; start: number; end: number; y: number; align?: string }[];
+  textTimeline?: {
+    text: string;
+    start: number;
+    end: number;
+    y: number;
+    align?: string;
+    /** Each block's own place and look (text timelines from version 2 on). */
+    x?: number;
+    letterHeight?: number;
+    color?: string;
+    font?: string;
+    look?: "outline" | "box" | "plain";
+  }[];
   /** Analysis version (older ones are redone on their next render). */
   version?: number;
 }

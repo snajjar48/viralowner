@@ -1,4 +1,4 @@
-import { Anton, Archivo_Black, Bebas_Neue, Courier_Prime, DM_Serif_Display, Lilita_One, Montserrat, Pacifico, Permanent_Marker } from "next/font/google";
+import { Anton, Archivo_Black, Bebas_Neue, Courier_Prime, DM_Serif_Display, Lilita_One, Montserrat, Pacifico, Permanent_Marker, TikTok_Sans } from "next/font/google";
 
 /**
  * The fonts the finished video draws text with (FONTS in worker/app.py, the same Google font
@@ -15,6 +15,7 @@ const courier = Courier_Prime({ subsets: ["latin"], display: "swap", preload: fa
 const marker = Permanent_Marker({ subsets: ["latin"], display: "swap", preload: false, adjustFontFallback: false, weight: "400" });
 const pacifico = Pacifico({ subsets: ["latin"], display: "swap", preload: false, adjustFontFallback: false, weight: "400" });
 const lilita = Lilita_One({ subsets: ["latin"], display: "swap", preload: false, adjustFontFallback: false, weight: "400" });
+const social = TikTok_Sans({ subsets: ["latin"], display: "swap", preload: false, adjustFontFallback: false, weight: "600" });
 
 export const VIDEO_FONTS: Record<string, { family: string; weight: number }> = {
   clean_sans: { family: montserrat.style.fontFamily, weight: 700 },
@@ -27,6 +28,7 @@ export const VIDEO_FONTS: Record<string, { family: string; weight: number }> = {
   marker: { family: marker.style.fontFamily, weight: 400 },
   script: { family: pacifico.style.fontFamily, weight: 400 },
   rounded: { family: lilita.style.fontFamily, weight: 400 },
+  social_sans: { family: social.style.fontFamily, weight: 600 },
 };
 
 export const videoFont = (key: string) => VIDEO_FONTS[key] ?? VIDEO_FONTS.clean_sans;

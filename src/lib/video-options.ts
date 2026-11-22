@@ -103,7 +103,7 @@ export const TEXT_STYLES: { id: Exclude<TextStyleId, "auto">; name: string; desc
 ];
 const TEXT_STYLE_IDS: TextStyleId[] = ["auto", ...TEXT_STYLES.map((s) => s.id)];
 
-export const TEXT_FONTS = ["clean_sans", "semibold_sans", "heavy_sans", "condensed", "tall_caps", "serif", "typewriter", "marker", "script", "rounded"];
+export const TEXT_FONTS = ["clean_sans", "semibold_sans", "heavy_sans", "condensed", "tall_caps", "serif", "typewriter", "marker", "script", "rounded", "social_sans"];
 export const TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_up"];
 export const TEXT_ITEMS_MAX = 20;
 
@@ -116,7 +116,7 @@ export function textLookFrom(raw: Record<string, unknown>): Required<TextLook> {
     y: clampNum(raw.y, 0, 1),
     x: clampNum(raw.x, 0, 1),
     align: raw.align === "left" || raw.align === "right" || raw.align === "center" ? raw.align : null,
-    size: clampNum(raw.size, 0.4, 2.5) ?? 1,
+    size: clampNum(raw.size, 0.25, 3) ?? 1,
     color: typeof raw.color === "string" && /^#[0-9a-f]{6}$/i.test(raw.color) ? raw.color.toUpperCase() : null,
     font: typeof raw.font === "string" && TEXT_FONTS.includes(raw.font) ? raw.font : null,
     look: raw.look === "outline" || raw.look === "box" || raw.look === "plain" ? raw.look : null,

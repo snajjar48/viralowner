@@ -6,7 +6,7 @@ import { loadProject } from "@/lib/project-page";
 import { getInspiration, listClips } from "@/lib/projects";
 import { clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
-import { isOneTake } from "@/lib/processing/types";
+import { isOneTake, type InspoStyle, type TextStyle } from "@/lib/processing/types";
 import { TEXT_ITEMS_MAX, type OptionTextItem } from "@/lib/video-options";
 import { OptionsForm } from "./options-form";
 
@@ -55,8 +55,9 @@ async function Options({ id }: { id: string }) {
   // The original's on-screen text as pieces (a run of shots showing the same words is one piece), at
   // its height on screen: "write my own" can start from it.
   const style = inspo.breakdown.style;
-  const originalText: OptionTextItem[] = [];
-  inspo.breakdown.shots.forEach((shot, i) => {
+  const blocks = style?.textTimeline?.some((b) => b.letterHeight) ? style.textTimeline : null;
+  const originalText: OptionTextItem[] = blocks ? originalBlocks(blocks, style!.text) : [];
+  if (!blocks) inspo.breakdown.shots.forEach((shot, i) => {
     const text = (style?.textLines?.[i] ?? shot.onScreenText ?? "").trim();
     if (!text) return;
     const last = originalText.at(-1);
@@ -84,4 +85,37 @@ async function Options({ id }: { id: string }) {
       />
     </FlowShell>
   );
+}
+
+const LETTER = { small: 0.028, medium: 0.038, large: 0.052, xl: 0.075 };
+
+/**
+ * The original's text blocks (a location, a title, a price, small print...), each with its own time,
+ * place, size and color. A layout running into TikTok's buttons is squeezed into the safe area, every
+ * block keeping its place relative to the others (as the worker does).
+ */
+function originalBlocks(blocks: NonNullable<InspoStyle["textTimeline"]>, text: TextStyle): OptionTextItem[] {
+  const base = text.letterHeight ?? LETTER[text.size] ?? LETTER.large;
+  const r = (v: number, k = 1000) => Math.round(v * k) / k;
+  const [lo, hi] = [0.145, 0.73];
+  const ys = blocks.map((b) => b.y);
+  const [y0, y1] = [Math.min(...ys), Math.max(...ys)];
+  const [a, b] = [Math.min(y0, lo), Math.max(y1, hi)];
+  const k = (hi - lo) / Math.max(1e-6, b - a);
+  return blocks.map((bl) => {
+    const align = bl.align === "left" || bl.align === "right" ? bl.align : "center";
+    const size = bl.letterHeight ? Math.min(3, Math.max(0.25, (bl.letterHeight / base) * (k < 0.95 ? Math.max(0.75, k) : 1))) : 1;
+    return {
+      text: bl.text,
+      start: r(bl.start, 100),
+      end: r(bl.end, 100),
+      y: r(lo + (bl.y - a) * k),
+      align,
+      ...(typeof bl.x === "number" && !(align === "center" && Math.abs(bl.x - 0.5) < 0.08) ? { x: r(bl.x) } : {}),
+      size: r(size, 100),
+      ...(bl.color ? { color: bl.color } : {}),
+      ...(bl.font ? { font: bl.font } : {}),
+      ...(bl.look ? { look: bl.look } : {}),
+    };
+  });
 }
