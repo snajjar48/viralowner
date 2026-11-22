@@ -89,6 +89,7 @@ const FONT_NAMES: Record<string, string> = {
   marker: "marker",
   script: "script",
   rounded: "rounded",
+  social_sans: "social",
 };
 
 function countList(values: string[], names: Record<string, string>) {

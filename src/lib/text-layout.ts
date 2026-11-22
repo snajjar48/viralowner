@@ -30,6 +30,7 @@ export const FONT_METRICS: Record<string, { em: number; cap: number }> = {
   marker: { em: 0.70089, cap: 0.77 },
   script: { em: 0.5168, cap: 0.89 },
   rounded: { em: 0.87489, cap: 0.7 },
+  social_sans: { em: 0.73529, cap: 0.71 },
 };
 
 export const DEFAULT_STYLE: TextStyle = {

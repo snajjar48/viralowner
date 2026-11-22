@@ -1,5 +1,6 @@
 "use client";
 
+import { videoFont } from "@/app/projects/[id]/preview/video-fonts";
 import { CAPTION_STYLES, TEXT_STYLES, type CaptionStyleId, type TextStyleId } from "@/lib/video-options";
 
 /** A tiny visual sample of each caption style. */
@@ -84,6 +85,15 @@ function TextSample({ id }: { id: TextStyleId }) {
     case "classic":
       // The same look as the "outline" captions.
       return <span className={`${base} font-semibold text-white`} style={stroke(3)}>pov: you</span>;
+    case "social":
+      return (
+        <span
+          className={`${base} text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.7)]`}
+          style={{ fontFamily: videoFont("social_sans").family, fontWeight: 600 }}
+        >
+          pov: you
+        </span>
+      );
     case "bold-pop":
       return <span className={`${base} font-black text-[#FFD84D]`} style={stroke(3)}>pov: you</span>;
     case "boxed":

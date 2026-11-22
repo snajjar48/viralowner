@@ -10,7 +10,7 @@ export type TextAlign = "inspo" | "left" | "center" | "right";
 export type MusicMode = "original" | "inspo" | "upload" | "none";
 export type CaptionStyleId = "bold-pop" | "clean" | "outline" | "bold-outline" | "boxed" | "karaoke";
 /** auto: the inspo's text style (remakes), or ours (start from scratch). Otherwise a fixed look. */
-export type TextStyleId = "auto" | "classic" | "bold-pop" | "boxed" | "dark-box" | "headline" | "handwritten" | "neon";
+export type TextStyleId = "auto" | "classic" | "social" | "bold-pop" | "boxed" | "dark-box" | "headline" | "handwritten" | "neon";
 
 /** How one piece of on-screen text looks and where it sits (null / missing = the video's own). */
 export interface TextLook {
@@ -107,6 +107,7 @@ const CAPTION_IDS = CAPTION_STYLES.map((s) => s.id);
 /** On-screen text looks (the worker has the same ids in TEXT_PRESETS). */
 export const TEXT_STYLES: { id: Exclude<TextStyleId, "auto">; name: string; description: string }[] = [
   { id: "classic", name: "classic", description: "white with a black stroke" },
+  { id: "social", name: "social", description: "the app's own text: white, soft shadow" },
   { id: "bold-pop", name: "bold pop", description: "heavy yellow with a black stroke" },
   { id: "boxed", name: "boxed", description: "black text on a white box" },
   { id: "dark-box", name: "dark box", description: "white text on a black box" },

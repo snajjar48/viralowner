@@ -1753,6 +1753,8 @@ TEXT_ANIMATIONS = ["none", "pop", "fade", "typewriter", "word_by_word", "slide_u
 TEXT_PRESETS = {
     # classic: exactly the "outline" captions' look (same font, white, the same black stroke for its size).
     "classic": {"font": "semibold_sans", "color": "#FFFFFF", "outline": "caption", "outlineColor": "#000000", "box": False, "shadow": False},
+    # social: the apps' own on-screen text (white, a soft shadow, no stroke).
+    "social": {"font": "social_sans", "color": "#FFFFFF", "outline": "none", "box": False, "shadow": True},
     "bold-pop": {"font": "heavy_sans", "color": "#FFD84D", "outline": "thick", "outlineColor": "#000000", "box": False, "shadow": False},
     "boxed": {"font": "clean_sans", "color": "#000000", "outline": "none", "box": True, "boxColor": "#FFFFFF", "shadow": False},
     "dark-box": {"font": "clean_sans", "color": "#FFFFFF", "outline": "none", "box": True, "boxColor": "#000000", "shadow": False},
