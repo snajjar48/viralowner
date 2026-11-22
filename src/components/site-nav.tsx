@@ -207,7 +207,7 @@ function Nav({ path }: { path: string | null }) {
 
 function ProBadge() {
   return (
-    <span className="rounded-full bg-linear-to-r from-violet to-coral px-1.5 py-px text-[10px] font-medium text-white">Pro</span>
+    <span className="rounded-full bg-linear-to-r from-violet to-coral px-1.5 py-px text-[10px] font-medium text-white">Plus</span>
   );
 }
 

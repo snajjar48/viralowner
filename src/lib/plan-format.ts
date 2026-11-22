@@ -1,17 +1,30 @@
 // Plan shapes, limits and display helpers, safe to use in the browser.
 
-export type Tier = "basic" | "pro";
+export type Tier = "basic" | "plus" | "pro";
 export type Interval = "monthly" | "yearly";
 /** e.g. "basic-monthly". Stored on profiles.plan. */
 export type PlanId = `${Tier}-${Interval}`;
 
-export const TIERS: Tier[] = ["basic", "pro"];
+export const TIERS: Tier[] = ["basic", "plus", "pro"];
 export const INTERVALS: Interval[] = ["monthly", "yearly"];
 
-export const TIER_NAMES: Record<Tier, string> = { basic: "Basic", pro: "Pro" };
+export const TIER_NAMES: Record<Tier, string> = { basic: "Basic", plus: "Plus", pro: "Pro" };
 
 /** Videos per month (yearly plans get the same, reset monthly). */
-export const VIDEO_LIMITS: Record<Tier, number> = { basic: 10, pro: 30 };
+export const VIDEO_LIMITS: Record<Tier, number> = { basic: 8, plus: 12, pro: 18 };
+
+/** "Start from scratch" comes with Plus and Pro. */
+export const tierHasScratch = (tier: Tier) => tier !== "basic";
+
+/**
+ * Each plan's price, in cents (the admin's "create the plan prices" button makes these in Stripe; the
+ * site then shows whatever Stripe has, so a price changed in Stripe shows up without a deploy).
+ */
+export const PLAN_PRICES: Record<Tier, Record<Interval, number>> = {
+  basic: { monthly: 2400, yearly: 24000 },
+  plus: { monthly: 2900, yearly: 29000 },
+  pro: { monthly: 3900, yearly: 39000 },
+};
 
 /** Change requests / re-renders included with each video. */
 export const CHANGES_PER_VIDEO = 3;
@@ -30,7 +43,7 @@ export type Plan = {
 };
 
 export function isTier(value: unknown): value is Tier {
-  return value === "basic" || value === "pro";
+  return value === "basic" || value === "plus" || value === "pro";
 }
 
 export function isInterval(value: unknown): value is Interval {

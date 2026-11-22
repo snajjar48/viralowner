@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-// "Start from scratch" (Pro): describe the video, then add clips. No inspo.
+// "Start from scratch" (Plus and Pro): describe the video, then add clips. No inspo.
 export default function ScratchPage() {
   return (
     <FlowShell>
@@ -36,17 +36,17 @@ async function Start() {
     return (
       <div className="flex flex-col items-center gap-5 text-center">
         <span className="rounded-full bg-linear-to-r from-violet to-coral px-3 py-1 text-xs font-medium text-white">
-          Pro
+          Plus
         </span>
         <PageTitle
-          title="start from scratch is part of Pro"
+          title="start from scratch comes with Plus and Pro"
           subtitle="upload your clips, describe the video you want in your own words, and we edit the whole thing for you. no example video needed."
         />
         {m.plan?.tier === "basic" ? (
-          <ManageBillingButton label="upgrade to Pro" />
+          <ManageBillingButton label="upgrade to Plus" />
         ) : (
           <Link href="/plans" className={`${buttonClass} flex max-w-sm items-center justify-center`}>
-            choose Pro
+            choose a plan
           </Link>
         )}
         <Link href="/dashboard" className="text-sm text-muted underline underline-offset-4 hover:text-foreground">

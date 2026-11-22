@@ -5,6 +5,8 @@ import { useState } from "react";
 import {
   CHANGES_PER_VIDEO,
   formatMoney,
+  TIER_NAMES,
+  TIERS,
   TRIAL_CHANGES,
   VIDEO_LIMITS,
   type Interval,
@@ -21,7 +23,8 @@ const BASIC_ITEMS = [
 ];
 
 const TIER_INFO: Record<Tier, { tagline: string; items: string[]; scratch?: boolean }> = {
-  basic: { tagline: "for posting a few times a week", items: BASIC_ITEMS },
+  basic: { tagline: "for posting a couple of times a week", items: BASIC_ITEMS },
+  plus: { tagline: "for posting most days", items: BASIC_ITEMS, scratch: true },
   pro: { tagline: "for posting every day", items: BASIC_ITEMS, scratch: true },
 };
 
@@ -59,14 +62,14 @@ export function PricingTable({ plans, cta }: { plans: Plan[] | null; cta: { href
         </div>
       </div>
 
-      <div className="mx-auto grid w-full max-w-4xl gap-4 md:grid-cols-2">
-        {(["basic", "pro"] as const).map((tier) => {
+      <div className="mx-auto grid w-full max-w-6xl gap-4 md:grid-cols-3">
+        {TIERS.map((tier) => {
           const p = price(tier, interval);
           const perMonth = p && interval === "yearly" ? formatMoney(Math.round(p.amount / 12), p.currency) : null;
           return (
             <Card
               key={tier}
-              name={tier === "basic" ? "Basic" : "Pro"}
+              name={TIER_NAMES[tier]}
               tagline={TIER_INFO[tier].tagline}
               amount={p ? (perMonth ?? formatMoney(p.amount, p.currency)) : "—"}
               per={p ? "/month" : ""}
@@ -80,7 +83,7 @@ export function PricingTable({ plans, cta }: { plans: Plan[] | null; cta: { href
               items={[`${VIDEO_LIMITS[tier]} videos a month`, `${CHANGES_PER_VIDEO} changes per video`, ...TIER_INFO[tier].items]}
               scratch={TIER_INFO[tier].scratch}
               cta={cta}
-              featured={tier === "pro"}
+              featured={tier === "plus"}
             />
           );
         })}
@@ -121,7 +124,7 @@ function Card({
     >
       {featured && (
         <span className="absolute -top-3 left-6 rounded-full bg-linear-to-r from-violet to-coral px-3 py-1 text-xs font-medium text-white">
-          includes start from scratch
+          recommended
         </span>
       )}
       <div className="flex flex-col gap-1">

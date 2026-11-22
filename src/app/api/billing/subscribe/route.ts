@@ -28,7 +28,7 @@ export async function POST(request: Request) {
   if (body.acceptTerms !== true) {
     return Response.json({ error: "Please accept the terms to subscribe." }, { status: 400 });
   }
-  const priceId = priceIdFor(body.tier, body.interval);
+  const priceId = await priceIdFor(body.tier, body.interval);
   if (!priceId) return Response.json({ error: "Plans aren’t set up yet." }, { status: 500 });
 
   try {

@@ -71,7 +71,7 @@ export default function WhatIsPage() {
       <Section eyebrow="no video to copy? no problem." title="or just describe it.">
         <div className="grid max-w-4xl gap-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:grid-cols-[1fr_1fr] sm:p-8">
           <p className="text-pretty text-muted">
-            on Pro, you can start from scratch: write what you want the way you’d brief an editor (“a 15 second video of
+            on Plus and Pro, you can start from scratch: write what you want the way you’d brief an editor (“a 15 second video of
             our smoothies being made, cut to the beat, ending on the logo”), add your clips and we plan the whole edit.
           </p>
           <ul className="flex flex-col gap-2.5">
@@ -109,7 +109,7 @@ export default function WhatIsPage() {
       <Section eyebrow="what you need" title="a phone and a few minutes.">
         <div className="grid gap-10 md:grid-cols-2">
           <ul className="flex flex-col gap-3">
-            <Check>a video you’d like to remake (or, on Pro, a description of the one you want)</Check>
+            <Check>a video you’d like to remake (or, on Plus and Pro, a description of the one you want)</Check>
             <Check>a few clips from your phone, uploaded as they are</Check>
             <Check>your business name and the words you use, once, so we spell them right forever</Check>
           </ul>

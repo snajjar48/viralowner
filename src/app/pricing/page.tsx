@@ -3,37 +3,37 @@ import { pageMetadata } from "@/lib/seo";
 import { breadcrumbs, JsonLd } from "@/components/structured-data";
 import { Fragment, Suspense } from "react";
 import { Faq, JoinSection, MAIN_CTA, MarketingShell, Section } from "@/components/marketing";
-import { CHANGES_PER_VIDEO, PRICING_PAGE_PUBLIC, VIDEO_LIMITS } from "@/lib/plan-format";
+import { CHANGES_PER_VIDEO, PRICING_PAGE_PUBLIC, TIER_NAMES, VIDEO_LIMITS } from "@/lib/plan-format";
 import { redirect } from "next/navigation";
 import { getPlans } from "@/lib/plans";
 import { PricingTable } from "./pricing-table";
 
 export const metadata: Metadata = pageMetadata({
   title: "pricing: plans for viral video editing, first video free",
-  description: `viralowner pricing: Basic gets ${VIDEO_LIMITS.basic} videos a month, Pro gets ${VIDEO_LIMITS.pro} plus start from scratch. ${CHANGES_PER_VIDEO} changes on every video, and your first video is free on both plans.`,
+  description: `viralowner pricing: Basic gets ${VIDEO_LIMITS.basic} videos a month, Plus ${VIDEO_LIMITS.plus} and Pro ${VIDEO_LIMITS.pro}, both with start from scratch. ${CHANGES_PER_VIDEO} changes on every video, and your first video is free.`,
   path: "/pricing",
 });
 
-/** Basic, Pro. `group` starts a labelled block; `sub` rows are part of the block above. */
-const COMPARE: { label: string; cells: [string, string]; group?: string; sub?: boolean }[] = [
-  { label: "videos a month", cells: [`${VIDEO_LIMITS.basic}`, `${VIDEO_LIMITS.pro}`] },
-  { label: "changes per video", cells: [`${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`] },
-  { label: "first video free (free trial)", cells: ["✓", "✓"] },
-  { label: "remake any viral video with your clips", cells: ["✓", "✓"] },
-  { label: "free preview before it’s made", cells: ["✓", "✓"] },
-  { label: "word-by-word captions, every style", cells: ["✓", "✓"] },
-  { label: "fix caption words yourself (free)", cells: ["✓", "✓"] },
-  { label: "on-screen text styles", cells: ["✓", "✓"] },
-  { label: "your business profile on every video", cells: ["✓", "✓"] },
-  { label: "your own audio", cells: ["✓", "✓"] },
-  { label: "post caption written for you", cells: ["✓", "✓"] },
-  { label: "full quality download", cells: ["✓", "✓"] },
-  { group: "start from scratch", label: "make your own viral video from your clips", cells: ["", "✓"] },
-  { label: "no viral video needed to start", cells: ["", "✓"], sub: true },
-  { label: "describe the video in your own words", cells: ["", "✓"], sub: true },
-  { label: "shots, text and captions planned for you", cells: ["", "✓"], sub: true },
-  { label: "transitions and sound effects picked for you", cells: ["", "✓"], sub: true },
-  { label: "cut to the beat of your own song", cells: ["", "✓"], sub: true },
+/** Basic, Plus, Pro. `group` starts a labelled block; `sub` rows are part of the block above. */
+const COMPARE: { label: string; cells: [string, string, string]; group?: string; sub?: boolean }[] = [
+  { label: "videos a month", cells: [`${VIDEO_LIMITS.basic}`, `${VIDEO_LIMITS.plus}`, `${VIDEO_LIMITS.pro}`] },
+  { label: "changes per video", cells: [`${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`, `${CHANGES_PER_VIDEO}`] },
+  { label: "first video free (free trial)", cells: ["✓", "✓", "✓"] },
+  { label: "remake any viral video with your clips", cells: ["✓", "✓", "✓"] },
+  { label: "free preview before it’s made", cells: ["✓", "✓", "✓"] },
+  { label: "word-by-word captions, every style", cells: ["✓", "✓", "✓"] },
+  { label: "fix caption words yourself (free)", cells: ["✓", "✓", "✓"] },
+  { label: "on-screen text styles", cells: ["✓", "✓", "✓"] },
+  { label: "your business profile on every video", cells: ["✓", "✓", "✓"] },
+  { label: "your own audio", cells: ["✓", "✓", "✓"] },
+  { label: "post caption written for you", cells: ["✓", "✓", "✓"] },
+  { label: "full quality download", cells: ["✓", "✓", "✓"] },
+  { group: "start from scratch", label: "make your own viral video from your clips", cells: ["", "✓", "✓"] },
+  { label: "no viral video needed to start", cells: ["", "✓", "✓"], sub: true },
+  { label: "describe the video in your own words", cells: ["", "✓", "✓"], sub: true },
+  { label: "shots, text and captions planned for you", cells: ["", "✓", "✓"], sub: true },
+  { label: "transitions and sound effects picked for you", cells: ["", "✓", "✓"], sub: true },
+  { label: "cut to the beat of your own song", cells: ["", "✓", "✓"], sub: true },
 ];
 
 export default function PricingPage() {
@@ -48,7 +48,7 @@ export default function PricingPage() {
             your first video is free.
           </h1>
           <p className="max-w-xl text-lg text-pretty text-muted">
-            both plans start with a free trial: your first video is on us. no contracts, cancel anytime.
+            every plan starts with a free trial: your first video is on us. no contracts, cancel anytime.
           </p>
         </div>
       </section>
@@ -69,10 +69,13 @@ export default function PricingPage() {
                 <th scope="col" className="p-4 font-normal text-muted sm:p-5">
                   <span className="sr-only">feature</span>
                 </th>
-                <th scope="col" className="w-[22%] p-4 text-center font-semibold sm:p-5">
+                <th scope="col" className="w-[18%] p-4 text-center font-semibold sm:p-5">
                   Basic
                 </th>
-                <th scope="col" className="w-[22%] bg-linear-to-b from-violet/30 to-coral/10 p-4 text-center font-semibold sm:p-5">
+                <th scope="col" className="w-[18%] bg-linear-to-b from-violet/30 to-coral/10 p-4 text-center font-semibold sm:p-5">
+                  Plus
+                </th>
+                <th scope="col" className="w-[18%] p-4 text-center font-semibold sm:p-5">
                   Pro
                 </th>
               </tr>
@@ -87,9 +90,10 @@ export default function PricingPage() {
                         colSpan={2}
                         className="px-4 pt-6 pb-2 text-xs font-medium tracking-wide text-coral uppercase sm:px-5"
                       >
-                        {r.group} · Pro only
+                        {r.group} · Plus and Pro
                       </th>
                       <td className="bg-coral/[0.06]" />
+                      <td />
                     </tr>
                   )}
                   <tr className="border-b border-white/[0.06] last:border-0">
@@ -170,7 +174,7 @@ async function Tiers() {
             operatingSystem: "Web",
             offers: monthly.map((p) => ({
               "@type": "Offer",
-              name: `${p.tier === "basic" ? "Basic" : "Pro"} (monthly)`,
+              name: `${TIER_NAMES[p.tier]} (monthly)`,
               price: (p.amount / 100).toFixed(2),
               priceCurrency: p.currency.toUpperCase(),
               url: "https://www.viralowner.com/pricing",

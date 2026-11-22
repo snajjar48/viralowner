@@ -6,6 +6,7 @@ import {
   formatMoney,
   TIER_NAMES,
   TIERS,
+  tierHasScratch,
   TRIAL_CHANGES,
   VIDEO_LIMITS,
   yearlySavingsPercent,
@@ -18,11 +19,12 @@ export type Choice = "trial" | Tier;
 
 const TIER_VIDEOS: Record<Tier, string> = {
   basic: `${VIDEO_LIMITS.basic} videos a month`,
-  pro: `up to ${VIDEO_LIMITS.pro} videos a month`,
+  plus: `${VIDEO_LIMITS.plus} videos a month`,
+  pro: `${VIDEO_LIMITS.pro} videos a month`,
 };
 
 /**
- * The free trial (optional) and the Basic / Pro plans, with a monthly/yearly
+ * The free trial (optional) and the Basic / Plus / Pro plans, with a monthly/yearly
  * switch. Shows exact prices so the choice is never a surprise.
  */
 export function PlanPicker({
@@ -108,7 +110,7 @@ export function PlanPicker({
                 {TIER_VIDEOS[tier]}, {CHANGES_PER_VIDEO} changes per video
                 {monthly && ` · about ${monthly}/month, billed yearly`}
               </span>
-              {tier === "pro" && (
+              {tierHasScratch(tier) && (
                 <span className="flex items-start gap-1.5 text-sm text-pretty">
                   <span aria-hidden="true" className="text-coral">
                     ✦

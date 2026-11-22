@@ -36,7 +36,7 @@ export async function syncSubscription(sub: Stripe.Subscription) {
   }
 
   const item = sub.items.data[0];
-  const plan = planForPrice(item?.price.id);
+  const plan = await planForPrice(item?.price.id);
   const { error } = await admin
     .from("profiles")
     .update({
@@ -59,10 +59,10 @@ export async function syncSubscription(sub: Stripe.Subscription) {
 }
 
 let portalConfigId: string | undefined;
-const PORTAL_VERSION = "2"; // bump to roll out portal setting changes
+const PORTAL_VERSION = "3"; // bump to roll out portal setting changes (3: Basic, Plus and Pro)
 
 /**
- * A billing-portal configuration that only offers viralowner's plans (Basic and Pro, monthly and yearly), so
+ * A billing-portal configuration that only offers viralowner's plans (Basic, Plus and Pro, monthly and yearly), so
  * customers never see other products in the shared Stripe account. Created
  * once and reused; the account's default portal is never touched.
  */

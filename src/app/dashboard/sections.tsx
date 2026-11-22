@@ -55,11 +55,12 @@ export function CreateCards({ m }: { m: Membership }) {
             choose a plan
           </Link>
         ) : (
-          m.plan?.tier === "basic" && <ManageBillingButton label="upgrade to Pro" />
+          m.plan && m.plan.tier !== "pro" && <ManageBillingButton label={m.plan.tier === "basic" ? "upgrade to Plus" : "upgrade to Pro"} />
         )}
       </section>
     );
   }
+  // Start from scratch is shown to everyone on a plan (Basic sees it too, and is offered Plus when they tap it).
   const pro = !!(m.plan || m.unlimited);
   return (
     <section aria-label="make a video" className={`grid grid-cols-1 gap-3 ${pro ? "sm:grid-cols-2" : ""}`}>
@@ -75,7 +76,7 @@ export function CreateCards({ m }: { m: Membership }) {
           href="/scratch"
           icon={<WandIcon className="size-5" />}
           title="start from scratch"
-          badge="Pro"
+          badge="Plus"
           body="describe the video you want and add your clips. we plan the edit, text and captions."
         />
       )}

@@ -31,8 +31,8 @@ export default function TermsPage() {
 
         <Part title="Memberships">
           <p>
-            Basic includes {VIDEO_LIMITS.basic} videos a month. Pro includes up to {VIDEO_LIMITS.pro} videos a
-            month. Each video includes up to {CHANGES_PER_VIDEO} changes (a change request, an edit or a
+            Basic includes {VIDEO_LIMITS.basic} videos a month, Plus {VIDEO_LIMITS.plus} and Pro {VIDEO_LIMITS.pro}. Plus and Pro
+            also include start from scratch. Each video includes up to {CHANGES_PER_VIDEO} changes (a change request, an edit or a
             regenerate). If a video fails to make, trying again is free and doesn’t use a change.
           </p>
           <p>

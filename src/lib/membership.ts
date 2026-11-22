@@ -4,6 +4,7 @@ import { getSql } from "./db";
 import {
   CHANGES_PER_VIDEO,
   parsePlanId,
+  tierHasScratch,
   TRIAL_CHANGES,
   VIDEO_LIMITS,
   type Interval,
@@ -136,12 +137,13 @@ export function formatResetDate(iso: string) {
 
 export type Blocked = { reason: "subscribe" | "limit" | "pro"; message: string };
 
-/** "Start from scratch" is a Pro feature (and the owner's). */
+/** "Start from scratch" comes with Plus and Pro (and the owner's and testers' accounts). */
 export function canUseScratch(m: Membership) {
-  return m.unlimited || m.plan?.tier === "pro";
+  return m.unlimited || (!!m.plan && tierHasScratch(m.plan.tier));
 }
 
-export const SCRATCH_PRO_MESSAGE = "start from scratch is part of Pro. upgrade to make videos from just your clips and a prompt.";
+export const SCRATCH_PRO_MESSAGE =
+  "start from scratch comes with Plus and Pro. upgrade to make videos from just your clips and a prompt.";
 
 /** Can this account start a new video (count against trial or plan)? */
 export function canStartVideo(m: Membership): { as: "trial" | "plan" } | Blocked {

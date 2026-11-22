@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/admin-auth";
 import { services, stripeSummary } from "@/lib/admin-data";
 import { workerHealth } from "@/lib/worker";
 import { AdminShell, Badge, Card } from "../ui";
+import { PlanPricesButton } from "./plan-prices-button";
 
 export const metadata: Metadata = { title: "admin · services", robots: { index: false, follow: false } };
 
@@ -29,6 +30,14 @@ async function Services() {
     "Cloudflare R2": worker ? { ok: worker.checks.storage.ok, note: worker.checks.storage.ok ? "the worker can read and write" : "the worker can’t reach storage" } : undefined,
   };
   return (
+    <div className="flex flex-col gap-4">
+    <Card title="plans in Stripe">
+      <p className="text-sm text-muted">
+        makes Basic, Plus and Pro (monthly and yearly) in Stripe and switches the site to them. safe to press again: it only
+        makes what’s missing or changed.
+      </p>
+      <PlanPricesButton />
+    </Card>
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {services().map((s) => {
         const st = status[s.name];
@@ -51,6 +60,7 @@ async function Services() {
           </Card>
         );
       })}
+    </div>
     </div>
   );
 }

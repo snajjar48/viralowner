@@ -16,7 +16,7 @@ const GENERIC_ERROR = "Something went wrong. Please try again.";
  *  - free trial ({ choice: "trial" }): a SetupIntent that saves the card
  *    without charging it. Returns { kind: "setup", clientSecret, setupIntentId }.
  *    The trial is recorded by /api/billing/trial once the card is saved.
- *  - a plan ({ choice: "basic" | "pro", interval }): an incomplete subscription.
+ *  - a plan ({ choice: "basic" | "plus" | "pro", interval }): an incomplete subscription.
  *    Returns { kind: "payment", clientSecret, subscriptionId }; it activates
  *    once the browser pays the first invoice.
  * Card details go straight from the browser to Stripe, never to this server.
@@ -43,9 +43,9 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: "Please choose the free trial or a plan." }, { status: 400 });
   }
   // Only viralowner's own prices can be bought here.
-  const priceId = isTier(body.choice) && isInterval(body.interval) ? priceIdFor(body.choice, body.interval) : "";
+  const priceId = isTier(body.choice) && isInterval(body.interval) ? await priceIdFor(body.choice, body.interval) : "";
   if (!trial && !priceId) {
-    console.error("Signup failed: STRIPE_PRICE_* for", body.choice, body.interval, "not set.");
+    console.error("Signup failed: no Stripe price for", body.choice, body.interval);
     return Response.json({ error: "Plans aren’t set up yet." }, { status: 500 });
   }
 

@@ -189,7 +189,7 @@ const TUTORIALS: Tutorial[] = [
   {
     id: "scratch",
     name: "start from scratch",
-    intro: "no example video needed. describe what you want, add your clips, and we plan the whole edit. start from scratch is part of Pro.",
+    intro: "no example video needed. describe what you want, add your clips, and we plan the whole edit. start from scratch comes with Plus and Pro.",
     start: { label: "start from scratch", href: "/scratch" },
     steps: [
       {

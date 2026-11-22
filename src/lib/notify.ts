@@ -1,7 +1,7 @@
 import "server-only";
 import { getSql } from "./db";
 import { sendEmail, type Email } from "./email";
-import { CHANGES_PER_VIDEO, TIER_NAMES, TRIAL_CHANGES, VIDEO_LIMITS, type Tier } from "./plan-format";
+import { CHANGES_PER_VIDEO, TIER_NAMES, tierHasScratch, TRIAL_CHANGES, VIDEO_LIMITS, type Tier } from "./plan-format";
 import { getRender, isUuid } from "./projects";
 import { syncRender } from "./renders";
 import { siteUrl } from "./site-url";
@@ -157,7 +157,7 @@ export function trialWelcomeEmail(to: To): Email {
 }
 
 export function planWelcomeEmail(to: To, tier: Tier): Email {
-  const videos = tier === "pro" ? `up to ${VIDEO_LIMITS.pro}` : String(VIDEO_LIMITS.basic);
+  const videos = String(VIDEO_LIMITS[tier]);
   return {
     to: to.email,
     subject: `welcome to viralowner ${TIER_NAMES[tier]}`,
@@ -165,7 +165,7 @@ export function planWelcomeEmail(to: To, tier: Tier): Email {
     heading: `you’re on ${TIER_NAMES[tier]}.`,
     body: [
       hi(to.firstName),
-      `thanks for subscribing. you get ${videos} videos a month, each with ${CHANGES_PER_VIDEO} changes. your videos reset every month on the day you subscribed.`,
+      `thanks for subscribing. you get ${videos} videos a month, each with ${CHANGES_PER_VIDEO} changes${tierHasScratch(tier) ? ", and you can start from scratch (just your clips and a description)" : ""}. your videos reset every month on the day you subscribed.`,
       "stripe will email your receipt. you can switch plans, update your card or cancel anytime from your dashboard.",
     ],
     button: { label: "make a video", href: `${siteUrl()}/new` },

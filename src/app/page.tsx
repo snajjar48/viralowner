@@ -62,7 +62,7 @@ export default function Home() {
           <WayCard
             icon={<WandIcon className="size-5" />}
             title="start from scratch"
-            badge="Pro"
+            badge="Plus"
             body="no video in mind? describe what you want, like you would to an editor, add your clips, and we plan the whole edit."
           />
         </div>
@@ -94,7 +94,7 @@ export default function Home() {
         <Section eyebrow="pricing" title="your first video is free.">
           <div className="flex flex-col items-start gap-4 rounded-3xl border border-white/10 bg-white/[0.03] p-6 sm:flex-row sm:items-center sm:justify-between sm:p-8">
             <p className="max-w-xl text-pretty text-muted">
-              make one video, ask for a change, download it. then pick a monthly plan if you want more, with up to 30
+              make one video, ask for a change, download it. then pick a monthly plan if you want more, with up to 18
               videos a month and 3 changes on each.
             </p>
             <Link
