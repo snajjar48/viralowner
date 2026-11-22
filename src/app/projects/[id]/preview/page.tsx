@@ -10,6 +10,7 @@ import { clipPreviewUrl, clipThumbUrl } from "@/lib/clips";
 import { createDownloadUrl } from "@/lib/storage";
 import type { Shot } from "@/lib/processing/types";
 import { textItemsFromShots } from "@/lib/text-items";
+import { emojiRedoOffered } from "@/lib/emoji-kit-store";
 import { PreviewEditor } from "./preview-editor";
 
 export const metadata: Metadata = {
@@ -95,6 +96,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           textItems:
             current.plan?.textItems ?? current.plan?.textTimeline ?? textItemsFromShots(current.plan, scratch ? null : inspo!.breakdown!),
           textDefaults: current.plan?.textDefaults ?? null,
+          emojiRedo: await emojiRedoOffered(userId, current.plan),
           shotDurations: current.plan?.jumpcut ? null : (current.plan?.shotDurations ?? null),
           textContext: {
             style: current.plan?.textStyle ?? null,

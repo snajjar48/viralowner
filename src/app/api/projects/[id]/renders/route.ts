@@ -3,6 +3,7 @@ import { canUseScratch, claimRender, getMembership, SCRATCH_PRO_MESSAGE } from "
 import { listClips, listRenders, saveSettings, type Project, type Render } from "@/lib/projects";
 import type { Carry, Proof, RenderSettings, TextItem } from "@/lib/processing/types";
 import { headObject } from "@/lib/storage";
+import { emojiRedoOffered } from "@/lib/emoji-kit-store";
 import { checkRateLimit } from "@/lib/rate-limit";
 import {
   carryFrom,
@@ -51,6 +52,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     // edit: it doesn't use up a change.
     if (body.mode === "captions") return fixCaptions(userId, project, body);
     if (body.mode === "text") return changeText(userId, project, body);
+    if (body.mode === "emoji") return redoEmoji(userId, project, body);
     if (body.mode === "proof") return addProofs(userId, project, body);
 
     // Counts the video against the trial or plan on its first version, and
@@ -192,6 +194,14 @@ async function changeText(userId: string, project: Project, body: Record<string,
   if (!items) return jsonError("change the text first.", 400);
   if ("error" in items) return jsonError(items.error, items.status);
   return remakeSameEdit(userId, project, from, { textItems: items, textItemsByUser: true });
+}
+
+/** { mode: "emoji", fromVersion }: the same version again with the emoji from the maker's phone (free). */
+async function redoEmoji(userId: string, project: Project, body: Record<string, unknown>) {
+  const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+  if (!from?.plan) return jsonError("we couldn’t find that version.", 404);
+  if (!(await emojiRedoOffered(userId, from.plan))) return jsonError("this version already has your phone’s emoji.", 400);
+  return remakeSameEdit(userId, project, from, {});
 }
 
 /**

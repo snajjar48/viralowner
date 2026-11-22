@@ -67,6 +67,8 @@ export function PreviewEditor({
     textItems: TextItem[] | null;
     /** How this version draws text without a look of its own. */
     textDefaults: TextDefaults | null;
+    /** Its emoji aren't the ones from this account's phone (which it has now): a free remake fixes it. */
+    emojiRedo: boolean;
     /** Each shot's length in this version, in order (null: older versions and one-take videos). */
     shotDurations: number[] | null;
     /** The version's text style, size and spot (the preview draws text exactly as the next version will). */
@@ -104,7 +106,7 @@ export function PreviewEditor({
   const textChanged = JSON.stringify(textItems) !== JSON.stringify(current.textItems);
   const videoRef = useRef<HTMLVideoElement>(null);
   const { t, duration } = usePlayhead(videoRef);
-  const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | "text" | null>(null);
+  const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | "text" | "emoji" | null>(null);
   // The text being edited (its copies' places in the list): outlined on the video.
   const [activeText, setActiveText] = useState<number[] | null>(null);
   const [request, setRequest] = useState("");
@@ -163,15 +165,15 @@ export function PreviewEditor({
   const setShot = (index: number, patch: Partial<ShotEdit>) =>
     setShotEdits((list) => list.map((e) => (e.shotIndex === index ? { ...e, ...patch } : e)));
 
-  /** Only the on-screen text changed: the same version with the new text, free (no change used). */
-  async function saveText() {
-    setBusy("text");
+  /** Only the on-screen text changed (or only the emoji should be the phone's): the same version, free. */
+  async function saveText(mode: "text" | "emoji" = "text") {
+    setBusy(mode);
     setError("");
     try {
       const { renderId } = await postJson<{ renderId: string }>(`/api/projects/${projectId}/renders`, {
-        mode: "text",
+        mode,
         fromVersion: current.version,
-        textItems,
+        ...(mode === "text" ? { textItems } : {}),
       });
       router.push(`/projects/${projectId}/status?render=${renderId}`);
     } catch (e) {
@@ -304,6 +306,20 @@ export function PreviewEditor({
           </Link>
         )}
 
+        {current.emojiRedo && !inProgress && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet/30 bg-violet/[0.08] p-3 text-sm">
+            <span className="text-pretty">this version’s emoji aren’t the ones from your phone.</span>
+            <button
+              type="button"
+              onClick={() => saveText("emoji")}
+              disabled={busy !== null}
+              className="h-9 cursor-pointer rounded-full bg-white/10 px-4 text-sm font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral disabled:opacity-50"
+            >
+              {busy === "emoji" ? "starting…" : "use my phone’s emoji"} <span className="font-normal text-muted">· free</span>
+            </button>
+          </div>
+        )}
+
         {current.settings.request && (
           <div className="flex flex-col gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-sm">
             <p>
@@ -383,7 +399,7 @@ export function PreviewEditor({
               {!otherChanges && !asking && (
                 <button
                   type="button"
-                  onClick={saveText}
+                  onClick={() => saveText()}
                   disabled={!!badText || !!inProgress || busy !== null}
                   className="h-11 cursor-pointer rounded-full bg-linear-to-r from-violet to-coral px-5 text-sm font-medium text-white transition focus-visible:outline-2 focus-visible:outline-coral disabled:cursor-not-allowed disabled:opacity-40"
                 >

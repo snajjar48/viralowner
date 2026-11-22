@@ -195,6 +195,7 @@ function parsePlan(raw: unknown): RenderPlan | undefined {
           .map((f) => ({ wrong: f.wrong, right: f.right }))
       : undefined,
     captionText: typeof p.captionText === "string" ? p.captionText.slice(0, 5000) : undefined,
+    ...(typeof p.emojiStyle === "string" || p.emojiStyle === null ? { emojiStyle: typeof p.emojiStyle === "string" ? p.emojiStyle.slice(0, 40) : null } : {}),
     removedShots: Array.isArray(p.removedShots)
       ? p.removedShots.filter((x): x is number => Number.isInteger(x) && (x as number) >= 0)
       : undefined,

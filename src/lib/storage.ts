@@ -140,8 +140,13 @@ export async function createDownloadUrl(
 }
 
 /** Size and type of a stored file, or null if it doesn't exist. */
+// Storage gzips text files (JSON) for clients that accept it, and then sends no content-length, which
+// Node's fetch always asks for: a JSON file then looked empty (an emoji kit could never be finished).
+// "identity" asks for the file as it is, with its real size.
+const AS_IS = { "accept-encoding": "identity" };
+
 export async function headObject(key: string) {
-  const res = await r2().client.fetch(objectUrl(key), { method: "HEAD" });
+  const res = await r2().client.fetch(objectUrl(key), { method: "HEAD", headers: AS_IS });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Storage HEAD failed (${res.status})`);
   return {
@@ -152,9 +157,19 @@ export async function headObject(key: string) {
 
 /** Reads bytes [start, end] (inclusive) of a stored file. */
 export async function readRange(key: string, start: number, end: number) {
-  const res = await r2().client.fetch(objectUrl(key), { headers: { range: `bytes=${start}-${end}` } });
+  const res = await r2().client.fetch(objectUrl(key), { headers: { ...AS_IS, range: `bytes=${start}-${end}` } });
   if (!res.ok) throw new Error(`Storage range read failed (${res.status})`);
   return new Uint8Array(await res.arrayBuffer());
+}
+
+/** A small stored file, whole (null if it isn't there; throws if it's bigger than maxBytes or unreadable). */
+export async function readSmallObject(key: string, maxBytes: number): Promise<Uint8Array | null> {
+  const res = await r2().client.fetch(objectUrl(key), { headers: AS_IS });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Storage GET failed (${res.status})`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error(`Stored file too big (${bytes.length} bytes)`);
+  return bytes;
 }
 
 export async function putObject(key: string, body: Uint8Array, contentType: string) {
@@ -200,11 +215,16 @@ function unescapeXml(s: string) {
 }
 
 /** Every file in a user's emoji kit folder ("u/<user>/emoji/"). */
-export async function listEmojiKitKeys(prefix: string): Promise<string[]> {
+export async function listEmojiKitKeys(prefix: string): Promise<{ key: string; modified: number }[]> {
   if (!/^u\/[A-Za-z0-9-]+\/emoji\/$/.test(prefix)) throw new Error("Refusing to list outside an emoji kit folder");
   const { client, base } = r2();
   const res = await client.fetch(`${base}?list-type=2&prefix=${encodeURIComponent(prefix)}&max-keys=1000`);
   if (!res.ok) throw new Error(`Storage LIST failed (${res.status})`);
   const xml = await res.text();
-  return [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => unescapeXml(m[1])).filter((k) => k.startsWith(prefix));
+  return [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)]
+    .map((m) => ({
+      key: unescapeXml(/<Key>([^<]+)<\/Key>/.exec(m[1])?.[1] ?? ""),
+      modified: Date.parse(/<LastModified>([^<]+)<\/LastModified>/.exec(m[1])?.[1] ?? ""),
+    }))
+    .filter((o) => o.key.startsWith(prefix));
 }

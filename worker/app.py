@@ -1304,6 +1304,7 @@ def start_job(req: dict | None = None) -> None:
     JOB["model"] = CLAUDE_MODEL
     JOB["floor"] = 0
     JOB["t0"] = time.time()
+    JOB["emoji_style"] = None  # whose emoji the video's emoji are drawn in (install_emoji_kit); None: Google's
     # Shots already cut in this job (a fix pass reuses the ones that didn't change).
     old = JOB.get("shot_cache_dir")
     if old:
@@ -6993,32 +6994,23 @@ def install_emoji_kit(req: dict, workdir: Path, fetch=None) -> list[str]:
     candidates += [k for k in (user + "kit.json", user + "pending.json") if k not in candidates]
     out_dir = workdir / "emoji_kit"
     out_dir.mkdir(exist_ok=True)
-    have: list[str] = []
-    try:
-        kit = None
-        for cand in candidates:
-            try:
-                fetch(cand, workdir / "emoji_kit.json")
-                kit = json.loads((workdir / "emoji_kit.json").read_text())
-                break
-            except Exception:  # noqa: BLE001
-                continue
-        if not isinstance(kit, dict):
-            print("emoji kit: none uploaded from the maker's phone yet, using Google's emoji")
-            return []
+
+    def cut(kit: dict, tag: str) -> list[str]:
+        """This kit's sheets cut into one picture per emoji (only sheets that are really there)."""
+        got: list[str] = []
         cell, cols = int(kit["cell"]), int(kit["cols"])
         if not (32 <= cell <= 512 and 1 <= cols <= 64):
-            return []
+            return got
         for n, sheet in enumerate(kit.get("sheets") or []):
             skey = sheet.get("key")
             emojis = sheet.get("emojis") or []
             if not isinstance(skey, str) or not skey.startswith(user) or not re.match(EMOJI_KIT_SHEET_RE, skey):
                 continue
-            path = workdir / f"emoji_sheet{n}{Path(skey).suffix}"
+            path = workdir / f"emoji_sheet_{tag}{n}{Path(skey).suffix}"
             try:
                 fetch(skey, path)
             except Exception as e:  # noqa: BLE001 - one missing sheet doesn't lose the others
-                print(f"emoji kit sheet {n} unavailable: {type(e).__name__}")
+                print(f"emoji kit sheet {n} ({tag}) unavailable: {type(e).__name__}")
                 continue
             if path.stat().st_size > 16 * 1024 * 1024:
                 continue
@@ -7036,9 +7028,36 @@ def install_emoji_kit(req: dict, workdir: Path, fetch=None) -> list[str]:
                 pad = 2
                 pic = pic.crop((max(0, box[0] - pad), max(0, box[1] - pad), min(cell, box[2] + pad), min(cell, box[3] + pad)))
                 pic.save(out_dir / f"{emoji_name(e)}.png")
-                have.append(e)
+                got.append(e)
+        return got
+
+    have: list[str] = []
+    style = None
+    try:
+        # The finished kit first; if its pictures can't be had (a newer upload replacing it, a missing file),
+        # the other one: a video only falls back to Google's emoji when neither has them.
+        for i, cand in enumerate(candidates):
+            try:
+                fetch(cand, workdir / f"emoji_kit{i}.json")
+                kit = json.loads((workdir / f"emoji_kit{i}.json").read_text())
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(kit, dict):
+                continue
+            got = cut(kit, f"k{i}_")
+            listed = sum(len(sh.get("emojis") or []) for sh in kit.get("sheets") or [] if isinstance(sh, dict))
+            if got:
+                style = style or kit.get("style")
+                have = list(dict.fromkeys(have + got))
+            if got and len(got) >= 0.9 * listed:
+                break
+            print(f"emoji kit {cand.split('/')[-1]}: {len(got)} of {listed} pictures could be read, trying the next")
         (out_dir / "list.txt").write_text(" ".join(have))
-        print(f"emoji kit: {len(have)} emojis in the maker's style ({kit.get('style')})")
+        JOB["emoji_style"] = style
+        if have:
+            print(f"emoji kit: {len(have)} emojis in the maker's style ({style})")
+        else:
+            print("emoji kit: none usable from the maker's phone yet, using Google's emoji")
     except Exception as e:  # noqa: BLE001
         print(f"emoji kit unavailable, using Google's emoji: {type(e).__name__}: {e}")
         return []
@@ -8804,7 +8823,12 @@ def render_job(req: dict) -> dict:
     try:
         start_job(req)
         make = render_scratch if isinstance(req.get("scratch"), dict) else render_video
-        return made_with_review(req, make)
+        out = made_with_review(req, make)
+        if isinstance(out, dict) and isinstance(out.get("plan"), dict):
+            # Whose emoji it was drawn with (the maker's phone's style, or None for Google's): the editor offers
+            # a free remake when the maker's own emoji are available and this video didn't get them.
+            out["plan"]["emojiStyle"] = JOB.get("emoji_style")
+        return out
     except JobError:
         raise
     except Exception as e:  # noqa: BLE001

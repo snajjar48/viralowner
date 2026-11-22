@@ -53,3 +53,6 @@ export type EmojiKit = {
   cols: number;
   sheets: KitSheet[];
 };
+
+/** Any emoji in this text (faces, objects, flags…). */
+export const hasEmoji = (text: string) => /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(text);

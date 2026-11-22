@@ -314,6 +314,8 @@ export interface RenderOutput {
 
 export interface RenderPlan extends Omit<RenderText, "postCopy"> {
   shots: ShotEdit[];
+  /** Whose emoji its emoji were drawn in: the maker's phone's kit style, null for Google's (missing: made before this was saved). */
+  emojiStyle?: string | null;
   /** What the editor's own check caught on its first try and fixed before the user saw it (for learning). */
   reviewMisses?: string[];
   /** For a "request a change" version: what was changed, for the user. */
