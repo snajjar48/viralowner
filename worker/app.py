@@ -7417,6 +7417,7 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             print(f"style analysis failed: {type(e).__name__}: {e}")
             inspo_style = default_inspo_style(n)
     if (isinstance(inspo_style, dict) and new_style is None and int(inspo_style.get("textTimelineVersion") or 1) < TEXT_TIMELINE_VERSION
+            and req["inspo"].get("storageKey") and inspo_path.exists()  # "start from scratch" has no original to read
             and any((s.get("onScreenText") or "").strip() for s in shots)):
         # Analyzed before each text block's own place, size and color were read: read the text again (once).
         report("analyzing", 6, "updating how we read the original’s text. only this once, so it takes a little longer")
@@ -8078,8 +8079,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
             return out
 
         base_timeline = separate_text(base_timeline, faces_at)
-    text_timeline, emoji_texts = emoji_text_pictures(base_timeline, style, layout, workdir)
-    ass = build_ass(text_timeline, style, layout, words, shown_captions, caption_y_at)
+    # (Not named text_timeline: that's the function that reads an inspo's text, used earlier in this function.)
+    drawn_timeline, emoji_texts = emoji_text_pictures(base_timeline, style, layout, workdir)
+    ass = build_ass(drawn_timeline, style, layout, words, shown_captions, caption_y_at)
 
     # Pictures on top of the video: emoji pop-ups, proof screenshots and the series label.
     proofs = clean_proofs(carry.get("proofs"))
