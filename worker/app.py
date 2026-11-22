@@ -1304,6 +1304,8 @@ def start_job(req: dict | None = None) -> None:
     JOB["model"] = CLAUDE_MODEL
     JOB["floor"] = 0
     JOB["t0"] = time.time()
+    JOB["wants_transitions"] = None  # asked for transitions / sound effects (understand_asks); None: not read
+    JOB["wants_sfx"] = None
     JOB["emoji_style"] = None  # whose emoji the video's emoji are drawn in (install_emoji_kit); None: Google's
     # Shots already cut in this job (a fix pass reuses the ones that didn't change).
     old = JOB.get("shot_cache_dir")
@@ -6134,7 +6136,12 @@ MATCH_SYSTEM += USER_FIRST
 JUMPCUT_SYSTEM += USER_FIRST
 REVISE_SYSTEM += USER_FIRST
 EFFECTS_SYSTEM += USER_FIRST
+EFFECTS_SYSTEM += ("\n\nNever add a transition or a sound effect the user didn't ask for: keep the ones from the viral video (or "
+                   "the version being changed) as they are, and add or swap one only when the user's words ask for it.")
 DIRECTOR_SYSTEM += USER_FIRST
+DIRECTOR_SYSTEM += ("\n\nTransitions and sound effects: only the ones the user asked for. When they didn't ask for transitions, "
+                    "every shot's transition_in is 'cut'; when they didn't ask for sound effects, sfx is empty. Pace, energy "
+                    "and a vibe ('fun', 'hype') are not asks for either: get those from the cuts, the order and the shot lengths.")
 for _schema in (MATCH_SCHEMA, JUMPCUT_SCHEMA, REVISE_SCHEMA, EFFECTS_SCHEMA, DIRECTOR_SCHEMA):
     _schema["properties"]["heads_up"] = HEADS_UP_FIELD
     if "heads_up" not in _schema["required"]:
@@ -6863,6 +6870,15 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
         except Exception as e:  # noqa: BLE001
             print(f"scratch: text change skipped: {type(e).__name__}: {e}")
 
+    # Transitions and sound effects only when asked for (or already in the version being changed).
+    as_fx = lambda plan: {  # noqa: E731
+        "transitions": [x.get("transition_in") or "cut" for x in (plan.get("shots") or [])[1:]],
+        "sfx": list(plan.get("sfx") or []),
+    }
+    fx = unasked_effects_out(as_fx(cleaned), as_fx(previous) if previous else None, wants_effects_now(req))
+    for x, t in zip(cleaned["shots"][1:], fx["transitions"]):
+        x["transition_in"] = t
+    cleaned["sfx"] = fx["sfx"]
     built = scratch_inputs(cleaned, clips)
     req2 = {
         **req,
@@ -7591,6 +7607,9 @@ def render_video(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> di
     if asks_no_effects("\n".join((request, notes))) and effects.get("sfx"):
         effects = {**effects, "sfx": []}  # "remove any effects": the sound effects too
         print("no effects asked: sound effects removed")
+    # Transitions and sound effects the user didn't ask for never get added: only the inspo's own (or the
+    # version's being changed) stay.
+    effects = unasked_effects_out(effects, given or effects_from(inspo_style, n, jump), wants_effects_now(req))
 
     # Inspo timing is kept exactly only when the inspo's own audio plays (the shots must line up with it).
     keep_timing = music == "inspo"
@@ -8669,10 +8688,62 @@ ASKS_SCHEMA = {
                        "motion, zooms, shake, speed, slow motion, effects, looks, filters, color, sound effects, "
                        "sounds, energy, pacing, the vibe or feel, or the edit's style. true if unsure. false only "
                        "when every ask is clearly about something else (text, captions, order, which shots, "
-                       "length, trims, the post).")}},
-    "required": ["asks", "about_effects"],
+                       "length, trims, the post).")},
+                   "wants_transitions": {"type": "boolean", "description": (
+                       "true only if they asked for transitions between shots: a transition by name (whip, swipe, "
+                       "crossfade, fade, dissolve, flash, glitch, zoom transition, light leak, slide, spin...) or "
+                       "transitions in general ('add transitions', 'smooth transitions between clips'). false if "
+                       "they only described the pace, the vibe or the cuts ('fast cuts', 'energetic', 'cut on the beat').")},
+                   "wants_sound_effects": {"type": "boolean", "description": (
+                       "true only if they asked for sound effects: by name (whoosh, swoosh, pop, ding, riser, boom, "
+                       "click, record scratch, camera shutter...) or in general ('add sound effects', 'sfx', 'sounds "
+                       "on the cuts'). false for music, a song, their voice or the clips' own sound.")}},
+    "required": ["asks", "about_effects", "wants_transitions", "wants_sound_effects"],
     "additionalProperties": False,
 }
+
+
+_TRANSITION_WORDS = re.compile(
+    r"\btransitions?\b|\bwhip|\bswipe|cross[ -]?fade|\bfade[sd]? (in|out|between|to)|\bdissolve|\bflash(es)? between|"
+    r"\bglitch|light ?leak|zoom (in |out )?transitions?|\bspin transition|\bslide transition", re.I)
+_SFX_WORDS = re.compile(
+    r"sound ?effects?|\bsfx\b|\bwhoosh|\bswoosh|\bpop (sound|sfx|noise)s?|\bpop on|\bding\b|\briser\b|\bboom\b|"
+    r"\bclick sound|record scratch|camera (shutter|click)|\bsounds? (on|for|when|between) (the )?(cuts?|text|transitions?)", re.I)
+
+
+def wants_by_words(text: str) -> tuple[bool, bool]:
+    """Whether these words ask for (transitions, sound effects): the safety net under the asks reader."""
+    t = text or ""
+    return bool(_TRANSITION_WORDS.search(t)), bool(_SFX_WORDS.search(t))
+
+
+def wants_effects_now(req: dict) -> tuple[bool, bool]:
+    """(transitions, sound effects) asked for in this version: what understand_asks read, else (storyboards,
+    or when it couldn't run) the words themselves."""
+    if JOB.get("wants_transitions") is not None:
+        return bool(JOB["wants_transitions"]), bool(JOB.get("wants_sfx"))
+    options = req.get("options") or {}
+    scratch = req.get("scratch") if isinstance(req.get("scratch"), dict) else {}
+    return wants_by_words("\n".join(str(x or "") for x in (scratch.get("prompt"), req.get("request"), options.get("notes"))))
+
+
+def unasked_effects_out(effects: dict, base: dict | None, wants: tuple[bool, bool]) -> dict:
+    """Transitions and sound effects only when the user asked for them: anything not in `base` (the inspo's
+    edit for a remake, the version being changed, nothing for a fresh "start from scratch") is taken out
+    unless asked for. A plain cut instead of a transition; no sound effect."""
+    wants_tr, wants_sfx = wants
+    out = dict(effects)
+    base_tr = list((base or {}).get("transitions") or [])
+    if not wants_tr:
+        out["transitions"] = [t if (i < len(base_tr) and base_tr[i] == t) else "cut" for i, t in enumerate(effects.get("transitions") or [])]
+    if not wants_sfx:
+        had = {(x.get("anchor"), x.get("index"), x.get("name")) for x in (base or {}).get("sfx") or [] if isinstance(x, dict)}
+        out["sfx"] = [x for x in effects.get("sfx") or [] if isinstance(x, dict) and (x.get("anchor"), x.get("index"), x.get("name")) in had]
+    gone_tr = sum(1 for a, b in zip(effects.get("transitions") or [], out.get("transitions") or []) if a != b)
+    gone_sfx = len(effects.get("sfx") or []) - len(out.get("sfx") or [])
+    if gone_tr or gone_sfx:
+        print(f"not asked for: {gone_tr} transition(s) made plain cuts, {gone_sfx} sound effect(s) taken out")
+    return out
 
 
 def understand_asks(req: dict) -> list[str]:
@@ -8695,6 +8766,12 @@ def understand_asks(req: dict) -> list[str]:
         return []
     asks = [str(a).strip()[:300] for a in result["data"].get("asks") or [] if str(a).strip()][:20]
     JOB["asks_effects"] = result["data"].get("about_effects") is not False
+    # Transitions and sound effects only when asked for (worded either way: the reader, or the words themselves).
+    words = "\n".join(v for _, v in parts)
+    by_words = wants_by_words(words)
+    JOB["wants_transitions"] = result["data"].get("wants_transitions") is True or by_words[0]
+    JOB["wants_sfx"] = result["data"].get("wants_sound_effects") is True or by_words[1]
+    print(f"asked for transitions: {JOB['wants_transitions']}, sound effects: {JOB['wants_sfx']}")
     print(f"asks (${result['cost_usd']}): {asks}, about effects: {JOB['asks_effects']}")
     return asks
 
