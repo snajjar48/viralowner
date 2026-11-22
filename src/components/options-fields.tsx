@@ -160,8 +160,10 @@ export function OptionsFields({
   const id = useId();
   const set = (patch: Partial<VideoOptions>) =>
     onChange({ ...value, ...patch });
+  // "Start from scratch": the timeline the times are on (the previewed plan's, else the length picked).
+  const timelineS = variant === "scratch" ? (textPieces?.shots.at(-1)?.end ?? value.length ?? undefined) : undefined;
   const setPieces = (items: OptionTextItem[]) =>
-    set({ text: { ...value.text, mode: "custom", items, custom: items.map((it) => it.text).join("\n") } });
+    set({ text: { ...value.text, mode: "custom", items, custom: items.map((it) => it.text).join("\n"), timelineS } });
 
   return (
     <div className="flex flex-col gap-4">
@@ -208,7 +210,7 @@ export function OptionsFields({
                         : it,
                     )
                   : value.text.items;
-              set({ length, text: { ...value.text, items } });
+              set({ length, text: { ...value.text, items, ...(length ? { timelineS: length } : {}) } });
             }}
           />
         </Section>
@@ -245,6 +247,8 @@ export function OptionsFields({
             onChange={setPieces}
             shots={textPieces.shots}
             length={variant === "scratch" ? (value.length ?? null) : null}
+            planHint={variant === "scratch" && !textPieces.shots.length}
+            fromScratch={variant === "scratch"}
           />
         )}
         {value.text.mode === "custom" && !textPieces && (

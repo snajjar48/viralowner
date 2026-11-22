@@ -6,7 +6,8 @@ import { ProgressBar } from "@/components/progress-bar";
 import { postJson, UploadError } from "@/lib/upload-client";
 import type { VideoOptions } from "@/lib/video-options";
 
-type Frame = { index: number; durationS: number; text: string; url: string };
+export type StoryboardFrame = { index: number; durationS: number; text: string; url: string };
+type Frame = StoryboardFrame;
 type State =
   | { name: "idle" }
   | { name: "planning"; jobId: string | null; progress: number }
@@ -34,7 +35,7 @@ export function Storyboard({
   /** Something changed since this storyboard was made. */
   stale: boolean;
   disabled: boolean;
-  onPlan: (plan: { jobId: string; madeFrom: string } | null) => void;
+  onPlan: (plan: { jobId: string; madeFrom: string; frames: StoryboardFrame[] } | null) => void;
   /** Saves what the plan is made from first (the prompt, for start from scratch). */
   prepare?: () => Promise<void>;
 }) {
@@ -56,7 +57,7 @@ export function Storyboard({
         const job = (await res.json()) as { state: string; progress: number; error?: string; frames?: Frame[] };
         if (job.state === "done" && job.frames) {
           setState({ name: "ready", jobId, frames: job.frames });
-          onPlan({ jobId, madeFrom: from });
+          onPlan({ jobId, madeFrom: from, frames: job.frames });
           return;
         }
         if (job.state === "failed") throw new UploadError(job.error ?? "we couldn’t plan it. please try again.");

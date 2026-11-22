@@ -14,7 +14,13 @@ export function OptionTextPieces({
   onChange,
   shots,
   length = null,
+  planHint = false,
+  fromScratch = false,
 }: {
+  /** "Start from scratch": the shots are the previewed plan's (there's no original). */
+  fromScratch?: boolean;
+  /** "Start from scratch" with no preview yet: say the preview puts the shots on the strip. */
+  planHint?: boolean;
   items: OptionTextItem[];
   onChange: (items: OptionTextItem[]) => void;
   /** The original's shots (empty when there are none to time against). */
@@ -35,10 +41,13 @@ export function OptionTextPieces({
       <p className="text-sm text-muted">
         add each piece of text separately. new lines inside one piece stay together on screen.
         {shots.length > 0
-          ? " drag the coral handles to set when it shows (like trimming a clip), or pick the shots it’s on. leave it and we time it like the original."
+          ? fromScratch
+            ? " drag the coral handles to set when it shows (like trimming a clip), or pick the shots from your preview it’s on. leave it and we time it."
+            : " drag the coral handles to set when it shows (like trimming a clip), or pick the shots it’s on. leave it and we time it like the original."
           : timed
             ? " drag the coral handles to set when it shows in your video (like trimming a clip). leave it and we time it."
             : " we time each piece. to set exact times, pick a length for your video above (or drag them in the editor once it’s made)."}
+        {planHint && " tip: tap “preview the plan first” (free) and your shots show up here, so you can see exactly where each text goes."}
       </p>
       <ol className="flex flex-col gap-2">
         {items.map((it, k) => {

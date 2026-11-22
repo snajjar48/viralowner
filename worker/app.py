@@ -6643,8 +6643,11 @@ def render_scratch(req: dict, workdir: Path, fetch=r2_fetch, store=r2_store) -> 
                     "text": {**text_opts, "mode": "custom" if text_mode == "custom" else "adapt"}},
         "request": None, "previous": None, "fresh": False, "cuts": None,
         "speechHint": prompt[:600],
-        # "Write my own" times set in the options are seconds of the length picked there.
-        **({"textTimelineS": float(options["length"])} if isinstance(options.get("length"), int) and options["length"] > 0 else {}),
+        # "Write my own" times set in the options are seconds of the timeline they were set on (the
+        # previewed plan's, or the length picked).
+        **({"textTimelineS": float(text_opts.get("timelineS") or options.get("length"))}
+           if isinstance(text_opts.get("timelineS") or options.get("length"), (int, float))
+           and (text_opts.get("timelineS") or options.get("length")) > 0 else {}),
         "carry": {"captionFixes": caption_fixes, "proofs": clean_proofs(carry.get("proofs")),
                   **({"textItems": text_items} if text_items is not None else {}),
                   "captionGroups": clean_caption_groups(((base or {}).get("plan") or {}).get("captionGroups") if base else None,

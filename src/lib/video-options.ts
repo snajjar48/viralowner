@@ -39,7 +39,8 @@ export interface OptionTextItem extends TextLook {
 
 export interface VideoOptions {
   /** items: "write my own" as separate pieces, each with its own timing and look (custom is their words, joined). */
-  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId; items?: OptionTextItem[] };
+  /** timelineS: the length of the timeline the pieces' times were set on ("start from scratch": the preview's or the length picked). */
+  text: { mode: TextMode; custom: string; align: TextAlign; style: TextStyleId; items?: OptionTextItem[]; timelineS?: number };
   /** inspoAudioConfirmed: the user accepted the disclaimer for using the inspo's audio. */
   music: { mode: MusicMode; inspoAudioConfirmed: boolean };
   /** emojis: emoji pop-ups beside punchy captions. */
@@ -210,6 +211,9 @@ export function parseVideoOptions(input: unknown): VideoOptions | { error: strin
       align: TEXT_ALIGNS.includes(text.align as TextAlign) ? (text.align as TextAlign) : "inspo",
       style: TEXT_STYLE_IDS.includes(text.style as TextStyleId) ? (text.style as TextStyleId) : "auto",
       ...(items.length ? { items } : {}),
+      ...(items.length && typeof text.timelineS === "number" && text.timelineS >= 1 && text.timelineS <= 600
+        ? { timelineS: Math.round(text.timelineS * 100) / 100 }
+        : {}),
     },
     music: {
       mode: musicMode,
@@ -249,6 +253,11 @@ export function inspoOptions(o: VideoOptions): VideoOptions {
 export function optionsFromJson(json: unknown): VideoOptions {
   const parsed = parseVideoOptions(json);
   return "error" in parsed ? DEFAULT_OPTIONS : parsed;
+}
+
+/** The options as a plan (storyboard) depends on them: when and how each text shows doesn't change the plan. */
+export function planKey(o: VideoOptions) {
+  return { ...o, text: { mode: o.text.mode, custom: o.text.custom, align: o.text.align, style: o.text.style } };
 }
 
 export function formatDuration(seconds: number) {

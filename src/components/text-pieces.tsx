@@ -449,6 +449,13 @@ export function TextTimeline({
             <span className="absolute bottom-0.5 left-1 rounded bg-black/70 px-1 text-[10px] leading-4 text-white">{k + 1}</span>
           </span>
         ))}
+        {/* No shots to show (yet): seconds marked along the strip instead. */}
+        {shots.length === 0 &&
+          ticks(dur).map((x) => (
+            <span key={x} className="pointer-events-none absolute inset-y-0 border-l border-white/15" style={{ left: `${at(x) * 100}%` }}>
+              <span className="absolute bottom-0.5 left-1 text-[10px] leading-4 text-white/60 tabular-nums">{x}s</span>
+            </span>
+          ))}
         {/* Outside the text's time: dimmed. */}
         {shown.length === 0 ? (
           <span className="pointer-events-none absolute inset-0 bg-black/45" />
@@ -511,6 +518,14 @@ export function TextTimeline({
       )}
     </div>
   );
+}
+
+/** Seconds to mark on a strip this long (about 3-6 marks). */
+function ticks(total: number): number[] {
+  const step = [1, 2, 5, 10, 15, 30, 60].find((x) => total / x <= 6) ?? 60;
+  const out: number[] = [];
+  for (let x = step; x < total - step * 0.3; x += step) out.push(x);
+  return out;
 }
 
 /** The parts of 0..total outside the spans. */

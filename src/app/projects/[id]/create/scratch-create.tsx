@@ -9,10 +9,11 @@ import { buttonClass, inputClass } from "@/components/form";
 import { SparkleIcon } from "@/components/icons";
 import { OptionsFields, optionsProblem, Section } from "@/components/options-fields";
 import { activeRenderIdFrom, postJson, UploadError } from "@/lib/upload-client";
-import { PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
+import { planKey, PROMPT_MAX, type VideoOptions } from "@/lib/video-options";
 import { ClipsManager, type InitialClip } from "../clips/clips-manager";
 import { HookCheck } from "@/components/hook-check";
-import { Storyboard } from "../options/storyboard";
+import { Storyboard, type StoryboardFrame } from "../options/storyboard";
+import { timelineShots } from "@/components/text-pieces";
 import { waitForUploads } from "../clips/upload-engine";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
@@ -50,8 +51,13 @@ export function ScratchCreate({
   const [error, setError] = useState("");
   const first = useRef(true);
   // A storyboard made from this exact prompt, options and clips: "make my video" makes that plan.
-  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string } | null>(null);
-  const madeFrom = JSON.stringify([prompt.trim(), options, clips.uploaded]);
+  const [plan, setPlan] = useState<{ jobId: string; madeFrom: string; frames: StoryboardFrame[] } | null>(null);
+  const madeFrom = JSON.stringify([prompt.trim(), planKey(options), clips.uploaded]);
+  // The previewed plan's shots: text can be timed on them (the video is made from that plan).
+  const planShots =
+    plan && plan.madeFrom === madeFrom
+      ? timelineShots(plan.frames.map((f) => ({ durationS: f.durationS, label: `shot ${f.index + 1}`, thumb: f.url })))
+      : [];
 
   // Save the prompt and options a moment after each change, so leaving or refreshing keeps them.
   useEffect(() => {
@@ -190,7 +196,7 @@ export function ScratchCreate({
           showNotes={false}
           uploadedAudio={audio}
           variant="scratch"
-          textPieces={{ shots: [] }}
+          textPieces={{ shots: planShots }}
         />
 
         {clips.uploaded > 0 && !clips.busy && (
