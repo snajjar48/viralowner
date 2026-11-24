@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import type { TextLook } from "@/lib/video-options";
 
 /**
@@ -241,6 +241,8 @@ export function TextTimeline({
   video,
   disabled,
   label,
+  bubbleOverlay,
+  onPickShot,
 }: {
   total: number;
   shots: TimelineShot[];
@@ -260,6 +262,10 @@ export function TextTimeline({
   video?: RefObject<HTMLVideoElement | null>;
   disabled?: boolean;
   label: string;
+  /** Drawn over the frame above the finger while dragging (e.g. the text as it will look at that moment). */
+  bubbleOverlay?: (t: number) => ReactNode;
+  /** A shot on the strip was tapped. */
+  onPickShot?: (k: number) => void;
 }) {
   const track = useRef<HTMLDivElement>(null);
   const drag = useRef<{ kind: "start" | "end" | "body"; grab: number; a: number; b: number } | null>(null);
@@ -351,6 +357,8 @@ export function TextTimeline({
     if (kind === "track") {
       if (!spans.length && onTapEmpty) onTapEmpty(snap(x));
       else onSeek?.(x);
+      const k = shots.findIndex((s) => x >= s.start && x < s.end);
+      if (k >= 0) onPickShot?.(k);
       return;
     }
     if (!one) return;
@@ -412,18 +420,21 @@ export function TextTimeline({
         <div
           aria-hidden="true"
           className="pointer-events-none absolute bottom-full z-30 mb-2 flex -translate-x-1/2 flex-col items-center gap-1"
-          style={{ left: `clamp(2.25rem, ${inset(point)}, calc(100% - 2.25rem))` }}
+          style={{ left: `clamp(3.5rem, ${inset(point)}, calc(100% - 3.5rem))` }}
         >
           {video && (
-            <canvas
-              ref={(el) => {
-                bubble.current = el;
-                drawBubble();
-              }}
-              width={144}
-              height={256}
-              className="h-32 w-[4.5rem] rounded-lg border-2 border-white bg-black shadow-[0_4px_16px_rgba(0,0,0,0.6)]"
-            />
+            <div className="relative h-48 w-[6.75rem] overflow-hidden rounded-lg border-2 border-white bg-black shadow-[0_4px_16px_rgba(0,0,0,0.6)]">
+              <canvas
+                ref={(el) => {
+                  bubble.current = el;
+                  drawBubble();
+                }}
+                width={216}
+                height={384}
+                className="size-full"
+              />
+              {bubbleOverlay && <div className="absolute inset-0 [container-type:size]">{bubbleOverlay(point)}</div>}
+            </div>
           )}
           <span className="whitespace-nowrap rounded-full bg-black/85 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white">
             {fmtS(point)}

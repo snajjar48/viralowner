@@ -407,9 +407,13 @@ export function PreviewEditor({
         />
 
         <div ref={textSection}>
-        <Section title="on-screen text">
+        <Section title="on-screen text" aside={<span className="text-xs text-muted">free fix</span>}>
+          <p className="rounded-xl border border-violet/30 bg-violet/[0.08] p-3 text-sm">
+            text edits are free. changing only your text doesn’t count as one of this video’s changes.
+          </p>
           {textItems ? (
             <TextItemsEditor
+              context={current.textContext}
               items={textItems}
               onChange={setTextItems}
               videoRef={videoRef}

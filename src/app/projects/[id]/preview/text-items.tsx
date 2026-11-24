@@ -212,6 +212,7 @@ export function TextItemsEditor({
   defaults,
   shots,
   onActive,
+  context,
 }: {
   items: TextItem[];
   onChange: (items: TextItem[]) => void;
@@ -224,8 +225,12 @@ export function TextItemsEditor({
   shots: TimelineShot[];
   /** The text being edited (its copies' places in the list), or none. */
   onActive?: (idx: number[] | null) => void;
+  /** The version's text style, so the enlarged shots draw the text as the video will. */
+  context?: TextContext;
 }) {
   const [open, setOpen] = useState<string | null>(null);
+  /** The shot shown big under a piece of text (picked on its strip or its chips), with the text on it. */
+  const [peek, setPeek] = useState<{ key: string; shot: number } | null>(null);
   const end = duration || Math.max(0, ...items.map((i) => i.end), ...shots.map((s) => s.end));
   const blurbs = blurbsOf(items);
 
@@ -331,6 +336,11 @@ export function TextItemsEditor({
                     setDragItems(null);
                     retime(b, [[a, z]]);
                   }}
+                  bubbleOverlay={(at) => <TextPreview items={items} t={at} context={context} highlight={b.idx} />}
+                  onPickShot={(k) => {
+                    setPeek({ key: b.key, shot: k });
+                    onActive?.(b.idx);
+                  }}
                 />
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
@@ -371,9 +381,21 @@ export function TextItemsEditor({
                     onToggle={(k) => {
                       const next = picked.includes(k) ? picked.filter((x) => x !== k) : [...picked, k];
                       if (next.length) retime(b, shotSpans(shots, next));
+                      seek(shots[k].start + 0.05);
+                      setPeek({ key: b.key, shot: k });
                     }}
                   />
                 </div>
+              )}
+              {peek?.key === b.key && shots[peek.shot] && (
+                <ShotPeek
+                  shot={shots[peek.shot]}
+                  spans={b.idx.map((j) => [items[j].start, items[j].end] as Span)}
+                  items={items}
+                  highlight={b.idx}
+                  context={context}
+                  onClose={() => setPeek(null)}
+                />
               )}
               {spans.some(([a, z]) => z <= a) && <p className="mt-1 text-xs text-coral">the end needs to be after the start.</p>}
               {expanded && (
@@ -393,6 +415,59 @@ export function TextItemsEditor({
       >
         <PlusIcon className="size-4" /> add text at {round1(t)}s
       </button>
+    </div>
+  );
+}
+
+/** One shot, big, with the text drawn on it as the video will show it there (or a note that it isn't on it). */
+function ShotPeek({
+  shot,
+  spans,
+  items,
+  highlight,
+  context,
+  onClose,
+}: {
+  shot: TimelineShot;
+  spans: Span[];
+  items: TextItem[];
+  highlight: number[];
+  context?: TextContext;
+  onClose: () => void;
+}) {
+  // The first moment of this shot that has the text on it.
+  const over = spans
+    .map(([a, z]) => [Math.max(a, shot.start), Math.min(z, shot.end)] as Span)
+    .filter(([a, z]) => z - a > 0.01)
+    .sort((x, y) => x[0] - y[0])[0];
+  const at = over ? over[0] + Math.min(0.05, (over[1] - over[0]) / 2) : shot.start + 0.05;
+  return (
+    <div className="mt-3 flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-2">
+      <div className="relative aspect-[9/16] w-32 shrink-0 overflow-hidden rounded-lg border border-white/15 bg-black sm:w-40">
+        {shot.thumb && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={shot.thumb} alt="" className="size-full object-cover" />
+        )}
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 [container-type:size]">
+          <TextPreview items={items} t={at} context={context} highlight={highlight} />
+        </div>
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-1 py-1 text-xs">
+        <p className="font-medium text-foreground">{shot.label}</p>
+        <p className="text-muted">
+          {over
+            ? `this text shows here from ${fmtS(over[0])} to ${fmtS(over[1])}.`
+            : "this text isn’t on this shot. tap it in “show on” to add it."}
+        </p>
+        <p className="text-muted">the picture is the clip’s cover; the video above shows the exact frame.</p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-1 h-8 w-fit cursor-pointer rounded-full bg-white/10 px-3 text-xs font-medium hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-coral"
+        >
+          close
+        </button>
+      </div>
     </div>
   );
 }
