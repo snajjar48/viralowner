@@ -240,6 +240,12 @@ export function TextItemsEditor({
     v.pause();
     v.currentTime = Math.min(Math.max(0, s), Math.max(0, (v.duration || s) - 0.05));
   };
+  /** Show this piece on the video (jump to it unless it's already on screen) and mark it as the one being edited. */
+  const focus = (b: Blurb) => {
+    const spans = b.idx.map((j) => [items[j].start, items[j].end] as Span).sort((x, y) => x[0] - y[0]);
+    if (!spans.some(([a, z]) => t >= a && t < z) && spans[0]) seek(spans[0][0] + 0.05);
+    onActive?.(b.idx);
+  };
   /** Every copy of this piece gets the change (its words and look). */
   const patch = (b: Blurb, p: Partial<TextItem>) => onChange(items.map((it, j) => (b.idx.includes(j) ? { ...it, ...p } : it)));
   /** This piece shown over these stretches (one copy each, linked when there are several). */
@@ -363,7 +369,8 @@ export function TextItemsEditor({
                   className={small}
                   onClick={() => {
                     setOpen(expanded ? null : b.key);
-                    onActive?.(expanded ? null : b.idx);
+                    if (expanded) onActive?.(null);
+                    else focus(b);
                   }}
                   aria-expanded={expanded}
                 >
@@ -400,7 +407,15 @@ export function TextItemsEditor({
               {spans.some(([a, z]) => z <= a) && <p className="mt-1 text-xs text-coral">the end needs to be after the start.</p>}
               {expanded && (
                 <div className="mt-3 border-t border-white/10 pt-3">
-                  <TextLookControls value={first} onChange={(p) => patch(b, p)} defaults={defaults} disabled={disabled} />
+                  <TextLookControls
+                    value={first}
+                    onChange={(p) => {
+                      patch(b, p);
+                      focus(b);
+                    }}
+                    defaults={defaults}
+                    disabled={disabled}
+                  />
                 </div>
               )}
             </li>
