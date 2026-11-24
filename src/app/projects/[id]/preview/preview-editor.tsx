@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageTitle } from "@/components/flow-shell";
 import { buttonClass, inputClass } from "@/components/form";
 import { ArrowRightIcon, RefreshIcon, SparkleIcon } from "@/components/icons";
@@ -109,6 +109,32 @@ export function PreviewEditor({
   const [busy, setBusy] = useState<"apply" | "regenerate" | "repost" | "text" | "emoji" | null>(null);
   // The text being edited (its copies' places in the list): outlined on the video.
   const [activeText, setActiveText] = useState<number[] | null>(null);
+  // Phones: the video sits above the text list, so while text is edited down the page it floats small in the corner.
+  const videoSpot = useRef<HTMLDivElement>(null);
+  const textSection = useRef<HTMLDivElement>(null);
+  const [spotH, setSpotH] = useState(0);
+  const [videoInView, setVideoInView] = useState(true);
+  const [textInView, setTextInView] = useState(false);
+  useEffect(() => {
+    const spot = videoSpot.current;
+    const text = textSection.current;
+    if (!spot || !text) return;
+    const seen = new IntersectionObserver(([e]) => setVideoInView(e.intersectionRatio >= 0.35), { threshold: [0, 0.35] });
+    const textSeen = new IntersectionObserver(([e]) => setTextInView(e.isIntersecting));
+    // Its height while in place (kept while it floats).
+    const sized = new ResizeObserver(() => {
+      if (spot.firstElementChild && getComputedStyle(spot.firstElementChild).position !== "fixed") setSpotH(spot.offsetHeight);
+    });
+    sized.observe(spot);
+    seen.observe(spot);
+    textSeen.observe(text);
+    return () => {
+      seen.disconnect();
+      textSeen.disconnect();
+      sized.disconnect();
+    };
+  }, []);
+  const floating = activeText !== null && textInView && !videoInView;
   const [request, setRequest] = useState("");
   const [error, setError] = useState("");
 
@@ -226,17 +252,29 @@ export function PreviewEditor({
   return (
     <div className="grid gap-8 lg:grid-cols-[minmax(0,auto)_1fr] lg:items-start">
       <div className="flex flex-col items-center gap-4 lg:sticky lg:top-6">
-        <VideoPlayer
-          src={current.videoUrl}
-          size="fit"
-          label={`your video, version ${current.version}`}
-          videoRef={videoRef}
-          overlay={
-            textItems ? (
-              <TextPreview items={textItems} t={t} context={current.textContext} show={textChanged} highlight={activeText} />
-            ) : undefined
-          }
-        />
+        <div
+          ref={videoSpot}
+          // Holds the video's place while it floats, so the page doesn't jump.
+          className={floating ? "max-lg:h-(--spot-h)" : undefined}
+          style={{ "--spot-h": `${spotH}px` } as React.CSSProperties}
+        >
+          <VideoPlayer
+            src={current.videoUrl}
+            size="fit"
+            label={`your video, version ${current.version}`}
+            videoRef={videoRef}
+            className={
+              floating
+                ? "max-lg:fixed max-lg:top-[calc(env(safe-area-inset-top)+0.75rem)] max-lg:right-3 max-lg:z-40 max-lg:w-36! max-lg:shadow-2xl max-lg:shadow-black/60"
+                : undefined
+            }
+            overlay={
+              textItems ? (
+                <TextPreview items={textItems} t={t} context={current.textContext} show={textChanged} highlight={activeText} />
+              ) : undefined
+            }
+          />
+        </div>
 
         {versions.length > 1 && (
           <nav aria-label="versions" className="flex max-w-full flex-wrap justify-center gap-2">
@@ -368,6 +406,7 @@ export function PreviewEditor({
           proofs={current.proofs}
         />
 
+        <div ref={textSection}>
         <Section title="on-screen text">
           {textItems ? (
             <TextItemsEditor
@@ -409,6 +448,7 @@ export function PreviewEditor({
             </div>
           )}
         </Section>
+        </div>
 
         <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
           <label htmlFor="change-request" className="text-sm text-muted">
