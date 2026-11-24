@@ -1093,16 +1093,38 @@ POST_SCHEMA = {
 }
 
 
+_TRAVEL_SELLER = re.compile(
+    r"travel\s*(agent|agency|advis[oe]r|consultant|planner|designer|specialist|professional|company)|host agency"
+    r"|cruise\s*(agent|planner|specialist|consultant)|vacation\s*(planner|specialist)|honeymoon\s*planner"
+    r"|destination wedding\s*(planner|specialist)|tour operator", re.I)
+
+
+def soft_cta_ask(instructions: str) -> str:
+    """For travel agents' travel videos: one alternate caption ends on a soft call to action (the other
+    captions don't), so they can pick either. "" for everyone else."""
+    business = instructions.split("about the user's business:\n", 1)[1] if "about the user's business:\n" in instructions else ""
+    if job_category() != "travel" or not _TRAVEL_SELLER.search(business):
+        return ""
+    return ("\n\nthe user is a travel agent (see their business above). write the main caption and the first "
+            "alternate with no call to action, as usual. make the second alternate end with one soft, friendly call "
+            "to action in their voice, the way an agent would invite a booking without a hard sell: for example "
+            "\"comment BALI and I'll send you the itinerary\", \"DM me if you want this one planned for you\", or "
+            "\"save this for when you're ready, I can plan it\". use what they want viewers to do from their profile "
+            "if it says. never promise a price, perk, discount or availability they didn't give.")
+
+
 def write_post(video: Path, workdir: Path, texts: list[str], words: list[dict], about: str,
                instructions: str) -> tuple[dict | None, float]:
     """The post caption, two alternates and hashtags, written from the finished video. (None, 0) if it fails."""
     duration = probe(video)["duration"]
+    cta = soft_cta_ask(instructions)
     content: list[dict] = [{"type": "text", "text": (
         f"the video ({duration:.1f}s). what kind of video it is: {about or 'unknown'}\n"
         "on-screen text: " + (json.dumps([t for t in dict.fromkeys(t.strip() for t in texts) if t], ensure_ascii=False)
                               if any(t.strip() for t in texts) else "none") + "\n"
         "what's said: " + (json.dumps(" ".join(w["w"] for w in words), ensure_ascii=False) if words else "nothing (or no captions)")
         + (f"\n\nthe user's instructions:\n{instructions}" if instructions else "")
+        + cta
     )}]
     from concurrent.futures import ThreadPoolExecutor
 
