@@ -116,7 +116,7 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
           // Unlimited accounts: null (nothing to count down).
           left: membership.unlimited
             ? null
-            : changesLeft(membership, project, renders.filter((r) => r.status !== "failed").length),
+            : changesLeft(membership, project, renders.filter((r) => r.status !== "failed" && !r.settings.free).length),
           subscribed: !!membership.plan,
         }}
       />

@@ -5,6 +5,7 @@ import type { Carry, Proof, RenderSettings, TextItem } from "@/lib/processing/ty
 import { headObject } from "@/lib/storage";
 import { emojiRedoOffered } from "@/lib/emoji-kit-store";
 import { checkRateLimit } from "@/lib/rate-limit";
+import { requestIsFree } from "@/lib/worker";
 import {
   carryFrom,
   getStillActiveRender,
@@ -55,6 +56,10 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
     if (body.mode === "emoji") return redoEmoji(userId, project, body);
     if (body.mode === "proof") return addProofs(userId, project, body);
 
+    // A typed request that only changes the on-screen text or caption words is free too.
+    const free = await freeRequest(userId, project, body);
+    if (free) return free;
+
     // Counts the video against the trial or plan on its first version, and
     // checks this video still has changes left otherwise.
     const claim = await claimRender(userId, project);
@@ -71,7 +76,23 @@ export async function POST(request: Request, ctx: RouteContext<"/api/projects/[i
   });
 }
 
-async function makeVersion(userId: string, project: Project, body: Record<string, unknown>) {
+/**
+ * { mode: "edit", request, onlyRequest: true }: when the request is the only change and it only touches the
+ * on-screen text or caption words, the version is made free. It's made from the version's own options and
+ * shots (any others sent with it are ignored), with the editor's text. null: an ordinary change.
+ */
+async function freeRequest(userId: string, project: Project, body: Record<string, unknown>): Promise<Response | null> {
+  if (body.mode !== "edit" || body.onlyRequest !== true || body.repost === true) return null;
+  const request = typeof body.request === "string" ? body.request.trim() : "";
+  if (!request || request.length > REQUEST_MAX) return null;
+  const from = (await listRenders(userId, project.id)).find((r) => r.version === body.fromVersion && r.status === "done");
+  if (!from?.plan || !(await requestIsFree(request))) return null;
+  const same = { ...body, options: from.settings.options, shots: from.settings.shots };
+  const response = await (project.kind === "scratch" ? makeScratchVersion : makeVersion)(userId, project, same, true);
+  return response.ok ? response : null;
+}
+
+async function makeVersion(userId: string, project: Project, body: Record<string, unknown>, free = false) {
   let result;
   if (body.mode === "new" && typeof body.storyboard === "string") {
     // The first version, exactly as the storyboard showed it.
@@ -139,6 +160,7 @@ async function makeVersion(userId: string, project: Project, body: Record<string
           ...settingsFor(options, shots),
           ...withTextItems(carryFrom(from), textItems, !!from && textSettingsChanged(from, options)),
           ...(request ? { request, fromVersion: from!.version } : {}),
+          ...(free ? { free: true } : {}),
         };
       },
       // One-take videos keep where the take was cut, unless it's a fresh take. Edits keep the
@@ -240,12 +262,12 @@ async function remakeSameEdit(userId: string, project: Project, from: Render, pa
     result = await startScratchRender(
       userId,
       project,
-      { ...settingsFor(from.settings.options, shots), ...carry, fromVersion: from.version },
+      { ...settingsFor(from.settings.options, shots), ...carry, fromVersion: from.version, free: true },
       { previous },
     );
   } else {
     const options = from.settings.options;
-    result = await startNewRender(userId, project, () => ({ ...settingsFor(options, shots), ...carry }), {
+    result = await startNewRender(userId, project, () => ({ ...settingsFor(options, shots), ...carry, free: true }), {
       reuseText: textToReuse(from, options),
       cuts: from.plan.jumpcut,
       effects: from.plan.effects,
@@ -260,7 +282,7 @@ async function remakeSameEdit(userId: string, project: Project, from: Render, pa
  *   new: the first version. edit: from a version, with the user's shot edits and/or a request
  *   (the worker rebuilds that version, or asks Claude for the change). regenerate: a fresh take.
  */
-async function makeScratchVersion(userId: string, project: Project, body: Record<string, unknown>) {
+async function makeScratchVersion(userId: string, project: Project, body: Record<string, unknown>, free = false) {
   let result;
   if (body.mode === "new" || body.mode === "edit") {
     const parsed = parseVideoOptions(body.options);
@@ -293,6 +315,7 @@ async function makeScratchVersion(userId: string, project: Project, body: Record
           ...withTextItems(carryFrom(from), textItems, textSettingsChanged(from, options)),
           fromVersion: from.version,
           ...(request ? { request } : {}),
+          ...(free ? { free: true } : {}),
         },
         { previous, ...(request ? { request } : {}), ...(request && body.repost === true ? { writePost: true } : {}) },
       );

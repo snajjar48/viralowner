@@ -174,9 +174,11 @@ export function changesAllowed(m: Membership, project: Project) {
   return 0;
 }
 
+/** The versions that count as changes (not failed ones, not free ones). */
 export async function versionsMade(projectId: string) {
   const rows = await getSql()`
-    SELECT count(*)::int AS n FROM renders WHERE project_id = ${projectId} AND status <> 'failed'`;
+    SELECT count(*)::int AS n FROM renders
+    WHERE project_id = ${projectId} AND status <> 'failed' AND coalesce(settings ->> 'free', '') <> 'true'`;
   return Number(rows[0]?.n ?? 0);
 }
 

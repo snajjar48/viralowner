@@ -8700,6 +8700,38 @@ def review_video(req: dict, out: dict, video: Path, workdir: Path) -> dict | Non
     return data
 
 
+FREE_ASK_SYSTEM = """A video editing app lets people change a finished video in their own words. Some changes are free because they only touch the words on top of the video. Decide whether EVERY part of this request is one of these free changes:
+- the on-screen text: its words, spelling, punctuation, casing, emoji in it, adding or removing a piece of text, its size, font, color, outline/box look, alignment, where it sits on screen, and when it shows and for how long (e.g. "only on the first shot", "keep the title for 3 seconds", "make the text bigger", "move it up", "change 'bali' to 'BALI'", "remove the second text").
+- the spoken captions' words: a misheard or misspelled word in the captions, or how a name is spelled.
+Anything else is not free, even when it comes with a text change: which clips or moments are used, the order, cutting or trimming, shot or video length, speed, music or sound, sound effects, transitions, zooms, effects, color or filters, the first or last shot, the caption style or turning captions on or off, regenerating, or the post caption and hashtags. If the request is vague ("make it better", "fix it"), or you aren't sure, it is not free."""
+
+FREE_ASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "asks": {"type": "array", "items": {"type": "string"}, "description": "each separate thing asked for, briefly."},
+        "free": {"type": "boolean", "description": "true only if every ask is a free change."},
+    },
+    "required": ["asks", "free"],
+    "additionalProperties": False,
+}
+
+
+def request_is_free(request: str) -> bool:
+    """A change request that only changes the on-screen text or the caption words (no change used).
+    False when unsure or when the check fails: then it's an ordinary change."""
+    if not request.strip():
+        return False
+    try:
+        result = ask_claude(FREE_ASK_SYSTEM, [{"type": "text", "text": f"the request:\n{request}"}], FREE_ASK_SCHEMA,
+                            "free check", effort="medium")
+    except Exception as e:  # noqa: BLE001
+        print(f"free check failed: {type(e).__name__}: {e}")
+        return False
+    d = result["data"]
+    print(f"free check (${result['cost_usd']}): {d}")
+    return d.get("free") is True
+
+
 ASKS_SYSTEM = """You read what a user asked a video editing app to do with their video (a description of the video, a change request, notes) and list every separate thing they asked for, so none gets missed. One line per ask, in plain words, specific and complete (keep their exact words for any text they want on screen, emoji included). Split combined asks ("make the text bigger and move it up" is two asks). Keep each ask's scope (which shot, which moment, the whole video). Include asks about the sound, speed, length, order, first or last shot, text, captions, effects, transitions, cuts and the caption/post. Leave out greetings and anything that isn't an ask. If something is ambiguous, write the most likely meaning. Empty list if they asked for nothing specific."""
 
 ASKS_SCHEMA = {
@@ -9279,6 +9311,11 @@ def api():
         # Each category's playbook (its size; 0 = not written yet).
         playbooks = {k: len(v) for k, v in CATEGORY_PLAYBOOKS.items()}
         return {"ok": all(c["ok"] for c in checks.values()), "checks": checks, "playbooks": playbooks}
+
+    @web.post("/classify/request", dependencies=[Depends(require_token)])
+    def classify_request(request: str = Body(embed=True)) -> dict:
+        """Whether a typed change request is only a free edit (on-screen text, caption words)."""
+        return {"free": request_is_free(request[:2000])}
 
     @web.post("/jobs/analyze", dependencies=[Depends(require_token)])
     def start_analyze(storage_key: str = Body(alias="storageKey"), category: str | None = Body(default=None)) -> dict:

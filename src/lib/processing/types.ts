@@ -159,6 +159,8 @@ export interface RenderSettings {
   fromVersion?: number | null;
   /** Carried from the version this one starts from: shot lengths the user asked for, caption word fixes. */
   carry?: Carry;
+  /** A free version (only the on-screen text or caption words changed): doesn't count as one of the video's changes. */
+  free?: boolean;
 }
 
 /** A word (or words) the captions got wrong, and what it should say. */

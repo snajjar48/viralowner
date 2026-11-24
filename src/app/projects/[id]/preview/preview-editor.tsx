@@ -222,6 +222,8 @@ export function PreviewEditor({
               shots: shotEdits,
               fromVersion: current.version,
               request: request.trim() || undefined,
+              // Nothing else changed: if the request only touches the text, it's free.
+              ...(request.trim() && !otherChanges ? { onlyRequest: true } : {}),
               ...(textChanged && textItems ? { textItems } : {}),
             }
           : kind === "repost"
@@ -394,6 +396,36 @@ export function PreviewEditor({
 
         <ChangesLeft changes={changes} />
 
+        <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
+          <label htmlFor="change-request" className="text-sm text-muted">
+            {variant === "scratch"
+              ? "tell us what to change, in your own words: anything from the cuts and order to the words, effects and sounds. we’ll make a new version."
+              : "tell us what to change, in your own words. we’ll make a new version."}
+          </label>
+          <textarea
+            id="change-request"
+            value={request}
+            maxLength={REQUEST_MAX}
+            rows={3}
+            placeholder={
+              variant === "scratch"
+                ? "e.g. make it faster, open on the finished pizza, and add a fire transition before the reveal"
+                : "e.g. shrink the words and move them so they aren’t covering any faces"
+            }
+            onChange={(e) => setRequest(e.target.value)}
+            className={`${inputClass} h-auto py-3`}
+          />
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-xs text-muted">
+              asking only to change the on-screen text (its words, look, place or timing) or a caption word is free: it
+              doesn’t count as one of your changes.
+            </p>
+            <span className="shrink-0 text-xs text-muted tabular-nums">
+              {request.length}/{REQUEST_MAX}
+            </span>
+          </div>
+        </Section>
+
         {current.captionText && (
           <CaptionWords key={current.version} projectId={projectId} version={current.version} text={current.captionText} />
         )}
@@ -405,6 +437,7 @@ export function PreviewEditor({
           moments={current.proofMoments}
           proofs={current.proofs}
         />
+
 
         <div ref={textSection}>
         <Section title="on-screen text" aside={<span className="text-xs text-muted">free fix</span>}>
@@ -454,29 +487,6 @@ export function PreviewEditor({
         </Section>
         </div>
 
-        <Section title="request a change" icon={<SparkleIcon className="size-4 text-muted" />}>
-          <label htmlFor="change-request" className="text-sm text-muted">
-            {variant === "scratch"
-              ? "tell us what to change, in your own words: anything from the cuts and order to the words, effects and sounds. we’ll make a new version."
-              : "tell us what to change, in your own words. we’ll make a new version."}
-          </label>
-          <textarea
-            id="change-request"
-            value={request}
-            maxLength={REQUEST_MAX}
-            rows={3}
-            placeholder={
-              variant === "scratch"
-                ? "e.g. make it faster, open on the finished pizza, and add a fire transition before the reveal"
-                : "e.g. shrink the words and move them so they aren’t covering any faces"
-            }
-            onChange={(e) => setRequest(e.target.value)}
-            className={`${inputClass} h-auto py-3`}
-          />
-          <span className="self-end text-xs text-muted tabular-nums">
-            {request.length}/{REQUEST_MAX}
-          </span>
-        </Section>
 
         {oneTake && (
           <p className="rounded-xl bg-white/[0.04] p-3 text-sm text-muted">
@@ -600,7 +610,7 @@ export function PreviewEditor({
           <button
             type="button"
             onClick={() => run("apply")}
-            disabled={(!dirty && !asking) || !!problem || locked}
+            disabled={(!dirty && !asking) || !!problem || (outOfChanges && !(asking && !otherChanges)) || !!inProgress || busy !== null}
             className={`${buttonClass} flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none`}
           >
             <SparkleIcon className="size-4" />

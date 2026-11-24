@@ -53,3 +53,14 @@ export interface WorkerHealth {
 }
 
 export const workerHealth = () => workerFetch<WorkerHealth>("/health", { timeoutMs: 60_000 });
+
+/** Whether a typed change request only changes the on-screen text or caption words (free). False if unsure or unreachable. */
+export async function requestIsFree(request: string): Promise<boolean> {
+  try {
+    const r = await workerFetch<{ free?: boolean }>("/classify/request", { method: "POST", body: { request }, timeoutMs: 45_000 });
+    return r.free === true;
+  } catch (error) {
+    console.error("free request check failed", error);
+    return false;
+  }
+}
