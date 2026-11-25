@@ -36,6 +36,7 @@ export default function Home() {
               your words and your spin on it.
             </p>
             <JoinCta id="hero" source="home-hero" />
+            <p className="text-xs text-muted/70">results vary. we can’t promise any number of views.</p>
           </div>
           <HeroVisual />
         </div>

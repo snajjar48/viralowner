@@ -96,9 +96,13 @@ export function TesterSignupForm({ email, token }: { email: string; token: strin
       <label className="flex cursor-pointer items-start gap-3 text-sm text-muted">
         <input name="acceptTerms" type="checkbox" required className="mt-0.5 size-4 shrink-0 cursor-pointer accent-violet" />
         <span>
-          I agree to the{" "}
+          I’m 18 or older and agree to the{" "}
           <Link href="/terms" target="_blank" className="text-foreground underline underline-offset-4">
             terms and conditions
+          </Link>{" "}
+          and{" "}
+          <Link href="/privacy" target="_blank" className="text-foreground underline underline-offset-4">
+            privacy policy
           </Link>
           .
         </span>

@@ -325,7 +325,7 @@ export function InspoUploader({
       <CategoryPicker value={category} onChange={setCategory} disabled={busy} />
 
       <ConsentCheckbox checked={confirmed} onChange={setConfirmed} disabled={busy}>
-        i’m using this video only as a style reference.
+        i’m using this video only as a style reference and won’t repost its footage.
       </ConsentCheckbox>
 
       {(phase.name === "uploading" || phase.name === "waiting") && (

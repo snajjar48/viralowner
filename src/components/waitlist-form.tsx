@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, type FormEvent } from "react";
 
 type Status = "idle" | "submitting" | "success" | "error";
@@ -109,6 +110,13 @@ export function WaitlistForm({
 
       <p id={`${id}-error`} role="alert" className="mt-3 min-h-5 text-sm text-coral">
         {error}
+      </p>
+      <p className="text-xs text-muted">
+        we’ll only email you about viralowner. see our{" "}
+        <Link href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+          privacy policy
+        </Link>
+        .
       </p>
     </form>
   );

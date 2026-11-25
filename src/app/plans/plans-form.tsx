@@ -192,6 +192,10 @@ function Fields({
           <Link href="/terms" target="_blank" className="text-foreground underline underline-offset-4">
             terms and conditions
           </Link>{" "}
+          and{" "}
+          <Link href="/privacy" target="_blank" className="text-foreground underline underline-offset-4">
+            privacy policy
+          </Link>{" "}
           and want to subscribe to {TIER_NAMES[plan.tier]} for {formatPrice(plan)}, renewing until I cancel.
         </span>
       </label>

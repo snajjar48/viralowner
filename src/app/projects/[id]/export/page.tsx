@@ -20,6 +20,7 @@ export const metadata: Metadata = {
 const SOUND_TIP =
   "add the trending sound inside tiktok or instagram when you post, so you get the boost without copyright issues. (business accounts can only pick from the app’s commercial music library.)";
 const TIPS = [
+  "watch your video and read the caption before you post. follow each app’s rules, including labelling ai-made content where they ask.",
   "post when your audience is online. your app’s insights show the best times.",
   "write a hook in the first line of your caption. it shows before “more”.",
   "reply to the first few comments quickly. it tells the app people care.",

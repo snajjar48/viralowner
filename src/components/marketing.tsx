@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { BackgroundGlow } from "./auth-layout";
+import { LEGAL } from "@/content/legal";
 import { SHOWCASE } from "@/content/showcase";
 import { PRICING_PAGE_PUBLIC } from "@/lib/plan-format";
 import { MarketingNav } from "./marketing-nav";
@@ -79,6 +80,9 @@ function Footer({ minimal }: { minimal: boolean }) {
             <Link href="/terms" className="text-muted hover:text-foreground">
               terms
             </Link>
+            <Link href="/privacy" className="text-muted hover:text-foreground">
+              privacy
+            </Link>
             <a href="mailto:hello@viralowner.com" className="text-muted hover:text-foreground">
               contact
             </a>
@@ -86,7 +90,10 @@ function Footer({ minimal }: { minimal: boolean }) {
         )}
       </div>
       <p className="mx-auto w-full max-w-6xl px-4 pb-10 text-xs text-muted/70 sm:px-6">
-        © viralowner · <a href="mailto:hello@viralowner.com">hello@viralowner.com</a>
+        © 2026 {LEGAL.company.startsWith("[") ? "viralowner" : LEGAL.company} · <a href="mailto:hello@viralowner.com">hello@viralowner.com</a> ·{" "}
+        <Link href="/terms">terms</Link> · <Link href="/privacy">privacy</Link>
+        <br />
+        viralowner isn’t affiliated with tiktok, instagram or meta. results vary; we don’t guarantee views.
       </p>
     </footer>
   );
