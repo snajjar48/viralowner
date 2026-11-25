@@ -21,6 +21,25 @@ export const MAIN_CTA = SIGNUPS_OPEN
   ? { href: "/signup", label: "get started" }
   : { href: "#join", label: "join the waitlist" };
 
+/** The iPhone app's App Store page. */
+export const APP_STORE_URL = "https://apps.apple.com/us/app/viralowner/id6837153163";
+
+/** Apple's official "Download on the App Store" badge, served by Apple (their embed; don't redraw it). */
+export function AppStoreBadge({ className = "h-14" }: { className?: string }) {
+  return (
+    <a href={APP_STORE_URL} target="_blank" rel="noopener" aria-label="Download viralowner on the App Store" className="inline-block shrink-0">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="https://tools.applemarketingtools.com/api/badges/download-on-the-app-store/black/en-us?size=250x83"
+        alt="Download on the App Store"
+        width={250}
+        height={83}
+        className={`${className} w-auto`}
+      />
+    </a>
+  );
+}
+
 /** Page frame for the public site. `minimal` (ad landing pages): just the logo, no links away. */
 export function MarketingShell({ children, minimal = false }: { children: ReactNode; minimal?: boolean }) {
   return (
@@ -58,6 +77,9 @@ function Footer({ minimal }: { minimal: boolean }) {
           <p className="text-sm text-pretty text-muted">
             your clips, edited like the videos that went viral. made for business owners and creators.
           </p>
+          <div className="self-start">
+            <AppStoreBadge className="h-11" />
+          </div>
         </div>
         {!minimal && (
           <nav aria-label="footer" className="grid grid-cols-2 gap-x-12 gap-y-2 text-sm sm:grid-cols-3">
@@ -104,12 +126,15 @@ export function JoinCta({ id, source, center = false }: { id: string; source: st
   if (SIGNUPS_OPEN) {
     return (
       <div className={`flex flex-col gap-3 ${center ? "items-center" : "items-start"}`}>
-        <Link
-          href="/signup"
-          className="inline-flex h-14 items-center rounded-full bg-linear-to-r from-violet to-coral px-8 text-lg font-medium text-white shadow-[0_18px_50px_-20px] shadow-coral/70 transition hover:brightness-110"
-        >
-          get started
-        </Link>
+        <div className={`flex flex-wrap items-center gap-3 ${center ? "justify-center" : ""}`}>
+          <Link
+            href="/signup"
+            className="inline-flex h-14 items-center rounded-full bg-linear-to-r from-violet to-coral px-8 text-lg font-medium text-white shadow-[0_18px_50px_-20px] shadow-coral/70 transition hover:brightness-110"
+          >
+            get started
+          </Link>
+          <AppStoreBadge />
+        </div>
         <p className="text-sm text-muted">your first video is free. no charge unless you pick a plan.</p>
       </div>
     );
