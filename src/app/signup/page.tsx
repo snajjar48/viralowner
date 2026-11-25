@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Suspense } from "react";
 import { AuthLayout, EditPreview, Eyebrow, GradientText } from "@/components/auth-layout";
 import { getPlans } from "@/lib/plans";
 import { ClockIcon, SparkleIcon, TrendIcon, UploadIcon, WandIcon } from "@/components/icons";
@@ -84,6 +85,12 @@ function Pitch() {
   );
 }
 
+/** The iPhone app: sign-up takes a card, so it's done on the website, in Safari (App Store rules). Read per
+ * request, so it sits in its own Suspense boundary (the rest of the page is built ahead of time). */
+async function SignupBody({ plans }: { plans: Awaited<ReturnType<typeof getPlans>> }) {
+  return (await isAppRequest()) ? <ContinueInSafari path="/signup" what="account" /> : <SignupForm plans={plans} />;
+}
+
 export default async function SignupPage() {
   const plans = await getPlans();
   return (
@@ -99,8 +106,9 @@ export default async function SignupPage() {
         </>
       }
     >
-      {/* The iPhone app: sign-up takes a card, so it's done on the website, in Safari (App Store rules). */}
-      {(await isAppRequest()) ? <ContinueInSafari path="/signup" what="account" /> : <SignupForm plans={plans} />}
+      <Suspense fallback={<p className="text-center text-muted">Loading…</p>}>
+        <SignupBody plans={plans} />
+      </Suspense>
     </AuthLayout>
   );
 }
