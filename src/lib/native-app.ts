@@ -13,7 +13,8 @@ type FromApp =
   | { type: "uploaded"; ref: string }
   | { type: "uploadFailed"; ref: string; error: string }
   | { type: "saved"; id: string }
-  | { type: "saveFailed"; id: string; error: string; canceled?: boolean };
+  | { type: "saveFailed"; id: string; error: string; canceled?: boolean }
+  | { type: "pushToken"; token: string };
 
 /** What the app is doing with a clip: getting it from Photos, making it smaller, or uploading it. */
 export type NativePhase = "preparing" | "shrinking" | "uploading";
@@ -199,4 +200,24 @@ export async function saveNativeVideo(url: string, fileName: string, mode: "save
     });
     post({ type: "saveVideo", id, url, fileName, mode });
   });
+}
+
+/**
+ * Push notifications in the app (app 5+): `ask` shows iPhone's "allow notifications?" prompt (only the
+ * first time; asked while a video is being made, when it's clearly useful). Without `ask`, a phone that
+ * already allowed them just re-registers. The app answers with its push token, saved for this account.
+ */
+export function syncAppPush(ask: boolean) {
+  if (appVersion() < 5) return;
+  const stop = listen((msg) => {
+    if (msg.type !== "pushToken") return;
+    stop();
+    void fetch("/api/push-token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: msg.token }),
+    }).catch(() => {});
+  });
+  setTimeout(stop, 60_000);
+  post({ type: "enablePush", ask });
 }

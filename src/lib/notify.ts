@@ -8,6 +8,7 @@ import { siteUrl } from "./site-url";
 import { createAdminClient } from "./supabase/server";
 import { adminEmails } from "./admin-auth";
 import { SERVICE_HICCUP } from "./service-hiccup";
+import { sendPush } from "./push";
 
 async function recipient(userId: string) {
   const { data } = await createAdminClient()
@@ -56,6 +57,19 @@ export async function emailRenderFinished(projectId: string, renderId: string) {
       : videoFailedEmail(to, projectId, renderId, render.version, render.error),
   );
   if (!ok) await sql`UPDATE renders SET emailed_at = NULL WHERE id = ${renderId}`; // let a later callback retry
+  // The iPhone app's notification, once, with the email (a failed email is retried later, and the push with it).
+  if (ok)
+    await sendPush(String(owner[0].user_id), render.status === "done"
+    ? {
+        title: render.version === 1 ? "your video is ready 🎬" : `version ${render.version} is ready`,
+        body: "tap to watch it and post it.",
+        path: `/projects/${projectId}/preview`,
+      }
+    : {
+        title: `version ${render.version} didn’t finish`,
+        body: "tap to see what happened. trying again is free.",
+        path: `/projects/${projectId}/status?render=${renderId}`,
+      });
   return ok ? "sent" : "send_failed";
 }
 

@@ -2,14 +2,17 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
 import { buttonClass, Field, FormError, inputClass } from "@/components/form";
 import { ArrowRightIcon } from "@/components/icons";
 import { PasswordInput } from "@/components/password-input";
+import { inApp } from "@/lib/native-app";
 import { safeNextPath } from "@/lib/safe-next";
 
 // Sign-up is hidden until launch (see src/proxy.ts), so new people go to the waitlist.
 const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
+
+const noSubscribe = () => () => {};
 
 const LINK_ERROR = "That confirmation link is invalid or has expired. Try logging in.";
 
@@ -20,6 +23,8 @@ export function LoginForm() {
   // Set to the email when login says it isn't confirmed yet.
   const [unconfirmed, setUnconfirmed] = useState("");
   const [resent, setResent] = useState(false);
+  // In the iPhone app (known after the first render): no waitlist link while sign-ups are closed.
+  const app = useSyncExternalStore(noSubscribe, inApp, () => false);
 
   async function resend() {
     setResent(true);
@@ -59,6 +64,11 @@ export function LoginForm() {
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      {searchParams.get("deleted") === "1" && (
+        <p role="status" className="rounded-xl border border-white/10 bg-white/[0.04] p-3 text-sm text-muted">
+          your account and everything in it was deleted.
+        </p>
+      )}
       <Field label="Email" htmlFor="email">
         <input id="email" name="email" type="email" required autoFocus autoComplete="email" placeholder="you@example.com" className={inputClass} />
       </Field>
@@ -90,17 +100,21 @@ export function LoginForm() {
         )}
       </div>
 
-      <div className="flex items-center gap-4 text-xs text-muted">
-        <span className="h-px flex-1 bg-white/10" />
-        new to viralowner?
-        <span className="h-px flex-1 bg-white/10" />
-      </div>
-      <Link
-        href={SIGNUPS_OPEN ? "/signup" : "/"}
-        className="flex h-12 items-center justify-center rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:border-white/30 hover:bg-white/10"
-      >
-        {SIGNUPS_OPEN ? "Create an account" : "Join the waitlist"}
-      </Link>
+      {(SIGNUPS_OPEN || !app) && (
+        <>
+        <div className="flex items-center gap-4 text-xs text-muted">
+          <span className="h-px flex-1 bg-white/10" />
+          new to viralowner?
+          <span className="h-px flex-1 bg-white/10" />
+        </div>
+        <Link
+          href={SIGNUPS_OPEN ? "/signup" : "/"}
+          className="flex h-12 items-center justify-center rounded-full border border-white/15 bg-white/5 text-sm font-medium transition hover:border-white/30 hover:bg-white/10"
+        >
+          {SIGNUPS_OPEN ? "Create an account" : "Join the waitlist"}
+        </Link>
+        </>
+      )}
     </form>
   );
 }

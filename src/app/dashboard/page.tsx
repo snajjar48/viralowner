@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { BackgroundGlow, Logo } from "@/components/auth-layout";
 import { SiteNav } from "@/components/site-nav";
+import { AppPush } from "@/components/app-push";
 import { getBusiness } from "@/lib/business";
 import { DRAFT_DAYS } from "@/lib/cleanup";
 import { clipThumbUrl } from "@/lib/clips";
@@ -59,6 +60,7 @@ async function Dashboard() {
         <div className="flex items-center gap-2">
           <PlanPill m={membership} />
           <SiteNav />
+          <AppPush />
         </div>
       </header>
 

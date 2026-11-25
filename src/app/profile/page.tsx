@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { BusinessForm } from "@/components/business-form";
+import { DeleteAccount } from "@/components/delete-account";
 import { FlowShell, PageTitle } from "@/components/flow-shell";
 import { ArrowLeftIcon } from "@/components/icons";
 import { getUserId } from "@/lib/auth";
@@ -40,6 +41,7 @@ async function Profile() {
         subtitle="we use this on every video you make: your names and products spelled right, text and post captions that sound like you, and the things you asked us to remember."
       />
       <BusinessForm initial={profile} submitLabel="save my profile" />
+      <DeleteAccount />
     </>
   );
 }

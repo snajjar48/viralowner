@@ -13,11 +13,6 @@
       "supportsTablet": false,
       "config": {
         "usesNonExemptEncryption": false
-      },
-      "infoPlist": {
-        "UIBackgroundModes": [
-          "fetch"
-        ]
       }
     },
     "plugins": [
@@ -46,7 +41,13 @@
           "isAccessMediaLocationEnabled": false
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-notifications",
+        {
+          "color": "#F63165"
+        }
+      ]
     ],
     "extra": {
       "eas": {

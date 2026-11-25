@@ -4,6 +4,8 @@ import { AuthLayout, EditPreview, Eyebrow, GradientText } from "@/components/aut
 import { getPlans } from "@/lib/plans";
 import { ClockIcon, SparkleIcon, TrendIcon, UploadIcon, WandIcon } from "@/components/icons";
 import { SignupForm } from "./signup-form";
+import { ContinueInSafari } from "@/components/continue-in-safari";
+import { isAppRequest } from "@/lib/app-request";
 
 export const metadata: Metadata = {
   title: "create your account",
@@ -97,7 +99,8 @@ export default async function SignupPage() {
         </>
       }
     >
-      <SignupForm plans={plans} />
+      {/* The iPhone app: sign-up takes a card, so it's done on the website, in Safari (App Store rules). */}
+      {(await isAppRequest()) ? <ContinueInSafari path="/signup" what="account" /> : <SignupForm plans={plans} />}
     </AuthLayout>
   );
 }

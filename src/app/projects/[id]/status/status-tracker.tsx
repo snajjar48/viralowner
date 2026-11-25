@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AppPush } from "@/components/app-push";
 import { PageTitle, StateCard } from "@/components/flow-shell";
 import { AlertIcon, CheckIcon, RefreshIcon } from "@/components/icons";
 import { ProgressBar } from "@/components/progress-bar";
@@ -142,6 +143,8 @@ export function StatusTracker({
 
   return (
     <div className="flex flex-col gap-6">
+      {/* In the app: "allow notifications?" is asked here, where telling them it's ready is clearly useful. */}
+      <AppPush ask />
       <PageTitle
         title={state.version > 1 ? `making version ${state.version}...` : "making your video..."}
         subtitle={left ? `${left}.` : "this could take up to 5 minutes."}

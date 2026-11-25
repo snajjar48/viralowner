@@ -31,6 +31,9 @@ const PUBLIC_PATHS = new Set([
   "/icon.svg",
 ]);
 
+// Website-only pages (home, how it works, pricing, ads landing, showcase): not shown in the iPhone app.
+const APP_MARKETING = new Set(["/", "/home", "/what-is-viralowner", "/why-viralowner", "/pricing", "/start", "/made-with-viralowner"]);
+
 // Sign-up stays behind the site password (SITE_PASSWORD, entered on /unlock) until it opens
 // with NEXT_PUBLIC_SIGNUPS_OPEN=true. Everything else is open, and each API route checks sign-in itself.
 const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === "true";
@@ -62,6 +65,12 @@ export async function proxy(request: NextRequest) {
   // Only viralowner's own pages can change anything (on top of SameSite cookies).
   if (pathname.startsWith("/api/") && pathname !== "/api/stripe/webhook" && fromAnotherSite(request)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  // The iPhone app is the product, not the website: its marketing pages go to the app's start
+  // (their videos, or log in). Legal pages and invite links stay.
+  if (APP_MARKETING.has(pathname) && /\bViralOwnerApp\//.test(request.headers.get("user-agent") ?? "")) {
+    return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
   // Signed-in people go from the home page to their dashboard. Only checked when a sign-in cookie

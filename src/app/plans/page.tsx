@@ -3,6 +3,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { AuthShell } from "@/components/auth-shell";
+import { ContinueInSafari } from "@/components/continue-in-safari";
+import { isAppRequest } from "@/lib/app-request";
 import { getMembership, type Membership } from "@/lib/membership";
 import { TIER_NAMES } from "@/lib/plan-format";
 import { getPlans } from "@/lib/plans";
@@ -54,6 +56,8 @@ async function Plans() {
   if (!plans) {
     return <p className="text-center text-sm text-coral">plans aren’t set up yet. please check back soon.</p>;
   }
+  // The iPhone app: plans are bought on the website, in Safari (App Store rules).
+  if (await isAppRequest()) return <ContinueInSafari path="/plans" what="plan" />;
 
   return (
     <div className="flex flex-col gap-6">
