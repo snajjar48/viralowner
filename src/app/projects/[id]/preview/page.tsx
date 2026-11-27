@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { FirstTimeTip } from "@/components/first-time-tip";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageSkeleton } from "@/components/flow-shell";
@@ -79,6 +80,13 @@ async function Preview({ id, version }: { id: string; version: number | null }) 
 
   return (
     <FlowShell projectId={id} width="wide">
+      <FirstTimeTip id="preview" title="your video is ready to fine-tune">
+        <p>
+          watch it through first. to change the on-screen text (the words, timing, place or look), edit it right on this
+          page: text edits are free.
+        </p>
+        <p>want something bigger changed? write it in the request box at the top and we make a new version.</p>
+      </FirstTimeTip>
       <PreviewEditor
         key={current.id}
         projectId={id}

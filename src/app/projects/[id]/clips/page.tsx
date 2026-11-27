@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { FirstTimeTip } from "@/components/first-time-tip";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { FlowShell, PageSkeleton, PageTitle } from "@/components/flow-shell";
@@ -64,6 +65,18 @@ async function Clips({ id }: { id: string }) {
             : "upload the clips you filmed. match each one to a shot, or let us figure it out."
         }
       />
+      {oneTake ? (
+        <FirstTimeTip id="clips-one-take" title="before you film">
+          <p>film vertical, facing the light, and talk straight to the camera.</p>
+          <p>don’t worry about mistakes or pauses: keep going and we cut them out.</p>
+        </FirstTimeTip>
+      ) : (
+        <FirstTimeTip id="clips" title="before you film">
+          <p>film vertical, facing the light, and keep the camera steady on the big moment.</p>
+          <p>film each shot a bit longer than it runs, so we have room to pick the best part.</p>
+          <p>upload everything you filmed, in any order. we watch it all and match each clip to its shot.</p>
+        </FirstTimeTip>
+      )}
       <ClipsManager
         projectId={id}
         oneTake={oneTake}

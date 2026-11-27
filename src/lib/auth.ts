@@ -12,3 +12,13 @@ export async function getUserId(): Promise<string | null> {
   } = await supabase.auth.getUser();
   return user?.id ?? null;
 }
+
+/** The signed-in Supabase user, or null (for pages that also read what's saved on the account). */
+export async function getUser() {
+  await connection();
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+}

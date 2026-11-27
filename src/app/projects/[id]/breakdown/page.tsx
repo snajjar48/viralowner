@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { FirstTimeTip } from "@/components/first-time-tip";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { CategorySetting } from "@/components/category-setting";
@@ -45,7 +46,14 @@ async function Breakdown({ id }: { id: string }) {
   ]);
   return (
     <FlowShell step={1} projectId={id}>
-      <div className="mb-6">
+      <div className="mb-6 flex flex-col gap-4">
+        <FirstTimeTip id="shot-list" title="this is your shot list">
+          <p>
+            we broke the video into shots. each one tells you what to film and about how long it runs. close enough works
+            great.
+          </p>
+          <p>you don’t need a new clip for every shot: we can use different parts of the same clip.</p>
+        </FirstTimeTip>
         <CategorySetting projectId={id} category={project.category} />
       </div>
       <BreakdownView projectId={id} breakdown={inspo.breakdown} videoUrl={videoUrl} hasVersions={versions.length > 0} />

@@ -5,7 +5,8 @@ import { Suspense } from "react";
 import { FlowShell, PageTitle } from "@/components/flow-shell";
 import { buttonClass } from "@/components/form";
 import { BusinessPrompt } from "@/components/business-prompt";
-import { getUserId } from "@/lib/auth";
+import { getUser } from "@/lib/auth";
+import { onboardingOf } from "@/lib/onboarding";
 import { getBusiness, hasBusiness } from "@/lib/business";
 import { canStartVideo, canUseScratch, getMembership } from "@/lib/membership";
 import { ManageBillingButton } from "../dashboard/manage-billing-button";
@@ -28,8 +29,9 @@ export default function ScratchPage() {
 }
 
 async function Start() {
-  const userId = await getUserId();
-  if (!userId) redirect("/login?next=/scratch");
+  const user = await getUser();
+  if (!user) redirect("/login?next=/scratch");
+  const userId = user.id;
   const m = await getMembership(userId);
 
   if (!canUseScratch(m)) {
@@ -75,7 +77,7 @@ async function Start() {
         subtitle="tell us like you’d tell an editor: what it’s for, what to show, the vibe, any words or effects you want. next you’ll add your clips."
       />
       {!hasBusiness(await getBusiness(userId)) && <BusinessPrompt />}
-      <PromptStart />
+      <PromptStart category={onboardingOf(user).category} />
     </>
   );
 }

@@ -44,6 +44,40 @@ export function PlanPill({ m }: { m: Membership }) {
   );
 }
 
+const FIRST_STEPS = [
+  {
+    title: "upload a video you love",
+    body: "a viral video you want your own version of, saved to your phone.",
+  },
+  {
+    title: "film and add your clips",
+    body: "we break it into a shot list. film your spin on each shot and upload what you filmed.",
+  },
+  {
+    title: "get it back edited",
+    body: "cuts, on-screen text and captions done. fix any text free, then post.",
+  },
+];
+
+/** The 3 steps, for someone who hasn't made a video yet. */
+export function FirstVideoSteps() {
+  return (
+    <ol aria-label="how it works" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      {FIRST_STEPS.map((s, i) => (
+        <li key={s.title} className="flex gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4 sm:flex-col">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-violet to-coral text-sm font-semibold text-white">
+            {i + 1}
+          </span>
+          <span className="flex flex-col gap-1">
+            <span className="font-medium">{s.title}</span>
+            <span className="text-sm text-pretty text-muted">{s.body}</span>
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function CreateCards({ m }: { m: Membership }) {
   const can = canStartVideo(m);
   if ("reason" in can) {

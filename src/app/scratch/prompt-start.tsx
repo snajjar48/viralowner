@@ -57,10 +57,10 @@ const IDEAS: Record<VideoCategory, string[]> = {
 };
 
 /** Step one of "start from scratch": the prompt. Creates the project, then on to the clips. */
-export function PromptStart() {
+export function PromptStart({ category: initialCategory = null }: { category?: VideoCategory | null }) {
   const router = useRouter();
   const [prompt, setPrompt] = useState("");
-  const [category, setCategory] = useState<VideoCategory | null>(null);
+  const [category, setCategory] = useState<VideoCategory | null>(initialCategory);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 

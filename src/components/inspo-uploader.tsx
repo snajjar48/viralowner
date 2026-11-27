@@ -43,7 +43,7 @@ export function InspoUploader({
   category: initialCategory = null,
 }: {
   projectId?: string;
-  /** The video's kind, when replacing the inspo of a video that has one. */
+  /** The video's kind: the project's when replacing its inspo, else the one picked at setup. */
   category?: VideoCategory | null;
 }) {
   const router = useRouter();

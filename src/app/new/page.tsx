@@ -5,7 +5,9 @@ import { FlowShell, PageTitle } from "@/components/flow-shell";
 import { buttonClass } from "@/components/form";
 import { InspoUploader } from "@/components/inspo-uploader";
 import { BusinessPrompt } from "@/components/business-prompt";
-import { getUserId } from "@/lib/auth";
+import { FirstTimeTip } from "@/components/first-time-tip";
+import { onboardingOf } from "@/lib/onboarding";
+import { getUser } from "@/lib/auth";
 import { getBusiness, hasBusiness } from "@/lib/business";
 import { canStartVideo, getMembership } from "@/lib/membership";
 
@@ -26,7 +28,8 @@ export default function NewVideoPage() {
 }
 
 async function Start() {
-  const userId = await getUserId();
+  const user = await getUser();
+  const userId = user?.id ?? null;
   const can = userId ? canStartVideo(await getMembership(userId)) : null;
   if (can && "reason" in can) {
     return (
@@ -44,8 +47,15 @@ async function Start() {
         title={can?.as === "trial" ? "let’s make your free video" : "which video do you want to recreate?"}
         subtitle="upload a video you love. we’ll break down every shot so you can film your own spin on it."
       />
+      <FirstTimeTip id="inspo" title="start with a video you love">
+        <p>
+          pick a viral video in a style you could film yourself: the same kind of place, props and people. save it to
+          your phone first, then upload it here.
+        </p>
+        <p>not sure how to save one? open “how do i get a video from TikTok or Instagram?” below.</p>
+      </FirstTimeTip>
       {userId && !hasBusiness(await getBusiness(userId)) && <BusinessPrompt />}
-      <InspoUploader />
+      <InspoUploader category={onboardingOf(user).category} />
     </>
   );
 }

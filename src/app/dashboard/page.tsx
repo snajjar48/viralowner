@@ -8,10 +8,11 @@ import { getBusiness } from "@/lib/business";
 import { DRAFT_DAYS } from "@/lib/cleanup";
 import { clipThumbUrl } from "@/lib/clips";
 import { getMembership } from "@/lib/membership";
+import { onboardingOf } from "@/lib/onboarding";
 import { listProjects, projectTitle, resumeHref, type ProjectStatus, type ProjectSummary } from "@/lib/projects";
 import { createClient } from "@/lib/supabase/server";
 import type { ProjectCardData } from "./project-card";
-import { Account, CreateCards, PlanPill, ProfileCard, VideoGrid } from "./sections";
+import { Account, CreateCards, FirstVideoSteps, PlanPill, ProfileCard, VideoGrid } from "./sections";
 
 export const metadata: Metadata = {
   title: "dashboard",
@@ -46,12 +47,19 @@ async function Dashboard() {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login?next=/dashboard");
 
-  const [{ data: account }, membership, profile] = await Promise.all([
+  const [{ data: account }, membership, profile, projects] = await Promise.all([
     supabase.from("profiles").select("first_name").eq("id", user.id).maybeSingle(),
     getMembership(user.id),
     getBusiness(user.id),
+    listProjects(user.id).catch((error) => {
+      console.error("Listing projects failed:", error);
+      return null;
+    }),
   ]);
   const firstName = typeof account?.first_name === "string" ? account.first_name.trim() : "";
+  // Brand new (no videos, setup not done or skipped yet): the one-time setup first.
+  const firstVisit = projects !== null && projects.length === 0;
+  if (firstVisit && !onboardingOf(user).done) redirect("/welcome");
 
   return (
     <>
@@ -67,16 +75,18 @@ async function Dashboard() {
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-10 px-4 pt-8 pb-20 sm:px-6 sm:pt-12">
         <section className="flex flex-col gap-1.5">
           <h1 className="text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
-            {firstName ? `hey, ${firstName}` : "welcome back"}
+            {firstVisit ? (firstName ? `hey, ${firstName}. let’s make your first video` : "let’s make your first video") : firstName ? `hey, ${firstName}` : "welcome back"}
           </h1>
-          <p className="text-muted text-pretty">what are we making today?</p>
+          <p className="text-muted text-pretty">{firstVisit ? "three steps, and you don’t edit a thing." : "what are we making today?"}</p>
         </section>
+
+        {firstVisit && <FirstVideoSteps />}
 
         <CreateCards m={membership} />
 
         <ProfileCard profile={profile} />
 
-        <Videos userId={user.id} />
+        <VideoGrid cards={projects && (await Promise.all(projects.map(cardFor)))} />
 
         <Account m={membership} email={user.email ?? ""} />
       </main>
@@ -115,12 +125,4 @@ async function cardFor(p: ProjectSummary): Promise<ProjectCardData> {
       ? null
       : Math.max(1, Math.ceil(DRAFT_DAYS - (Date.now() - new Date(p.lastActiveAt).getTime()) / 86_400_000)),
   };
-}
-
-async function Videos({ userId }: { userId: string }) {
-  const projects = await listProjects(userId).catch((error) => {
-    console.error("Listing projects failed:", error);
-    return null;
-  });
-  return <VideoGrid cards={projects && (await Promise.all(projects.map(cardFor)))} />;
 }
