@@ -1,19 +1,33 @@
 import Image from "next/image";
 import Link from "next/link";
-import { compactNumber, PLATFORM_NAMES, platformOf, SHOWCASE, type ShowcaseVideo } from "@/content/showcase";
+import { compactNumber, PLATFORM_NAMES, platformOf, SHOWCASE, showcaseTotals, watchTime, type ShowcaseVideo } from "@/content/showcase";
 import { EyeIcon, PlayIcon } from "./icons";
 import { SITE_URL } from "./structured-data";
 
-/** One video: its thumbnail with views and likes, linking to the post. */
+/** The numbers we have for a video, biggest first, as [label, value] pairs. */
+function videoStats(v: ShowcaseVideo): [string, string][] {
+  const out: [string, string][] = [];
+  if (v.views != null) out.push(["views", compactNumber(v.views)]);
+  if (v.likes != null) out.push(["likes", compactNumber(v.likes)]);
+  if (v.watchMinutes != null) out.push(["watched", watchTime(v.watchMinutes)]);
+  if (v.shares != null) out.push(["shares", compactNumber(v.shares)]);
+  if (v.saves != null) out.push(["saves", compactNumber(v.saves)]);
+  if (v.comments != null) out.push(["comments", compactNumber(v.comments)]);
+  if (v.followers != null) out.push(["new followers", `+${compactNumber(v.followers)}`]);
+  return out;
+}
+
+/** One video: its thumbnail with its headline numbers, linking to the post, and the rest of its numbers under it. */
 export function ShowcaseCard({ v, priority = false }: { v: ShowcaseVideo; priority?: boolean }) {
   const platform = PLATFORM_NAMES[platformOf(v.url)];
+  const stats = videoStats(v);
   return (
     <li className="group flex min-w-0 flex-col gap-3">
       <a
         href={v.url}
         target="_blank"
         rel="noopener noreferrer"
-        aria-label={`watch “${v.title}” by ${v.by} on ${platform}: ${compactNumber(v.views)} views, ${compactNumber(v.likes)} likes`}
+        aria-label={`watch “${v.title}” by ${v.by} on ${platform}: ${stats.map(([k, n]) => `${n} ${k}`).join(", ")}`}
         className="relative block aspect-[9/16] overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] transition group-hover:border-white/25 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-coral"
       >
         <Image
@@ -24,29 +38,43 @@ export function ShowcaseCard({ v, priority = false }: { v: ShowcaseVideo; priori
           sizes="(min-width: 1024px) 280px, (min-width: 640px) 33vw, 50vw"
           className="object-cover transition duration-300 group-hover:scale-[1.03]"
         />
-        <span className="pointer-events-none absolute inset-0 bg-linear-to-t from-black/75 via-transparent to-black/25" />
+        <span className="pointer-events-none absolute inset-0 bg-linear-to-t from-black/80 via-transparent to-black/25" />
         <span className="absolute top-2.5 left-2.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-md">
           {platform}
         </span>
         <span className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white/90 text-black opacity-0 shadow-xl transition group-hover:opacity-100 group-focus-visible:opacity-100">
           <PlayIcon className="ml-0.5 size-6" />
         </span>
-        <span className="absolute inset-x-3 bottom-3 flex items-center gap-3 text-sm font-semibold text-white tabular-nums">
-          <span className="flex items-center gap-1">
-            <EyeIcon className="size-4" />
-            {compactNumber(v.views)}
-          </span>
-          <span className="flex items-center gap-1">
-            <HeartIcon className="size-4" />
-            {compactNumber(v.likes)}
-          </span>
+        <span className="absolute inset-x-3 bottom-3 flex flex-wrap items-center gap-x-3 gap-y-1 font-semibold text-white tabular-nums">
+          {v.views != null && (
+            <span className="flex items-center gap-1 text-lg sm:text-xl">
+              <EyeIcon className="size-4 sm:size-5" />
+              {compactNumber(v.views)}
+            </span>
+          )}
+          {v.likes != null && (
+            <span className={`flex items-center gap-1 ${v.views != null ? "text-sm" : "text-lg sm:text-xl"}`}>
+              <HeartIcon className={v.views != null ? "size-4" : "size-4 sm:size-5"} />
+              {compactNumber(v.likes)}
+            </span>
+          )}
         </span>
       </a>
-      <div className="flex min-w-0 flex-col gap-0.5 px-0.5">
-        <p className="truncate text-sm font-medium">{v.title}</p>
+      <div className="flex min-w-0 flex-col gap-1 px-0.5">
+        <p className="line-clamp-2 text-sm font-medium">{v.title}</p>
         <p className="truncate text-xs text-muted">
-          {v.by} · {countedLabel(v.countedOn)}
+          {v.by} · {v.kind}
         </p>
+        <ul className="mt-1 flex flex-wrap gap-1.5" aria-label="numbers">
+          {stats
+            .filter(([k]) => k !== "views" && !(k === "likes" && v.views == null))
+            .map(([k, n]) => (
+              <li key={k} className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-muted tabular-nums">
+                <span className="font-semibold text-foreground">{n}</span> {k}
+              </li>
+            ))}
+        </ul>
+        <p className="text-[11px] text-muted">{countedLabel(v.countedOn)}</p>
       </div>
     </li>
   );
@@ -78,10 +106,39 @@ export function ShowcaseSection({ videos }: { videos: ShowcaseVideo[] }) {
           </div>
           {SHOWCASE.length > videos.length && <AllVideosLink className="hidden sm:inline-flex" />}
         </div>
+        <ShowcaseTotals />
         <ShowcaseGrid videos={videos} />
         {SHOWCASE.length > videos.length && <AllVideosLink className="self-start sm:hidden" />}
       </div>
     </section>
+  );
+}
+
+/** The headline numbers across every video. */
+export function ShowcaseTotals({ className = "" }: { className?: string }) {
+  const t = showcaseTotals();
+  const items: [string, string][] = [
+    ["views", compactNumber(t.views)],
+    ["likes", compactNumber(t.likes)],
+    ["hours watched", t.watchHours.toLocaleString("en-US")],
+    ["shares", compactNumber(t.shares)],
+  ];
+  return (
+    <div className={`flex flex-col gap-3 ${className}`}>
+      <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {items.map(([k, n]) => (
+          <div key={k} className="flex flex-col-reverse gap-1 rounded-2xl border border-white/10 bg-white/[0.04] p-4 sm:p-5">
+            <dt className="text-sm text-muted">{k}</dt>
+            <dd className="bg-linear-to-r from-violet to-coral bg-clip-text text-3xl font-semibold tracking-tight text-transparent tabular-nums sm:text-4xl">
+              {n}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <p className="text-xs text-muted">
+        across {t.videos} videos from {t.businesses} businesses, as shown on each post or in its owner’s analytics.
+      </p>
+    </div>
   );
 }
 
@@ -110,13 +167,20 @@ export function showcaseSchema(videos: ShowcaseVideo[]) {
             item: {
               "@type": "VideoObject",
               name: v.title,
-              description: `${v.title}, by ${v.by}. made with viralowner.`,
+              description: `${v.title}, by ${v.by}, ${v.kind}. made with viralowner.`,
               thumbnailUrl: `${SITE_URL}${v.thumbnail}`,
               uploadDate: v.postedOn,
               url: v.url,
               interactionStatistic: [
-                { "@type": "InteractionCounter", interactionType: { "@type": "WatchAction" }, userInteractionCount: v.views },
-                { "@type": "InteractionCounter", interactionType: { "@type": "LikeAction" }, userInteractionCount: v.likes },
+                ...(v.views != null
+                  ? [{ "@type": "InteractionCounter", interactionType: { "@type": "WatchAction" }, userInteractionCount: v.views }]
+                  : []),
+                ...(v.likes != null
+                  ? [{ "@type": "InteractionCounter", interactionType: { "@type": "LikeAction" }, userInteractionCount: v.likes }]
+                  : []),
+                ...(v.shares != null
+                  ? [{ "@type": "InteractionCounter", interactionType: { "@type": "ShareAction" }, userInteractionCount: v.shares }]
+                  : []),
               ],
             },
           }
@@ -125,10 +189,10 @@ export function showcaseSchema(videos: ShowcaseVideo[]) {
   };
 }
 
-/** "as of Nov 13". */
+/** "numbers as of Nov 28". */
 function countedLabel(day: string) {
   const d = new Date(`${day}T12:00:00Z`);
-  return Number.isNaN(d.getTime()) ? "" : `as of ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
+  return Number.isNaN(d.getTime()) ? "" : `numbers as of ${d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`;
 }
 
 function HeartIcon(props: React.SVGProps<SVGSVGElement>) {
