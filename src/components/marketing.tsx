@@ -24,16 +24,16 @@ export const MAIN_CTA = SIGNUPS_OPEN
 /** The iPhone app's App Store page. */
 export const APP_STORE_URL = "https://apps.apple.com/us/app/viralowner/id6837153163";
 
-/** Apple's official "Download on the App Store" badge, served by Apple (their embed; don't redraw it). */
+/** Apple's official "Download on the App Store" badge (public/app-store-badge.svg, from developer.apple.com; don't redraw or recolor it). */
 export function AppStoreBadge({ className = "h-14" }: { className?: string }) {
   return (
     <a href={APP_STORE_URL} target="_blank" rel="noopener" aria-label="Download viralowner on the App Store" className="inline-block shrink-0">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src="https://tools.applemarketingtools.com/api/badges/download-on-the-app-store/black/en-us?size=250x83"
+        src="/app-store-badge.svg"
         alt="Download on the App Store"
-        width={250}
-        height={83}
+        width={120}
+        height={40}
         className={`${className} w-auto`}
       />
     </a>
